@@ -13,10 +13,10 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-TIER_MAP = {
-    "TIER1_SELF_DECLARED": "self_declared",
-    "TIER2_SIGNED": "signed",
-    "TIER3_VERIFIABLE": "verifiable",
+_TIER_MAP = {
+    "tier1_self_declared": "self_declared",
+    "tier2_signed": "signed",
+    "tier3_verifiable": "verifiable",
 }
 
 
@@ -91,7 +91,9 @@ def create_escrow(
     required_attestation_level: str | None = None,
 ) -> dict[str, Any]:
     client = _user_client(user)
-    att_level = TIER_MAP.get(required_attestation_level, required_attestation_level)
+    att_level = _TIER_MAP.get(
+        (required_attestation_level or "").lower(), required_attestation_level
+    )
     return client.create_escrow(
         provider_id=provider_id,
         amount=amount,

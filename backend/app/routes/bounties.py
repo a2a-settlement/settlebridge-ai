@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +80,9 @@ async def create_bounty(
     user: User = Depends(require_role(UserType.REQUESTER, UserType.BOTH)),
     db: AsyncSession = Depends(get_db),
 ):
+    if body.deadline and body.deadline < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Deadline must be in the future")
+
     bounty = await bounty_service.create_bounty(
         db,
         requester_id=user.id,
@@ -137,24 +141,22 @@ async def fund_bounty(
         raise HTTPException(status_code=403, detail="Not your bounty")
     if bounty.status != BountyStatus.DRAFT:
         raise HTTPException(status_code=400, detail="Bounty is not in draft status")
-    if not user.exchange_bot_id:
-        raise HTTPException(status_code=400, detail="Link your exchange account first")
 
-    # Escrow is created at claim time (Option A from the plan) since we need a provider_id.
-    # At fund time, we verify the user's balance is sufficient and mark the bounty open.
-    try:
-        balance_data = exchange_svc.get_balance(user)
-        balance = balance_data.get("balance", 0)
-    except Exception:
-        raise HTTPException(status_code=502, detail="Failed to check exchange balance")
+    escrow_id = "pending_claim"
+    if user.exchange_bot_id:
+        try:
+            balance_data = exchange_svc.get_balance(user)
+            balance = balance_data.get("available", balance_data.get("balance", 0))
+        except Exception:
+            raise HTTPException(status_code=502, detail="Failed to check exchange balance")
 
-    if balance < bounty.reward_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient balance: {balance} ATE (need {bounty.reward_amount})",
-        )
+        if balance < bounty.reward_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient balance: {balance} ATE (need {bounty.reward_amount})",
+            )
 
-    bounty = await bounty_service.fund_bounty(db, bounty, escrow_id="pending_claim")
+    bounty = await bounty_service.fund_bounty(db, bounty, escrow_id=escrow_id)
     await db.commit()
     await db.refresh(bounty)
     return BountyResponse.model_validate(bounty)
