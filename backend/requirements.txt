@@ -1,0 +1,13 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy[asyncio]>=2.0.36
+alembic>=1.14.0
+asyncpg>=0.30.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+a2a-settlement>=0.5.0
+httpx>=0.28.0
+python-multipart>=0.0.18
+cryptography>=44.0.0
