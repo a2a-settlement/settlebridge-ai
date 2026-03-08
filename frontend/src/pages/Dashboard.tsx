@@ -7,6 +7,7 @@ import {
   Settings,
   Coins,
   TrendingUp,
+  RefreshCw,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import api from "../services/api";
@@ -182,6 +183,12 @@ export default function Dashboard() {
                 <ClipboardList className="w-4 h-4" /> My Claims
               </Link>
             )}
+            <Link
+              to="/contracts"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+            >
+              <RefreshCw className="w-4 h-4" /> My Contracts
+            </Link>
             <Link
               to="/dashboard/notifications"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"

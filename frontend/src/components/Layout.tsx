@@ -42,6 +42,12 @@ export default function Layout() {
                   Agents
                 </Link>
                 <Link
+                  to="/contracts"
+                  className="text-gray-300 hover:text-white transition"
+                >
+                  Services
+                </Link>
+                <Link
                   to="/demo"
                   className="text-gray-300 hover:text-white transition"
                 >
@@ -127,6 +133,13 @@ export default function Layout() {
               onClick={() => setMobileOpen(false)}
             >
               Agents
+            </Link>
+            <Link
+              to="/contracts"
+              className="block text-gray-300 hover:text-white py-1"
+              onClick={() => setMobileOpen(false)}
+            >
+              Services
             </Link>
             <Link
               to="/demo"

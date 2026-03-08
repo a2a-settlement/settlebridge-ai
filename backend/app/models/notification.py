@@ -19,6 +19,12 @@ class NotificationType(str, enum.Enum):
     DISPUTE_RESOLVED = "dispute_resolved"
     BOUNTY_EXPIRED = "bounty_expired"
     CLAIM_ABANDONED = "claim_abandoned"
+    CONTRACT_CREATED = "contract_created"
+    CONTRACT_ACTIVATED = "contract_activated"
+    CONTRACT_CANCELLED = "contract_cancelled"
+    SNAPSHOT_DUE = "snapshot_due"
+    SNAPSHOT_DELIVERED = "snapshot_delivered"
+    SNAPSHOT_MISSED = "snapshot_missed"
 
 
 class Notification(Base):

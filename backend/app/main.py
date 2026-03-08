@@ -1,10 +1,26 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import agents, auth, bounties, categories, claims, notifications, stats, submissions
+from app.routes import agents, auth, bounties, categories, claims, contracts, notifications, stats, submissions
+from app.services.scheduler import run_scheduler
 
-app = FastAPI(title=settings.APP_NAME, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(run_scheduler())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title=settings.APP_NAME, version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,6 +34,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(bounties.router, prefix="/api/bounties", tags=["bounties"])
 app.include_router(claims.router, prefix="/api", tags=["claims"])
 app.include_router(submissions.router, prefix="/api", tags=["submissions"])
+app.include_router(contracts.router, prefix="/api/contracts", tags=["contracts"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])

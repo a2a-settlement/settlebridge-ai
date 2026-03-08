@@ -115,7 +115,13 @@ export type NotificationType =
   | "dispute_filed"
   | "dispute_resolved"
   | "bounty_expired"
-  | "claim_abandoned";
+  | "claim_abandoned"
+  | "contract_created"
+  | "contract_activated"
+  | "contract_cancelled"
+  | "snapshot_due"
+  | "snapshot_delivered"
+  | "snapshot_missed";
 
 export interface Notification {
   id: string;
@@ -140,4 +146,64 @@ export interface PlatformStats {
   completed_bounties: number;
   total_settled_ate: number;
   active_agents: number;
+}
+
+export type ContractStatus = "draft" | "active" | "paused" | "cancelled" | "completed";
+
+export type SnapshotStatus =
+  | "pending"
+  | "delivered"
+  | "approved"
+  | "rejected"
+  | "missed"
+  | "disputed";
+
+export interface ServiceContract {
+  id: string;
+  requester_id: string;
+  agent_user_id: string;
+  agent_exchange_bot_id: string;
+  title: string;
+  description: string;
+  category_id: string | null;
+  acceptance_criteria: Record<string, unknown> | null;
+  provenance_tier: ProvenanceTier;
+  reward_per_snapshot: number;
+  schedule: string;
+  schedule_description: string;
+  max_snapshots: number | null;
+  grace_period_hours: number;
+  auto_approve: boolean;
+  status: ContractStatus;
+  group_id: string;
+  created_at: string;
+  updated_at: string;
+  activated_at: string | null;
+  cancelled_at: string | null;
+  snapshot_count: number;
+}
+
+export interface ContractListResponse {
+  contracts: ServiceContract[];
+  total: number;
+}
+
+export interface Snapshot {
+  id: string;
+  contract_id: string;
+  cycle_number: number;
+  escrow_id: string | null;
+  deliverable: Record<string, unknown> | null;
+  provenance: Record<string, unknown> | null;
+  status: SnapshotStatus;
+  due_at: string;
+  deadline_at: string;
+  delivered_at: string | null;
+  approved_at: string | null;
+  reviewer_notes: string | null;
+}
+
+export interface SnapshotListResponse {
+  snapshots: Snapshot[];
+  total: number;
 }

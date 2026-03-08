@@ -13,6 +13,8 @@ from app.database import async_session, engine, Base
 from app.middleware.auth import hash_password
 from app.models.bounty import Bounty, BountyStatus, Difficulty, ProvenanceTier
 from app.models.category import Category
+from app.models.contract import ContractStatus, ServiceContract
+from app.models.snapshot import Snapshot, SnapshotStatus
 from app.models.user import User, UserType
 
 CATEGORIES = [
@@ -170,6 +172,69 @@ async def seed():
             print("Seeded 5 example bounties")
         else:
             print("Bounties already exist, skipping")
+
+        # Service contracts
+        existing_contracts = (await db.execute(select(ServiceContract))).scalars().all()
+        if not existing_contracts:
+            agent_q = await db.execute(
+                select(User).where(User.email == "agent@example.com")
+            )
+            agent = agent_q.scalar_one_or_none()
+            if agent and requester:
+                now = datetime.now(timezone.utc)
+                contract = ServiceContract(
+                    requester_id=requester.id,
+                    agent_user_id=agent.id,
+                    agent_exchange_bot_id=agent.exchange_bot_id or "demo-agent-bot",
+                    title="Weekly GovCon Market Intelligence Report",
+                    description="Produce a structured weekly report on government contracting activity: new RFPs, contract awards, key agency budget signals, and upcoming events.",
+                    category_id=cat_map.get("market-research", next(iter(cat_map.values()))).id if cat_map else None,
+                    acceptance_criteria={
+                        "description": "Markdown report with at least 5 RFPs, 5 awards, and 3 events",
+                        "output_format": "markdown",
+                        "required_sources": ["sam.gov", "fpds.gov"],
+                    },
+                    provenance_tier=ProvenanceTier.TIER2_SIGNED,
+                    reward_per_snapshot=100,
+                    schedule="0 9 * * 1",
+                    schedule_description="Every Monday at 9:00 AM UTC",
+                    max_snapshots=12,
+                    grace_period_hours=24,
+                    auto_approve=True,
+                    status=ContractStatus.ACTIVE,
+                    group_id=f"contract-{uuid.uuid4().hex[:12]}",
+                    activated_at=now - timedelta(days=21),
+                )
+                db.add(contract)
+                await db.flush()
+
+                for i in range(3):
+                    cycle = i + 1
+                    due = now - timedelta(days=21 - (i * 7))
+                    snap = Snapshot(
+                        contract_id=contract.id,
+                        cycle_number=cycle,
+                        status=SnapshotStatus.APPROVED if cycle <= 2 else SnapshotStatus.PENDING,
+                        due_at=due,
+                        deadline_at=due + timedelta(hours=24),
+                        delivered_at=due + timedelta(hours=3) if cycle <= 2 else None,
+                        approved_at=due + timedelta(hours=4) if cycle <= 2 else None,
+                        deliverable={
+                            "content": f"# GovCon Weekly Report — Week {cycle}\n\n## New RFPs\n- RFP-{1000+cycle}: Cloud Migration Services (DoD)\n- RFP-{2000+cycle}: Cybersecurity Assessment (DHS)\n\n## Contract Awards\n- $4.2M to TechCorp for AI/ML services\n\n## Upcoming Events\n- AFCEA TechNet conference — next Thursday",
+                            "content_type": "text/markdown",
+                        } if cycle <= 2 else None,
+                        provenance={
+                            "source_type": "aggregated",
+                            "source_refs": ["sam.gov", "fpds.gov"],
+                            "content_hash": f"demo-hash-{cycle}",
+                        } if cycle <= 2 else None,
+                    )
+                    db.add(snap)
+
+                await db.flush()
+                print("Seeded 1 example service contract with 3 snapshot cycles")
+        else:
+            print("Service contracts already exist, skipping")
 
         await db.commit()
         print("Seed complete.")
