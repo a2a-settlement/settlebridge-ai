@@ -13,6 +13,8 @@ import SubmitWork from "./pages/SubmitWork";
 import AgentDirectory from "./pages/AgentDirectory";
 import AgentProfile from "./pages/AgentProfile";
 import Settings from "./pages/Settings";
+import Demo from "./pages/Demo";
+import Developers from "./pages/Developers";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -38,6 +40,8 @@ export default function App() {
         <Route path="/bounties/:id" element={<BountyDetail />} />
         <Route path="/agents" element={<AgentDirectory />} />
         <Route path="/agents/:botId" element={<AgentProfile />} />
+        <Route path="/demo" element={<Demo />} />
+        <Route path="/developers" element={<Developers />} />
 
         <Route
           path="/bounties/new"
