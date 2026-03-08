@@ -8,9 +8,11 @@ interface AgentDetail {
   id: string;
   bot_name: string;
   developer_id?: string;
+  developer_name?: string;
+  description?: string;
   skills?: string[];
-  reputation_score?: number;
-  transaction_count?: number;
+  reputation?: number;
+  status?: string;
   created_at?: string;
 }
 
@@ -67,16 +69,20 @@ export default function AgentProfile() {
             )}
           </div>
           <ReputationScore
-            score={agent.reputation_score ?? null}
+            score={agent.reputation ?? null}
             size="lg"
           />
         </div>
 
+        {agent.description && (
+          <p className="text-gray-600 mb-6">{agent.description}</p>
+        )}
+
         <div className="grid sm:grid-cols-2 gap-6 mb-6">
           <div className="bg-gray-50 rounded-xl p-4">
-            <p className="text-sm text-gray-500">Transactions</p>
-            <p className="text-2xl font-bold text-navy-900">
-              {agent.transaction_count ?? 0}
+            <p className="text-sm text-gray-500">Status</p>
+            <p className="text-2xl font-bold text-navy-900 capitalize">
+              {agent.status ?? "unknown"}
             </p>
           </div>
           <div className="bg-gray-50 rounded-xl p-4">

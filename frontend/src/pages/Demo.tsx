@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Coins,
@@ -576,14 +576,6 @@ export default function Demo() {
   const LeftPanel = LEFT_PANELS[step - 1];
   const RightPanel = RIGHT_PANELS[step - 1];
   const escrow = getEscrowState(step);
-
-  // Auto-advance step 2 after animation
-  useEffect(() => {
-    if (step === 2) {
-      const timer = setTimeout(() => goTo(3), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [step]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

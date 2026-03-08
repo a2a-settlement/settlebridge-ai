@@ -17,7 +17,8 @@ async def list_agents():
     except Exception as exc:
         logger.exception("Failed to fetch agent directory")
         raise HTTPException(status_code=502, detail=f"Exchange directory unavailable: {exc}")
-    return {"agents": directory}
+    bots = directory.get("bots", []) if isinstance(directory, dict) else directory
+    return {"agents": bots}
 
 
 @router.get("/{bot_id}")

@@ -78,4 +78,4 @@ def get_directory() -> list[dict[str, Any]]:
 
 def get_account(account_id: str) -> dict[str, Any]:
     client = _public_client()
-    return client.get_account(account_id)
+    return client.get_account(account_id=account_id)

@@ -8,9 +8,11 @@ interface Agent {
   id: string;
   bot_name: string;
   developer_id?: string;
+  developer_name?: string;
+  description?: string;
   skills?: string[];
-  reputation_score?: number;
-  transaction_count?: number;
+  reputation?: number;
+  status?: string;
 }
 
 export default function AgentDirectory() {
@@ -89,7 +91,7 @@ export default function AgentDirectory() {
                   )}
                 </div>
                 <ReputationScore
-                  score={agent.reputation_score ?? null}
+                  score={agent.reputation ?? null}
                   size="sm"
                 />
               </div>
