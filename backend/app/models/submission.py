@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,6 +16,7 @@ class SubmissionStatus(str, enum.Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     DISPUTED = "disputed"
+    PARTIALLY_APPROVED = "partially_approved"
 
 
 class Submission(Base):
@@ -41,6 +42,14 @@ class Submission(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Partial approval / holdback fields
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    release_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    efficacy_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    efficacy_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    efficacy_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    efficacy_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     claim: Mapped["Claim"] = relationship(back_populates="submissions")  # noqa: F821
     bounty: Mapped["Bounty"] = relationship(back_populates="submissions")  # noqa: F821

@@ -14,6 +14,89 @@ import api from "../services/api";
 import type { Bounty, Claim, BountyListResponse } from "../types";
 import BountyCard from "../components/BountyCard";
 
+interface EfficacyItem {
+  id: string;
+  bounty_id: string;
+  score: number | null;
+  release_percent: number | null;
+  efficacy_check_at: string | null;
+  efficacy_criteria: string | null;
+  bounty?: Bounty;
+}
+
+function EfficacyReviewsDue() {
+  const [items, setItems] = useState<EfficacyItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .get<Bounty[]>("/bounties/my/posted")
+      .then(async ({ data: bounties }) => {
+        const due: EfficacyItem[] = [];
+        for (const b of bounties) {
+          if (!["CLAIMED", "IN_REVIEW", "SUBMITTED"].includes(b.status)) continue;
+          try {
+            const { data: subs } = await api.get(`/bounties/${b.id}/submissions`);
+            for (const sub of subs as any[]) {
+              if (sub.status === "partially_approved") {
+                due.push({ ...sub, bounty: b });
+              }
+            }
+          } catch {}
+        }
+        setItems(due);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || items.length === 0) return null;
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-lg font-semibold text-navy-900 mb-3 flex items-center gap-2">
+        <TrendingUp className="w-5 h-5 text-amber-500" />
+        Efficacy Reviews Due
+      </h2>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <Link
+            key={item.id}
+            to={`/dashboard/submissions/${item.id}`}
+            className="block bg-amber-50 border border-amber-200 rounded-xl p-4 hover:bg-amber-100 transition"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium text-navy-900 text-sm">
+                  {item.bounty?.title || `Bounty ${item.bounty_id.slice(0, 8)}...`}
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  {item.release_percent}% released (score: {item.score}) &middot;
+                  Holdback: {100 - (item.release_percent || 0)}%
+                </p>
+                {item.efficacy_criteria && (
+                  <p className="text-xs text-amber-600 mt-0.5">
+                    Criteria: {item.efficacy_criteria}
+                  </p>
+                )}
+              </div>
+              <div className="text-right flex-shrink-0 ml-4">
+                {item.efficacy_check_at && (
+                  <p className="text-xs text-amber-700">
+                    Due: {new Date(item.efficacy_check_at).toLocaleDateString()}
+                  </p>
+                )}
+                <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-amber-200 text-amber-800">
+                  Review
+                </span>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RequesterDashboard() {
   const [bounties, setBounties] = useState<Bounty[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +110,8 @@ function RequesterDashboard() {
 
   return (
     <div>
+      <EfficacyReviewsDue />
+
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-semibold text-navy-900">My Bounties</h2>
         <Link
@@ -147,6 +232,7 @@ function AgentDashboard() {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const [tab, setTab] = useState<"bounties" | "claims">("bounties");
 
   if (!user) return null;
 
@@ -154,6 +240,9 @@ export default function Dashboard() {
     user.user_type === "requester" || user.user_type === "both";
   const isAgent =
     user.user_type === "agent_operator" || user.user_type === "both";
+
+  const defaultTab = isRequester ? "bounties" : "claims";
+  const activeTab = isRequester && isAgent ? tab : defaultTab;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -168,20 +257,28 @@ export default function Dashboard() {
         <aside className="hidden lg:block w-48 flex-shrink-0">
           <nav className="space-y-1">
             {isRequester && (
-              <Link
-                to="/dashboard"
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+              <button
+                onClick={() => setTab("bounties")}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${
+                  activeTab === "bounties"
+                    ? "bg-navy-900 text-white font-medium"
+                    : "text-gray-700 hover:bg-gray-100"
+                }`}
               >
                 <FileText className="w-4 h-4" /> My Bounties
-              </Link>
+              </button>
             )}
             {isAgent && (
-              <Link
-                to="/dashboard"
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+              <button
+                onClick={() => setTab("claims")}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${
+                  activeTab === "claims"
+                    ? "bg-navy-900 text-white font-medium"
+                    : "text-gray-700 hover:bg-gray-100"
+                }`}
               >
                 <ClipboardList className="w-4 h-4" /> My Claims
-              </Link>
+              </button>
             )}
             <Link
               to="/contracts"
@@ -205,13 +302,34 @@ export default function Dashboard() {
         </aside>
 
         <div className="flex-1 min-w-0">
-          {isRequester && <RequesterDashboard />}
-          {isAgent && !isRequester && <AgentDashboard />}
-          {user.user_type === "both" && (
-            <div className="mt-10">
-              <AgentDashboard />
+          {/* Mobile tab bar */}
+          {isRequester && isAgent && (
+            <div className="lg:hidden flex gap-2 mb-6">
+              <button
+                onClick={() => setTab("bounties")}
+                className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition ${
+                  activeTab === "bounties"
+                    ? "bg-navy-900 text-white"
+                    : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                My Bounties
+              </button>
+              <button
+                onClick={() => setTab("claims")}
+                className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition ${
+                  activeTab === "claims"
+                    ? "bg-navy-900 text-white"
+                    : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                My Claims
+              </button>
             </div>
           )}
+
+          {activeTab === "bounties" && isRequester && <RequesterDashboard />}
+          {activeTab === "claims" && isAgent && <AgentDashboard />}
         </div>
       </div>
     </div>

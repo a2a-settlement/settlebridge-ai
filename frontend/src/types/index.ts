@@ -93,7 +93,8 @@ export type SubmissionStatus =
   | "pending_review"
   | "approved"
   | "rejected"
-  | "disputed";
+  | "disputed"
+  | "partially_approved";
 
 export interface Submission {
   id: string;
@@ -106,6 +107,12 @@ export interface Submission {
   reviewer_notes: string | null;
   submitted_at: string;
   reviewed_at: string | null;
+  score: number | null;
+  release_percent: number | null;
+  efficacy_check_at: string | null;
+  efficacy_criteria: string | null;
+  efficacy_score: number | null;
+  efficacy_reviewed_at: string | null;
 }
 
 export type NotificationType =

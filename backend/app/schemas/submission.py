@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.submission import SubmissionStatus
 
@@ -32,6 +33,20 @@ class ReviewRequest(BaseModel):
     notes: str | None = None
 
 
+class ScoredApprovalRequest(BaseModel):
+    score: int = Field(100, ge=0, le=100)
+    release_percent: int = Field(100, ge=1, le=100)
+    efficacy_check_at: datetime | None = None
+    efficacy_criteria: str | None = None
+    notes: str | None = None
+
+
+class EfficacyReviewRequest(BaseModel):
+    score: int = Field(..., ge=0, le=100)
+    action: Literal["release", "refund"]
+    notes: str | None = None
+
+
 class DisputeRequest(BaseModel):
     reason: str
 
@@ -47,5 +62,11 @@ class SubmissionResponse(BaseModel):
     reviewer_notes: str | None = None
     submitted_at: datetime
     reviewed_at: datetime | None = None
+    score: int | None = None
+    release_percent: int | None = None
+    efficacy_check_at: datetime | None = None
+    efficacy_criteria: str | None = None
+    efficacy_score: int | None = None
+    efficacy_reviewed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
