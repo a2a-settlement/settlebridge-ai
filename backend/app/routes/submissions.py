@@ -194,7 +194,10 @@ async def approve_submission(
                 efficacy_criteria=body.efficacy_criteria if body else None,
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to partially release escrow: {exc}")
+            if "400" in str(exc):
+                logger.warning("Exchange partial_release returned 400 (likely already processed): %s", exc)
+            else:
+                raise HTTPException(status_code=502, detail=f"Failed to partially release escrow: {exc}")
 
         await submission_service.partially_approve_submission(
             db,

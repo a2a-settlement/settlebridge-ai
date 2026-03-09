@@ -42,7 +42,7 @@ export default function PostBounty() {
         reward_amount: rewardAmount,
         difficulty,
         provenance_tier: provenanceTier,
-        deadline: deadline || undefined,
+        deadline: deadline ? new Date(deadline).toISOString() : undefined,
         auto_approve: autoApprove,
         min_reputation: minReputation ? parseFloat(minReputation) : undefined,
         acceptance_criteria: {

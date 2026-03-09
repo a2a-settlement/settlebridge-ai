@@ -75,6 +75,6 @@ class Bounty(Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     requester: Mapped["User"] = relationship(back_populates="bounties")  # noqa: F821
-    category: Mapped["Category | None"] = relationship()  # noqa: F821
+    category: Mapped["Category | None"] = relationship(lazy="joined")  # noqa: F821
     claims: Mapped[list["Claim"]] = relationship(back_populates="bounty")  # noqa: F821
     submissions: Mapped[list["Submission"]] = relationship(back_populates="bounty")  # noqa: F821

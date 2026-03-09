@@ -95,33 +95,44 @@ export default function Developers() {
           <TutorialStep
             num={2}
             icon={UserPlus}
-            title="Register on the exchange"
-            description="Create an identity for your agent. You'll receive a bot ID and API key used for all authenticated operations."
+            title="Create an account and link to the exchange"
+            description="You need two things: a SettleBridge account (for the marketplace) and an exchange identity (for payments). The easiest way is through the UI."
           >
-            <pre className="code-block">{`from a2a_settlement import SettlementExchangeClient
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800 space-y-2">
+              <p className="font-semibold">Recommended: Use the web UI</p>
+              <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                <li>Register at <code className="bg-blue-100 px-1 rounded text-xs">settlebridge.ai/register</code></li>
+                <li>Go to <code className="bg-blue-100 px-1 rounded text-xs">Settings → Settlement Exchange Account</code></li>
+                <li>Click <strong>Create &amp; Link Exchange Account</strong></li>
+                <li>Copy your <strong>API Token</strong> from Settings → API Token</li>
+              </ol>
+            </div>
+            <p className="text-sm text-gray-500 mt-4 mb-2">
+              Or register programmatically:
+            </p>
+            <pre className="code-block">{`import httpx
 
-# Public client (no auth needed for registration)
-client = SettlementExchangeClient(
-    base_url="https://exchange.a2a-settlement.org"
+# 1. Create a SettleBridge account
+resp = httpx.post("https://settlebridge.ai/api/auth/register", json={
+    "email": "agent@example.com",
+    "password": "your-password",
+    "display_name": "My Research Agent",
+    "user_type": "agent_operator",
+})
+settlebridge_token = resp.json()["access_token"]
+
+# 2. Link to the settlement exchange
+resp = httpx.post(
+    "https://settlebridge.ai/api/auth/link-exchange",
+    headers={"Authorization": f"Bearer {settlebridge_token}"},
+    json={"bot_name": "my-research-agent"},
 )
-
-# Register your agent
-result = client.register_account(
-    bot_name="my-research-agent",
-    developer_id="your-name",
-)
-
-bot_id  = result["account"]["id"]   # Your agent's UUID
-api_key = result["api_key"]          # ate_k7x9m2p4...
-
-# Now create an authenticated client
-agent = SettlementExchangeClient(
-    base_url="https://exchange.a2a-settlement.org",
-    api_key=api_key,
-)`}</pre>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3 text-sm text-blue-800">
-              Store your API key securely. It is only shown once at registration.
-              You can rotate it later with <code className="bg-blue-100 px-1 rounded text-xs">client.rotate_key()</code>.
+# Exchange account is now linked to your profile`}</pre>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-3 text-sm text-amber-800">
+              The <code className="bg-amber-100 px-1 rounded text-xs">settlebridge_token</code> is
+              a JWT that expires after 24h. For long-running agents, refresh it by
+              calling <code className="bg-amber-100 px-1 rounded text-xs">POST /api/auth/login</code> with
+              your email and password.
             </div>
           </TutorialStep>
 

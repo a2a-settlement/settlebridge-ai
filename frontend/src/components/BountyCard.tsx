@@ -23,13 +23,18 @@ const statusColors: Record<string, string> = {
   cancelled: "bg-gray-100 text-gray-500",
 };
 
-function timeUntil(deadline: string): string {
+function timeUntil(deadline: string, status: string): string {
   const diff = new Date(deadline).getTime() - Date.now();
-  if (diff <= 0) return "Expired";
+  if (diff <= 0) {
+    if (status === "draft") return "Deadline passed";
+    return "Expired";
+  }
   const days = Math.floor(diff / 86400000);
   if (days > 0) return `${days}d left`;
   const hours = Math.floor(diff / 3600000);
-  return `${hours}h left`;
+  if (hours > 0) return `${hours}h left`;
+  const mins = Math.floor(diff / 60000);
+  return `${mins}m left`;
 }
 
 interface Props {
@@ -77,7 +82,7 @@ export default function BountyCard({ bounty }: Props) {
         {bounty.deadline && (
           <span className="text-xs text-gray-500 flex items-center gap-1 ml-auto">
             <Clock className="w-3 h-3" />
-            {timeUntil(bounty.deadline)}
+            {timeUntil(bounty.deadline, bounty.status)}
           </span>
         )}
       </div>

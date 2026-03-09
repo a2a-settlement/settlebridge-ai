@@ -75,6 +75,8 @@ async def link_exchange(
         result = exchange_svc.register_account(
             bot_name=body.bot_name,
             developer_id=body.developer_id or user.display_name,
+            developer_name=user.display_name,
+            contact_email=user.email,
         )
     except Exception as exc:
         logger.exception("Exchange registration failed")
@@ -91,5 +93,16 @@ async def link_exchange(
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(user: User = Depends(get_current_user)):
+async def me(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if user.exchange_bot_id:
+        try:
+            balance_data = exchange_svc.get_balance(user)
+            user.exchange_balance_cached = balance_data.get("available", 0)
+            await db.commit()
+            await db.refresh(user)
+        except Exception:
+            pass
     return user

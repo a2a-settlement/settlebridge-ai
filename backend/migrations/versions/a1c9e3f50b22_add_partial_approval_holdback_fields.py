@@ -16,7 +16,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TYPE submissionstatus ADD VALUE IF NOT EXISTS 'partially_approved'")
+    op.execute("ALTER TYPE submissionstatus ADD VALUE IF NOT EXISTS 'PARTIALLY_APPROVED'")
 
     op.add_column('submissions', sa.Column('score', sa.Integer(), nullable=True))
     op.add_column('submissions', sa.Column('release_percent', sa.Integer(), nullable=True))
