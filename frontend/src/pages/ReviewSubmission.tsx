@@ -8,10 +8,10 @@ import {
   Star,
   Clock,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
 import api from "../services/api";
 import type { Submission, Bounty } from "../types";
 import ProvenanceBadge from "../components/ProvenanceBadge";
+import DeliverableViewer from "../components/DeliverableViewer";
 
 const SCORE_LABELS: [number, string, string][] = [
   [0, "Unacceptable", "text-red-600"],
@@ -184,17 +184,11 @@ export default function ReviewSubmission() {
       {/* Deliverable */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
         <h2 className="font-semibold text-navy-900 mb-3">Deliverable</h2>
-        <div className="bg-gray-50 rounded-lg p-4 text-sm">
-          {deliverable.content_type === "text/markdown" ? (
-            <div className="prose prose-sm max-w-none">
-              <ReactMarkdown>{deliverable.content || ""}</ReactMarkdown>
-            </div>
-          ) : (
-            <pre className="whitespace-pre-wrap text-gray-700 font-mono text-xs">
-              {deliverable.content || JSON.stringify(deliverable, null, 2)}
-            </pre>
-          )}
-        </div>
+        <DeliverableViewer
+          content={deliverable.content || JSON.stringify(deliverable, null, 2)}
+          contentType={deliverable.content_type || "text/plain"}
+          bountyTitle={bounty.title}
+        />
       </div>
 
       {/* Provenance */}

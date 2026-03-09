@@ -147,7 +147,14 @@ async def list_bounty_submissions(
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
     subs = await submission_service.list_submissions_for_bounty(db, bounty_id)
-    return [SubmissionResponse.model_validate(s) for s in subs]
+    is_requester = bounty.requester_id == user.id
+    if is_requester:
+        return [SubmissionResponse.model_validate(s) for s in subs]
+    return [
+        SubmissionResponse.model_validate(s)
+        for s in subs
+        if s.agent_user_id == user.id
+    ]
 
 
 @router.get("/submissions/{submission_id}", response_model=SubmissionResponse)
@@ -159,6 +166,11 @@ async def get_submission(
     sub = await submission_service.get_submission(db, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
+    bounty = await bounty_service.get_bounty(db, sub.bounty_id)
+    is_requester = bounty and bounty.requester_id == user.id
+    is_agent = sub.agent_user_id == user.id
+    if not is_requester and not is_agent:
+        raise HTTPException(status_code=403, detail="Not a party to this submission")
     return SubmissionResponse.model_validate(sub)
 
 
