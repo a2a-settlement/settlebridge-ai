@@ -37,6 +37,7 @@ export default function ReviewSubmission() {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
 
   const [score, setScore] = useState(100);
   const [releasePercent, setReleasePercent] = useState(100);
@@ -54,14 +55,28 @@ export default function ReviewSubmission() {
         const b = await api.get<Bounty>(`/bounties/${data.bounty_id}`);
         setBounty(b.data);
       })
-      .catch(() => setError("Submission not found"))
+      .catch((err: any) => {
+        const status = err.response?.status;
+        if (status === 403) {
+          setError("You don't have access to this submission");
+        } else {
+          setError(err.response?.data?.detail || "Submission not found");
+        }
+      })
       .finally(() => setLoading(false));
   }, [id]);
+
+  const setActionErr = (msg: string) => {
+    setActionError(msg);
+    setTimeout(() => {
+      document.getElementById("action-error")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
+  };
 
   const handleApprove = async () => {
     if (!submission) return;
     setActing(true);
-    setError("");
+    setActionError("");
     try {
       const body: Record<string, unknown> = {
         score,
@@ -77,7 +92,9 @@ export default function ReviewSubmission() {
       await api.post(`/submissions/${submission.id}/approve`, body);
       navigate("/dashboard");
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to approve");
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === "string" ? detail : "Failed to approve";
+      setActionErr(msg);
     } finally {
       setActing(false);
     }
@@ -86,12 +103,13 @@ export default function ReviewSubmission() {
   const handleReject = async () => {
     if (!submission) return;
     setActing(true);
-    setError("");
+    setActionError("");
     try {
       await api.post(`/submissions/${submission.id}/reject`, { notes });
       navigate("/dashboard");
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to reject");
+      const detail = err.response?.data?.detail;
+      setActionErr(typeof detail === "string" ? detail : "Failed to reject");
     } finally {
       setActing(false);
     }
@@ -100,14 +118,15 @@ export default function ReviewSubmission() {
   const handleDispute = async () => {
     if (!submission) return;
     setActing(true);
-    setError("");
+    setActionError("");
     try {
       await api.post(`/submissions/${submission.id}/dispute`, {
         reason: notes || "Disputed",
       });
       navigate("/dashboard");
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to dispute");
+      const detail = err.response?.data?.detail;
+      setActionErr(typeof detail === "string" ? detail : "Failed to dispute");
     } finally {
       setActing(false);
     }
@@ -116,7 +135,7 @@ export default function ReviewSubmission() {
   const handleEfficacyReview = async (action: "release" | "refund") => {
     if (!submission) return;
     setActing(true);
-    setError("");
+    setActionError("");
     try {
       await api.post(`/submissions/${submission.id}/efficacy-review`, {
         score: efficacyScore,
@@ -125,7 +144,8 @@ export default function ReviewSubmission() {
       });
       navigate("/dashboard");
     } catch (err: any) {
-      setError(err.response?.data?.detail || `Failed to ${action} holdback`);
+      const detail = err.response?.data?.detail;
+      setActionErr(typeof detail === "string" ? detail : `Failed to ${action} holdback`);
     } finally {
       setActing(false);
     }
@@ -142,8 +162,14 @@ export default function ReviewSubmission() {
 
   if (!submission || !bounty) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-20 text-center text-gray-500">
-        Submission not found
+      <div className="max-w-4xl mx-auto px-4 py-20 text-center">
+        <p className="text-gray-500">{error || "Submission not found"}</p>
+        <button
+          onClick={() => navigate(-1)}
+          className="mt-4 text-sm text-navy-600 hover:text-navy-800 underline"
+        >
+          Go back
+        </button>
       </div>
     );
   }
@@ -174,12 +200,6 @@ export default function ReviewSubmission() {
           </span>
         )}
       </p>
-
-      {error && (
-        <div className="bg-red-50 text-red-700 rounded-lg p-3 mb-4 text-sm">
-          {error}
-        </div>
-      )}
 
       {/* Deliverable */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
@@ -398,6 +418,14 @@ export default function ReviewSubmission() {
             className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm mb-4"
           />
 
+          {/* Action error */}
+          {actionError && (
+            <div id="action-error" className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-4 text-sm flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              {actionError}
+            </div>
+          )}
+
           {/* Action buttons */}
           <div className="flex flex-wrap gap-3">
             <button
@@ -463,6 +491,13 @@ export default function ReviewSubmission() {
             placeholder="Notes on efficacy assessment..."
             className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm mb-4"
           />
+
+          {actionError && (
+            <div id="action-error" className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-4 text-sm flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              {actionError}
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button
