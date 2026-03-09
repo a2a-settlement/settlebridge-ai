@@ -89,6 +89,7 @@ def create_escrow(
     amount: int,
     task_id: str = "",
     required_attestation_level: str | None = None,
+    ttl_minutes: int | None = None,
 ) -> dict[str, Any]:
     client = _user_client(user)
     att_level = _TIER_MAP.get(
@@ -99,6 +100,7 @@ def create_escrow(
         amount=amount,
         task_id=task_id,
         required_attestation_level=att_level,
+        ttl_minutes=ttl_minutes,
     )
 
 
@@ -149,6 +151,76 @@ def refund_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, Any
 def dispute_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, Any]:
     client = _user_client(user)
     return client.dispute_escrow(escrow_id=escrow_id, reason=reason)
+
+
+def get_escrow(user: User, escrow_id: str) -> dict[str, Any]:
+    import httpx
+    url = f"{settings.A2A_EXCHANGE_URL}/v1/exchange/escrows/{escrow_id}"
+    resp = httpx.get(url, headers={"Authorization": f"Bearer {user.exchange_api_key}"}, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def is_escrow_expired(user: User, escrow_id: str) -> bool:
+    try:
+        data = get_escrow(user, escrow_id)
+        return data.get("status") == "expired"
+    except Exception as exc:
+        logger.warning("Failed to check escrow status for %s: %s", escrow_id, exc)
+        return False
+
+
+def recreate_and_release(
+    requester: User,
+    provider_bot_id: str,
+    provider_api_key: str,
+    amount: int,
+    task_id: str,
+    content: str,
+    content_hash: str | None = None,
+    provenance: dict | None = None,
+    required_attestation_level: str | None = None,
+) -> str:
+    """Create a fresh escrow, deliver content, and release — returns new escrow_id."""
+    import httpx
+    import re
+
+    try:
+        escrow_result = create_escrow(
+            requester,
+            provider_id=provider_bot_id,
+            amount=amount,
+            task_id=task_id,
+            required_attestation_level=required_attestation_level,
+            ttl_minutes=10080,
+        )
+        new_escrow_id = escrow_result.get("escrow_id", escrow_result.get("id", ""))
+        logger.info("Created replacement escrow %s for task %s", new_escrow_id, task_id)
+    except Exception as exc:
+        err_str = str(exc)
+        if "409" in err_str:
+            match = re.search(r"escrow_id=([a-f0-9-]+)", err_str)
+            if match:
+                new_escrow_id = match.group(1)
+                logger.info("Reusing existing escrow %s for task %s", new_escrow_id, task_id)
+            else:
+                raise
+        else:
+            raise
+
+    mapped = _map_provenance(provenance, content_hash) if provenance else None
+    deliver_url = f"{settings.A2A_EXCHANGE_URL}/v1/exchange/escrow/{new_escrow_id}/deliver"
+    deliver_payload: dict[str, Any] = {"content": content}
+    if mapped:
+        deliver_payload["provenance"] = mapped
+    headers = {"Authorization": f"Bearer {provider_api_key}", "Content-Type": "application/json"}
+    resp = httpx.post(deliver_url, json=deliver_payload, headers=headers, timeout=15)
+    resp.raise_for_status()
+    logger.info("Re-delivered content to escrow %s", new_escrow_id)
+
+    release_escrow(requester, new_escrow_id)
+    logger.info("Released replacement escrow %s", new_escrow_id)
+    return new_escrow_id
 
 
 def get_directory() -> list[dict[str, Any]]:

@@ -49,6 +49,7 @@ async def claim_bounty(
             amount=bounty.reward_amount,
             task_id=str(bounty.id),
             required_attestation_level=bounty.provenance_tier.value if bounty.provenance_tier else None,
+            ttl_minutes=10080,  # 7 days
         )
         escrow_id = escrow_result.get("escrow_id", escrow_result.get("id", ""))
     except Exception as exc:

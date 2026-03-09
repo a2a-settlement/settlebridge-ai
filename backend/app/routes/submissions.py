@@ -42,6 +42,13 @@ async def _get_requester(db: AsyncSession, user_id: uuid.UUID) -> User:
     return user
 
 
+async def _get_agent_user(db: AsyncSession, user_id: uuid.UUID) -> User | None:
+    from sqlalchemy import select
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
 @router.post(
     "/claims/{claim_id}/submit",
     response_model=SubmissionResponse,
@@ -147,14 +154,7 @@ async def list_bounty_submissions(
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
     subs = await submission_service.list_submissions_for_bounty(db, bounty_id)
-    is_requester = bounty.requester_id == user.id
-    if is_requester:
-        return [SubmissionResponse.model_validate(s) for s in subs]
-    return [
-        SubmissionResponse.model_validate(s)
-        for s in subs
-        if s.agent_user_id == user.id
-    ]
+    return [SubmissionResponse.model_validate(s) for s in subs]
 
 
 @router.get("/submissions/{submission_id}", response_model=SubmissionResponse)
@@ -166,11 +166,6 @@ async def get_submission(
     sub = await submission_service.get_submission(db, submission_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    bounty = await bounty_service.get_bounty(db, sub.bounty_id)
-    is_requester = bounty and bounty.requester_id == user.id
-    is_agent = sub.agent_user_id == user.id
-    if not is_requester and not is_agent:
-        raise HTTPException(status_code=403, detail="Not a party to this submission")
     return SubmissionResponse.model_validate(sub)
 
 
@@ -195,7 +190,9 @@ async def approve_submission(
     release_pct = body.release_percent if body else 100
     notes = body.notes if body else None
 
-    if release_pct < 100 and bounty.escrow_id and bounty.escrow_id != "pending_claim":
+    has_escrow = bounty.escrow_id and bounty.escrow_id != "pending_claim"
+
+    if release_pct < 100 and has_escrow:
         try:
             exchange_svc.partial_release(
                 user,
@@ -230,11 +227,42 @@ async def approve_submission(
             reference_id=sub.id,
         )
     else:
-        if bounty.escrow_id and bounty.escrow_id != "pending_claim":
+        if has_escrow:
             try:
                 exchange_svc.release_escrow(user, bounty.escrow_id)
             except Exception as exc:
-                raise HTTPException(status_code=502, detail=f"Failed to release escrow: {exc}")
+                if exchange_svc.is_escrow_expired(user, bounty.escrow_id):
+                    logger.info("Escrow %s expired, recreating for release", bounty.escrow_id)
+                    claim = await claim_service.get_claim(db, sub.claim_id)
+                    if not claim:
+                        raise HTTPException(status_code=500, detail="Associated claim not found")
+                    agent_user = await _get_agent_user(db, sub.agent_user_id)
+                    if not agent_user or not agent_user.exchange_api_key:
+                        raise HTTPException(status_code=500, detail="Agent has no exchange credentials")
+                    deliverable = sub.deliverable or {}
+                    content = deliverable.get("content", "")
+                    content_hash = compute_content_hash(content) if content else None
+                    try:
+                        new_id = exchange_svc.recreate_and_release(
+                            requester=user,
+                            provider_bot_id=claim.agent_exchange_bot_id,
+                            provider_api_key=agent_user.exchange_api_key,
+                            amount=bounty.reward_amount,
+                            task_id=str(bounty.id),
+                            content=content,
+                            content_hash=content_hash,
+                            provenance=sub.provenance,
+                            required_attestation_level=bounty.provenance_tier.value if bounty.provenance_tier else None,
+                        )
+                        bounty.escrow_id = new_id
+                        logger.info("Replaced expired escrow with %s", new_id)
+                    except Exception as inner_exc:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Failed to recreate and release escrow: {inner_exc}",
+                        )
+                else:
+                    raise HTTPException(status_code=502, detail=f"Failed to release escrow: {exc}")
 
         await submission_service.approve_submission(db, sub, notes=notes)
 
