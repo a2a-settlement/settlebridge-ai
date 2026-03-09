@@ -13,6 +13,7 @@ from app.database import async_session, engine, Base
 from app.middleware.auth import hash_password
 from app.models.bounty import Bounty, BountyStatus, Difficulty, ProvenanceTier
 from app.models.category import Category
+from app.models.assist_session import AssistSession, AssistSessionStatus
 from app.models.contract import ContractStatus, ServiceContract
 from app.models.snapshot import Snapshot, SnapshotStatus
 from app.models.user import User, UserType
@@ -235,6 +236,95 @@ async def seed():
                 print("Seeded 1 example service contract with 3 snapshot cycles")
         else:
             print("Service contracts already exist, skipping")
+
+        # Example Bounty Assist session
+        existing_sessions = (await db.execute(select(AssistSession))).scalars().all()
+        if not existing_sessions:
+            now_str = datetime.now(timezone.utc).isoformat()
+            session = AssistSession(
+                user_id=requester.id,
+                status=AssistSessionStatus.DRAFT_READY,
+                turn_count=3,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "I want to know if the market is going to crash.",
+                        "timestamp": now_str,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "That's a question a lot of people are asking right now. To turn this into a bounty that attracts serious analytical intelligence, I need to understand a few things:\n\n1. **What's your context?** Are you managing a portfolio and considering hedging, timing an entry point, or evaluating real estate exposure?\n2. **What's your time horizon?** Are you worried about the next 3 months, 12 months, or a longer structural shift?\n\nThis will help me shape the bounty so analysts know exactly what kind of analysis you need.",
+                        "timestamp": now_str,
+                    },
+                    {
+                        "role": "user",
+                        "content": "I manage a retirement portfolio, mostly index funds. I'm worried about the next 12 months. I want to know if I should move to bonds or stay put.",
+                        "timestamp": now_str,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Perfect, that gives me a clear picture. You need a decision-grade analysis, not just a prediction. Let me shape the deliverable:\n\n**What the bounty should ask for:**\n- A multi-factor regime analysis assessing the probability of a 20%+ S&P 500 drawdown within 12 months\n- Leading indicators and trigger mechanisms identified\n- Sector-specific vulnerability ranking\n- An actionable recommendation framework for a retirement-stage index portfolio\n\n**Settlement structure:** Since this is a predictive bounty, I'd recommend a tiered payout:\n- **45% immediate** for the analytical framework and indicator identification (this has standalone value regardless of what the market does)\n- **35% performance tranche** held in escrow for 12 months, released based on the accuracy of the leading indicators the analyst identifies\n- **Reputation stake** weighted at 1.5x for long-duration outcome accuracy\n\nDoes this structure feel right? I'd suggest a reward of 2,000-5,000 ATE given the complexity and predictive component.",
+                        "timestamp": now_str,
+                    },
+                    {
+                        "role": "user",
+                        "content": "That sounds great. Let's go with 3000 ATE.",
+                        "timestamp": now_str,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Excellent. Here's your complete bounty draft:\n\n**Title:** Multi-Factor S&P 500 Drawdown Probability Analysis (12-Month Horizon)\n\n**Description:** Provide a multi-factor regime analysis assessing the probability of a 20%+ S&P 500 drawdown within 12 months, including leading indicator identification, trigger mechanism analysis, and sector-specific vulnerability ranking. Must include an actionable recommendation framework for a retirement-stage index fund portfolio, with confidence scoring and full methodology disclosure.\n\nThe bounty is ready to post. Review it in the panel and click Post Bounty when you're ready.",
+                        "timestamp": now_str,
+                    },
+                ],
+                bounty_draft={
+                    "title": "Multi-Factor S&P 500 Drawdown Probability Analysis (12-Month Horizon)",
+                    "description": "Provide a multi-factor regime analysis assessing the probability of a 20%+ S&P 500 drawdown within 12 months, including leading indicator identification, trigger mechanism analysis, and sector-specific vulnerability ranking. Must include an actionable recommendation framework for a retirement-stage index fund portfolio, with confidence scoring and full methodology disclosure.",
+                    "category_slug": "market-research",
+                    "tags": ["market-crash", "s&p-500", "portfolio", "risk-analysis", "predictive"],
+                    "acceptance_criteria": {
+                        "description": "Multi-factor regime analysis with probability assessment, leading indicators, trigger mechanisms, sector vulnerability ranking, and portfolio recommendation framework. Must include confidence intervals and methodology disclosure.",
+                        "output_format": "markdown",
+                        "required_sources": ["Federal Reserve data", "market data providers", "economic indicators"],
+                        "provenance_tier": "tier2_signed",
+                    },
+                    "reward_suggestion": 3000,
+                    "difficulty": "expert",
+                    "provenance_tier": "tier2_signed",
+                    "deadline_suggestion": "30 days",
+                    "settlement_structure": {
+                        "immediate_payout_percent": 45,
+                        "performance_tranches": [
+                            {
+                                "percent": 35,
+                                "indicator": "Accuracy of analyst-identified leading indicators over 12-month observation period",
+                                "measurement": "observable_market_data",
+                                "escrow_duration_days": 365,
+                                "partial_credit": True,
+                            }
+                        ],
+                        "reputation_stake": {"enabled": True, "weight": 1.5},
+                    },
+                },
+                settlement_structure={
+                    "immediate_payout_percent": 45,
+                    "performance_tranches": [
+                        {
+                            "percent": 35,
+                            "indicator": "Accuracy of analyst-identified leading indicators over 12-month observation period",
+                            "measurement": "observable_market_data",
+                            "escrow_duration_days": 365,
+                            "partial_credit": True,
+                        }
+                    ],
+                    "reputation_stake": {"enabled": True, "weight": 1.5},
+                },
+            )
+            db.add(session)
+            await db.flush()
+            print("Seeded 1 example Bounty Assist session")
+        else:
+            print("Assist sessions already exist, skipping")
 
         await db.commit()
         print("Seed complete.")

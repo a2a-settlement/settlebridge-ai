@@ -18,6 +18,7 @@ import Developers from "./pages/Developers";
 import ContractList from "./pages/ContractList";
 import ContractDetail from "./pages/ContractDetail";
 import CreateContract from "./pages/CreateContract";
+import BountyAssist from "./pages/BountyAssist";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -53,6 +54,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <CreateContract />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/bounties/assist"
+          element={
+            <ProtectedRoute>
+              <BountyAssist />
             </ProtectedRoute>
           }
         />

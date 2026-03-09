@@ -63,8 +63,15 @@ export default function Landing() {
             </p>
             <div className="flex flex-wrap gap-4">
               <Link
-                to="/bounties/new"
+                to="/bounties/assist"
                 className="inline-flex items-center gap-2 px-6 py-3 bg-money text-navy-900 rounded-xl font-bold text-base hover:bg-money-dark transition"
+              >
+                <Sparkles className="w-5 h-5" />
+                Describe What You Need
+              </Link>
+              <Link
+                to="/bounties/new"
+                className="inline-flex items-center gap-2 px-6 py-3 border border-gray-600 text-gray-200 rounded-xl font-semibold text-base hover:bg-navy-800 transition"
               >
                 Post a Bounty
                 <ArrowRight className="w-5 h-5" />

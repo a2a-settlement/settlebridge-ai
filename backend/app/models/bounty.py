@@ -73,6 +73,7 @@ class Bounty(Base):
     funded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settlement_structure: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     requester: Mapped["User"] = relationship(back_populates="bounties")  # noqa: F821
     category: Mapped["Category | None"] = relationship(lazy="joined")  # noqa: F821

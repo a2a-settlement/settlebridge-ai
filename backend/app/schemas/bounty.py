@@ -29,6 +29,7 @@ class BountyCreateRequest(BaseModel):
     difficulty: Difficulty = Difficulty.MEDIUM
     auto_approve: bool = False
     provenance_tier: ProvenanceTier = ProvenanceTier.TIER1_SELF_DECLARED
+    settlement_structure: dict | None = None
 
 
 class BountyUpdateRequest(BaseModel):
@@ -44,6 +45,7 @@ class BountyUpdateRequest(BaseModel):
     difficulty: Difficulty | None = None
     auto_approve: bool | None = None
     provenance_tier: ProvenanceTier | None = None
+    settlement_structure: dict | None = None
 
 
 class CategoryResponse(BaseModel):
@@ -75,6 +77,7 @@ class BountyResponse(BaseModel):
     difficulty: Difficulty
     auto_approve: bool
     provenance_tier: ProvenanceTier
+    settlement_structure: dict | None = None
     created_at: datetime
     updated_at: datetime
     funded_at: datetime | None = None

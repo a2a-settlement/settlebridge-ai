@@ -38,6 +38,25 @@ export interface Category {
   sort_order: number;
 }
 
+export interface PerformanceTranche {
+  percent: number;
+  indicator: string;
+  measurement: string;
+  escrow_duration_days: number;
+  partial_credit: boolean;
+}
+
+export interface ReputationStake {
+  enabled: boolean;
+  weight: number;
+}
+
+export interface SettlementStructure {
+  immediate_payout_percent: number;
+  performance_tranches: PerformanceTranche[] | null;
+  reputation_stake: ReputationStake | null;
+}
+
 export interface Bounty {
   id: string;
   requester_id: string;
@@ -56,6 +75,7 @@ export interface Bounty {
   difficulty: Difficulty;
   auto_approve: boolean;
   provenance_tier: ProvenanceTier;
+  settlement_structure: SettlementStructure | null;
   created_at: string;
   updated_at: string;
   funded_at: string | null;
@@ -213,4 +233,45 @@ export interface Snapshot {
 export interface SnapshotListResponse {
   snapshots: Snapshot[];
   total: number;
+}
+
+export type AssistSessionStatus = "active" | "draft_ready" | "finalized" | "abandoned";
+
+export interface AcceptanceCriteriaAssist {
+  description: string;
+  output_format: string;
+  required_sources: string[] | null;
+  provenance_tier: string;
+  custom_checks: Record<string, unknown>[] | null;
+}
+
+export interface BountyDraft {
+  title: string | null;
+  description: string | null;
+  category_slug: string | null;
+  tags: string[] | null;
+  acceptance_criteria: AcceptanceCriteriaAssist | null;
+  reward_suggestion: number | null;
+  difficulty: string | null;
+  provenance_tier: string | null;
+  deadline_suggestion: string | null;
+  settlement_structure: SettlementStructure | null;
+}
+
+export interface AssistMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+export interface AssistSession {
+  id: string;
+  status: AssistSessionStatus;
+  messages: AssistMessage[];
+  bounty_draft: BountyDraft | null;
+  settlement_structure: SettlementStructure | null;
+  turn_count: number;
+  created_at: string;
+  updated_at: string;
+  finalized_bounty_id: string | null;
 }

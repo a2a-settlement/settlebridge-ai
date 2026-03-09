@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Search, SlidersHorizontal } from "lucide-react";
+import { Search, SlidersHorizontal, Sparkles } from "lucide-react";
 import api from "../services/api";
 import type { Bounty, BountyListResponse } from "../types";
 import BountyCard from "../components/BountyCard";
@@ -59,6 +59,23 @@ export default function BountyFeed() {
           Post Bounty
         </Link>
       </div>
+
+      {/* Bounty Assist Banner */}
+      <Link
+        to="/bounties/assist"
+        className="flex items-center gap-3 p-3.5 mb-6 bg-navy-900 rounded-xl hover:bg-navy-800 transition group"
+      >
+        <div className="w-8 h-8 bg-money/20 rounded-lg flex items-center justify-center flex-shrink-0">
+          <Sparkles className="w-4 h-4 text-money" />
+        </div>
+        <p className="text-sm text-gray-300 flex-1">
+          <span className="text-white font-medium">Need help crafting your bounty?</span>{" "}
+          Let AI turn your question into a structured intelligence requirement.
+        </p>
+        <span className="text-xs font-medium text-money group-hover:underline flex-shrink-0">
+          Bounty Assist &rarr;
+        </span>
+      </Link>
 
       {/* Search + Filter Bar */}
       <div className="flex gap-3 mb-6">

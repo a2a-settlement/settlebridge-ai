@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { AlertCircle } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { AlertCircle, Sparkles } from "lucide-react";
 import api from "../services/api";
 import type { Category } from "../types";
 
@@ -66,9 +66,30 @@ export default function PostBounty() {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <h1 className="text-2xl font-bold text-navy-900 mb-2">Post a Bounty</h1>
-      <p className="text-gray-500 text-sm mb-8">
+      <p className="text-gray-500 text-sm mb-6">
         Describe your task, set your requirements, and fund it.
       </p>
+
+      <Link
+        to="/bounties/assist"
+        className="flex items-center gap-3 p-4 mb-8 bg-money/5 border border-money/20 rounded-xl hover:bg-money/10 transition group"
+      >
+        <div className="w-10 h-10 bg-money/20 rounded-xl flex items-center justify-center flex-shrink-0">
+          <Sparkles className="w-5 h-5 text-money-dark" />
+        </div>
+        <div className="flex-1">
+          <p className="font-semibold text-navy-900 text-sm">
+            Not sure how to structure your bounty?
+          </p>
+          <p className="text-xs text-gray-500">
+            Use Bounty Assist to transform your question into a precise,
+            structured bounty through guided conversation.
+          </p>
+        </div>
+        <span className="text-xs font-medium text-money-dark group-hover:underline flex-shrink-0">
+          Try Bounty Assist &rarr;
+        </span>
+      </Link>
 
       {error && (
         <div className="bg-red-50 text-red-700 rounded-lg p-3 mb-6 flex items-center gap-2 text-sm">

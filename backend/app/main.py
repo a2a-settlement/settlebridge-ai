@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import agents, auth, bounties, categories, claims, contracts, notifications, stats, submissions
+from app.routes import agents, assist, auth, bounties, categories, claims, contracts, notifications, stats, submissions
 from app.services.scheduler import run_scheduler
 
 
@@ -28,8 +28,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Session-Id"],
 )
 
+app.include_router(assist.router, prefix="/api/assist", tags=["assist"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(bounties.router, prefix="/api/bounties", tags=["bounties"])
 app.include_router(claims.router, prefix="/api", tags=["claims"])
