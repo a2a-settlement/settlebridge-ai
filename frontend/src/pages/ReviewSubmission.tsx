@@ -7,11 +7,12 @@ import {
   AlertTriangle,
   Star,
   Clock,
+  Bot,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import api from "../services/api";
 import type { Submission, Bounty } from "../types";
 import ProvenanceBadge from "../components/ProvenanceBadge";
-import DeliverableViewer from "../components/DeliverableViewer";
 
 const SCORE_LABELS: [number, string, string][] = [
   [0, "Unacceptable", "text-red-600"],
@@ -37,7 +38,6 @@ export default function ReviewSubmission() {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
 
   const [score, setScore] = useState(100);
   const [releasePercent, setReleasePercent] = useState(100);
@@ -54,29 +54,26 @@ export default function ReviewSubmission() {
         setSubmission(data);
         const b = await api.get<Bounty>(`/bounties/${data.bounty_id}`);
         setBounty(b.data);
-      })
-      .catch((err: any) => {
-        const status = err.response?.status;
-        if (status === 403) {
-          setError("You don't have access to this submission");
-        } else {
-          setError(err.response?.data?.detail || "Submission not found");
+
+        if (data.ai_review && data.status === "pending_review") {
+          const r = data.ai_review;
+          setScore(r.score);
+          setNotes(r.notes || "");
+          if (r.holdback) {
+            setUseHoldback(true);
+            setReleasePercent(Math.max(1, Math.min(99, 100 - (r.holdback_percent || 20))));
+            if (r.efficacy_criteria) setCriteria(r.efficacy_criteria);
+          }
         }
       })
+      .catch(() => setError("Submission not found"))
       .finally(() => setLoading(false));
   }, [id]);
-
-  const setActionErr = (msg: string) => {
-    setActionError(msg);
-    setTimeout(() => {
-      document.getElementById("action-error")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }, 50);
-  };
 
   const handleApprove = async () => {
     if (!submission) return;
     setActing(true);
-    setActionError("");
+    setError("");
     try {
       const body: Record<string, unknown> = {
         score,
@@ -92,9 +89,7 @@ export default function ReviewSubmission() {
       await api.post(`/submissions/${submission.id}/approve`, body);
       navigate("/dashboard");
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      const msg = typeof detail === "string" ? detail : "Failed to approve";
-      setActionErr(msg);
+      setError(err.response?.data?.detail || "Failed to approve");
     } finally {
       setActing(false);
     }
@@ -103,13 +98,12 @@ export default function ReviewSubmission() {
   const handleReject = async () => {
     if (!submission) return;
     setActing(true);
-    setActionError("");
+    setError("");
     try {
       await api.post(`/submissions/${submission.id}/reject`, { notes });
       navigate("/dashboard");
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setActionErr(typeof detail === "string" ? detail : "Failed to reject");
+      setError(err.response?.data?.detail || "Failed to reject");
     } finally {
       setActing(false);
     }
@@ -118,15 +112,14 @@ export default function ReviewSubmission() {
   const handleDispute = async () => {
     if (!submission) return;
     setActing(true);
-    setActionError("");
+    setError("");
     try {
       await api.post(`/submissions/${submission.id}/dispute`, {
         reason: notes || "Disputed",
       });
       navigate("/dashboard");
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setActionErr(typeof detail === "string" ? detail : "Failed to dispute");
+      setError(err.response?.data?.detail || "Failed to dispute");
     } finally {
       setActing(false);
     }
@@ -135,7 +128,7 @@ export default function ReviewSubmission() {
   const handleEfficacyReview = async (action: "release" | "refund") => {
     if (!submission) return;
     setActing(true);
-    setActionError("");
+    setError("");
     try {
       await api.post(`/submissions/${submission.id}/efficacy-review`, {
         score: efficacyScore,
@@ -144,8 +137,7 @@ export default function ReviewSubmission() {
       });
       navigate("/dashboard");
     } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setActionErr(typeof detail === "string" ? detail : `Failed to ${action} holdback`);
+      setError(err.response?.data?.detail || `Failed to ${action} holdback`);
     } finally {
       setActing(false);
     }
@@ -162,14 +154,8 @@ export default function ReviewSubmission() {
 
   if (!submission || !bounty) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-20 text-center">
-        <p className="text-gray-500">{error || "Submission not found"}</p>
-        <button
-          onClick={() => navigate(-1)}
-          className="mt-4 text-sm text-navy-600 hover:text-navy-800 underline"
-        >
-          Go back
-        </button>
+      <div className="max-w-4xl mx-auto px-4 py-20 text-center text-gray-500">
+        Submission not found
       </div>
     );
   }
@@ -201,14 +187,26 @@ export default function ReviewSubmission() {
         )}
       </p>
 
+      {error && (
+        <div className="bg-red-50 text-red-700 rounded-lg p-3 mb-4 text-sm">
+          {error}
+        </div>
+      )}
+
       {/* Deliverable */}
       <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
         <h2 className="font-semibold text-navy-900 mb-3">Deliverable</h2>
-        <DeliverableViewer
-          content={deliverable.content || JSON.stringify(deliverable, null, 2)}
-          contentType={deliverable.content_type || "text/plain"}
-          bountyTitle={bounty.title}
-        />
+        <div className="bg-gray-50 rounded-lg p-4 text-sm">
+          {deliverable.content_type === "text/markdown" ? (
+            <div className="prose prose-sm max-w-none">
+              <ReactMarkdown>{deliverable.content || ""}</ReactMarkdown>
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap text-gray-700 font-mono text-xs">
+              {deliverable.content || JSON.stringify(deliverable, null, 2)}
+            </pre>
+          )}
+        </div>
       </div>
 
       {/* Provenance */}
@@ -281,6 +279,62 @@ export default function ReviewSubmission() {
                 <p className="text-amber-600 mt-1">
                   Criteria: {submission.efficacy_criteria}
                 </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Assessment banner */}
+      {isPending && submission.ai_review && (
+        <div className={`border rounded-xl p-5 mb-6 ${
+          submission.ai_review.recommendation === "reject"
+            ? "bg-red-50 border-red-200"
+            : submission.ai_review.recommendation === "partial_approve"
+            ? "bg-amber-50 border-amber-200"
+            : "bg-emerald-50 border-emerald-200"
+        }`}>
+          <div className="flex items-start gap-3">
+            <Bot className={`w-5 h-5 mt-0.5 flex-shrink-0 ${
+              submission.ai_review.recommendation === "reject"
+                ? "text-red-600"
+                : submission.ai_review.recommendation === "partial_approve"
+                ? "text-amber-600"
+                : "text-emerald-600"
+            }`} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <p className="font-semibold text-navy-900 text-sm">
+                  AI Assessment
+                </p>
+                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                  submission.ai_review.recommendation === "reject"
+                    ? "bg-red-100 text-red-700"
+                    : submission.ai_review.recommendation === "partial_approve"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-emerald-100 text-emerald-700"
+                }`}>
+                  {submission.ai_review.recommendation === "partial_approve"
+                    ? "Partial Approve"
+                    : submission.ai_review.recommendation === "reject"
+                    ? "Reject"
+                    : "Approve"
+                  } — Score: {submission.ai_review.score}
+                </span>
+              </div>
+              <p className="text-sm text-gray-700 mb-2">{submission.ai_review.notes}</p>
+              {submission.ai_review.issues && submission.ai_review.issues.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-gray-500 mb-1">Issues flagged:</p>
+                  <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
+                    {submission.ai_review.issues.map((issue, i) => (
+                      <li key={i}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {submission.ai_review.model && (
+                <p className="text-xs text-gray-400 mt-2">Model: {submission.ai_review.model}</p>
               )}
             </div>
           </div>
@@ -418,14 +472,6 @@ export default function ReviewSubmission() {
             className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm mb-4"
           />
 
-          {/* Action error */}
-          {actionError && (
-            <div id="action-error" className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-4 text-sm flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-              {actionError}
-            </div>
-          )}
-
           {/* Action buttons */}
           <div className="flex flex-wrap gap-3">
             <button
@@ -491,13 +537,6 @@ export default function ReviewSubmission() {
             placeholder="Notes on efficacy assessment..."
             className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm mb-4"
           />
-
-          {actionError && (
-            <div id="action-error" className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-4 text-sm flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-              {actionError}
-            </div>
-          )}
 
           <div className="flex gap-3">
             <button

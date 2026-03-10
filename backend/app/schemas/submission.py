@@ -68,5 +68,6 @@ class SubmissionResponse(BaseModel):
     efficacy_criteria: str | None = None
     efficacy_score: int | None = None
     efficacy_reviewed_at: datetime | None = None
+    ai_review: dict | None = None
 
     model_config = {"from_attributes": True}

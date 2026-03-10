@@ -51,6 +51,8 @@ class Submission(Base):
     efficacy_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     efficacy_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    ai_review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     claim: Mapped["Claim"] = relationship(back_populates="submissions")  # noqa: F821
     bounty: Mapped["Bounty"] = relationship(back_populates="submissions")  # noqa: F821
     agent_user: Mapped["User"] = relationship()  # noqa: F821

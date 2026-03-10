@@ -23,6 +23,7 @@ from app.services import (
     bounty_service,
     claim_service,
     exchange as exchange_svc,
+    review_service,
     submission_service,
 )
 from app.services.notification_service import create_notification
@@ -102,6 +103,25 @@ async def submit_work(
         provenance=provenance_dict,
     )
 
+    # AI-assisted review via Haiku
+    ai_review: dict = {}
+    try:
+        ac = bounty.acceptance_criteria or {}
+        ai_review = await review_service.review_deliverable(
+            bounty_title=bounty.title,
+            bounty_description=bounty.description,
+            acceptance_criteria=ac if ac else None,
+            reward_amount=bounty.reward_amount,
+            difficulty=bounty.difficulty.value if bounty.difficulty else "medium",
+            deliverable_content=body.deliverable.content,
+            provenance=provenance_dict,
+        )
+        if ai_review:
+            sub.ai_review = ai_review
+            await db.flush()
+    except Exception as exc:
+        logger.warning("AI review failed (non-fatal): %s", exc)
+
     await create_notification(
         db,
         user_id=bounty.requester_id,
@@ -111,33 +131,103 @@ async def submit_work(
         reference_id=sub.id,
     )
 
-    # Auto-approval: approve immediately and release escrow via the exchange
+    # Auto-approval: use AI review to decide score, holdback, or rejection
     if bounty.auto_approve:
-        if bounty.escrow_id and bounty.escrow_id != "pending_claim":
+        rec = ai_review.get("recommendation", "approve")
+        ai_score = ai_review.get("score", 100)
+        ai_holdback = ai_review.get("holdback", False)
+        ai_holdback_pct = ai_review.get("holdback_percent", 20)
+        ai_notes = ai_review.get("notes", "")
+        has_escrow = bounty.escrow_id and bounty.escrow_id != "pending_claim"
+
+        if rec == "reject":
+            # AI says reject — refund escrow and reject submission
+            if has_escrow:
+                try:
+                    requester = await _get_requester(db, bounty.requester_id)
+                    exchange_svc.refund_escrow(
+                        requester, bounty.escrow_id, reason=ai_notes or "AI review: rejected"
+                    )
+                except Exception as exc:
+                    logger.warning("Escrow refund on AI rejection failed: %s", exc)
+                bounty.escrow_id = None
+
+            await submission_service.reject_submission(
+                db, sub, notes=f"[AI auto-review] {ai_notes}"
+            )
+            await create_notification(
+                db,
+                user_id=user.id,
+                type=NotificationType.SUBMISSION_REJECTED,
+                title="Submission Rejected (Auto-Review)",
+                message=f'Your submission for "{bounty.title}" did not pass automated review. {ai_notes}',
+                reference_id=sub.id,
+            )
+
+        elif rec == "partial_approve" and ai_holdback and has_escrow:
+            # AI says partial — release partial, hold back remainder
+            release_pct = max(1, min(99, 100 - ai_holdback_pct))
+            from datetime import datetime, timedelta, timezone
+            check_at = datetime.now(timezone.utc) + timedelta(days=3)
             try:
                 requester = await _get_requester(db, bounty.requester_id)
-                exchange_svc.release_escrow(requester, bounty.escrow_id)
+                exchange_svc.partial_release(
+                    requester,
+                    escrow_id=bounty.escrow_id,
+                    release_percent=release_pct,
+                    score=ai_score,
+                    efficacy_check_at=check_at.isoformat(),
+                    efficacy_criteria=ai_review.get("efficacy_criteria"),
+                )
             except Exception as exc:
-                logger.warning("Escrow release failed during auto-approve: %s", exc)
+                logger.warning("Partial release failed during auto-approve: %s", exc)
 
-        await submission_service.approve_submission(db, sub, notes="Auto-approved")
+            await submission_service.partially_approve_submission(
+                db,
+                sub,
+                score=ai_score,
+                release_percent=release_pct,
+                efficacy_check_at=check_at,
+                efficacy_criteria=ai_review.get("efficacy_criteria"),
+                notes=f"[AI auto-review] {ai_notes}",
+            )
+            await create_notification(
+                db,
+                user_id=user.id,
+                type=NotificationType.PAYMENT_RELEASED,
+                title="Partial Payment Released (Auto-Review)",
+                message=f'Your work on "{bounty.title}" was partially approved ({release_pct}%). Holdback pending efficacy review.',
+                reference_id=sub.id,
+            )
 
-        await create_notification(
-            db,
-            user_id=bounty.requester_id,
-            type=NotificationType.PAYMENT_RELEASED,
-            title="Payment Released (Auto-Approved)",
-            message=f'Work on "{bounty.title}" was auto-approved and payment released.',
-            reference_id=sub.id,
-        )
-        await create_notification(
-            db,
-            user_id=user.id,
-            type=NotificationType.PAYMENT_RELEASED,
-            title="Payment Received",
-            message=f'Your work on "{bounty.title}" was approved. Payment released.',
-            reference_id=sub.id,
-        )
+        else:
+            # AI says approve (or no AI review available) — full release
+            if has_escrow:
+                try:
+                    requester = await _get_requester(db, bounty.requester_id)
+                    exchange_svc.release_escrow(requester, bounty.escrow_id)
+                except Exception as exc:
+                    logger.warning("Escrow release failed during auto-approve: %s", exc)
+
+            notes = f"[AI auto-review, score: {ai_score}] {ai_notes}" if ai_review else "Auto-approved"
+            await submission_service.approve_submission(db, sub, notes=notes)
+
+            await create_notification(
+                db,
+                user_id=bounty.requester_id,
+                type=NotificationType.PAYMENT_RELEASED,
+                title="Payment Released (Auto-Approved)",
+                message=f'Work on "{bounty.title}" was auto-approved and payment released.',
+                reference_id=sub.id,
+            )
+            await create_notification(
+                db,
+                user_id=user.id,
+                type=NotificationType.PAYMENT_RELEASED,
+                title="Payment Received",
+                message=f'Your work on "{bounty.title}" was approved. Payment released.',
+                reference_id=sub.id,
+            )
 
     await db.commit()
     await db.refresh(sub)
@@ -298,7 +388,28 @@ async def reject_submission(
         raise HTTPException(status_code=400, detail="Submission is not pending review")
 
     notes = body.notes if body else None
+
+    has_escrow = bounty.escrow_id and bounty.escrow_id != "pending_claim"
+    if has_escrow:
+        try:
+            exchange_svc.refund_escrow(
+                user, bounty.escrow_id, reason=notes or "Submission rejected"
+            )
+            logger.info("Refunded escrow %s on rejection", bounty.escrow_id)
+        except Exception as exc:
+            logger.warning("Escrow refund on rejection failed (non-fatal): %s", exc)
+        bounty.escrow_id = None
+
     await submission_service.reject_submission(db, sub, notes=notes)
+
+    await create_notification(
+        db,
+        user_id=sub.agent_user_id,
+        type=NotificationType.SUBMISSION_REJECTED,
+        title="Submission Rejected",
+        message=f'Your submission for "{bounty.title}" was rejected.{f" Notes: {notes}" if notes else ""}',
+        reference_id=sub.id,
+    )
 
     await db.commit()
     await db.refresh(sub)

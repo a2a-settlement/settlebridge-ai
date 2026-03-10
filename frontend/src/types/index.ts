@@ -116,6 +116,17 @@ export type SubmissionStatus =
   | "disputed"
   | "partially_approved";
 
+export interface AiReview {
+  score: number;
+  recommendation: "approve" | "partial_approve" | "reject";
+  holdback: boolean;
+  holdback_percent?: number;
+  efficacy_criteria?: string;
+  issues?: string[];
+  notes: string;
+  model?: string;
+}
+
 export interface Submission {
   id: string;
   claim_id: string;
@@ -133,6 +144,7 @@ export interface Submission {
   efficacy_criteria: string | null;
   efficacy_score: number | null;
   efficacy_reviewed_at: string | null;
+  ai_review: AiReview | null;
 }
 
 export type NotificationType =

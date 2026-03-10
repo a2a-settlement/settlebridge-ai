@@ -18,6 +18,7 @@ class NotificationType(str, enum.Enum):
     DISPUTE_FILED = "dispute_filed"
     DISPUTE_RESOLVED = "dispute_resolved"
     BOUNTY_EXPIRED = "bounty_expired"
+    SUBMISSION_REJECTED = "submission_rejected"
     CLAIM_ABANDONED = "claim_abandoned"
     CONTRACT_CREATED = "contract_created"
     CONTRACT_ACTIVATED = "contract_activated"
