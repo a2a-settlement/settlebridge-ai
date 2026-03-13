@@ -4,6 +4,20 @@ import Layout from "./components/Layout";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+
+// Gateway pages (primary)
+import Overview from "./pages/gateway/Overview";
+import AgentHealth from "./pages/gateway/AgentHealth";
+import AgentDetail from "./pages/gateway/AgentDetail";
+import TrustScores from "./pages/gateway/TrustScores";
+import TransactionFlow from "./pages/gateway/TransactionFlow";
+import AuditLog from "./pages/gateway/AuditLog";
+import PolicyEditor from "./pages/gateway/PolicyEditor";
+import SettlementOverview from "./pages/gateway/SettlementOverview";
+import Alerts from "./pages/gateway/Alerts";
+import GatewayAssist from "./pages/GatewayAssist";
+
+// Marketplace pages (secondary)
 import BountyFeed from "./pages/BountyFeed";
 import BountyDetail from "./pages/BountyDetail";
 import PostBounty from "./pages/PostBounty";
@@ -35,22 +49,42 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<Landing />} />
+      <Route path="/landing" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
       <Route element={<Layout />}>
-        <Route path="/bounties" element={<BountyFeed />} />
-        <Route path="/bounties/:id" element={<BountyDetail />} />
-        <Route path="/agents" element={<AgentDirectory />} />
-        <Route path="/agents/:botId" element={<AgentProfile />} />
-        <Route path="/contracts" element={<ContractList />} />
-        <Route path="/contracts/:id" element={<ContractDetail />} />
-        <Route path="/demo" element={<Demo />} />
-        <Route path="/developers" element={<Developers />} />
-
+        {/* Gateway (primary) */}
+        <Route path="/" element={<Overview />} />
+        <Route path="/agents" element={<AgentHealth />} />
+        <Route path="/agents/:id" element={<AgentDetail />} />
+        <Route path="/trust" element={<TrustScores />} />
+        <Route path="/transactions" element={<TransactionFlow />} />
+        <Route path="/audit" element={<AuditLog />} />
+        <Route path="/policies" element={<PolicyEditor />} />
+        <Route path="/settlement" element={<SettlementOverview />} />
+        <Route path="/alerts" element={<Alerts />} />
         <Route
-          path="/contracts/new"
+          path="/assist"
+          element={
+            <ProtectedRoute>
+              <GatewayAssist />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Marketplace (secondary) */}
+        <Route path="/marketplace" element={<BountyFeed />} />
+        <Route path="/marketplace/bounties" element={<BountyFeed />} />
+        <Route path="/marketplace/bounties/:id" element={<BountyDetail />} />
+        <Route path="/marketplace/agents" element={<AgentDirectory />} />
+        <Route path="/marketplace/agents/:botId" element={<AgentProfile />} />
+        <Route path="/marketplace/contracts" element={<ContractList />} />
+        <Route path="/marketplace/contracts/:id" element={<ContractDetail />} />
+        <Route path="/marketplace/demo" element={<Demo />} />
+        <Route path="/marketplace/developers" element={<Developers />} />
+        <Route
+          path="/marketplace/contracts/new"
           element={
             <ProtectedRoute>
               <CreateContract />
@@ -58,7 +92,7 @@ export default function App() {
           }
         />
         <Route
-          path="/bounties/assist"
+          path="/marketplace/bounties/assist"
           element={
             <ProtectedRoute>
               <BountyAssist />
@@ -66,7 +100,7 @@ export default function App() {
           }
         />
         <Route
-          path="/bounties/new"
+          path="/marketplace/bounties/new"
           element={
             <ProtectedRoute>
               <PostBounty />
@@ -74,7 +108,7 @@ export default function App() {
           }
         />
         <Route
-          path="/dashboard/*"
+          path="/marketplace/dashboard/*"
           element={
             <ProtectedRoute>
               <Dashboard />
@@ -82,7 +116,7 @@ export default function App() {
           }
         />
         <Route
-          path="/dashboard/submissions/:id"
+          path="/marketplace/dashboard/submissions/:id"
           element={
             <ProtectedRoute>
               <ReviewSubmission />
@@ -90,7 +124,7 @@ export default function App() {
           }
         />
         <Route
-          path="/dashboard/claims/:id/submit"
+          path="/marketplace/dashboard/claims/:id/submit"
           element={
             <ProtectedRoute>
               <SubmitWork />
@@ -98,7 +132,7 @@ export default function App() {
           }
         />
         <Route
-          path="/dashboard/settings"
+          path="/marketplace/dashboard/settings"
           element={
             <ProtectedRoute>
               <Settings />

@@ -1,0 +1,93 @@
+replicaCount: 2
+
+gateway:
+  image:
+    repository: settlebridge/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  env:
+    GATEWAY_ENABLED: "true"
+    POLICY_RELOAD_INTERVAL_S: "30"
+    REPUTATION_CACHE_TTL_S: "300"
+    HEALTH_CHECK_INTERVAL_S: "60"
+
+dashboard:
+  image:
+    repository: settlebridge/dashboard
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 5173
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+postgresql:
+  url: "postgresql+asyncpg://settlebridge:settlebridge@postgresql:5432/settlebridge"
+  external: false
+
+redis:
+  url: "redis://redis:6379"
+  external: false
+
+exchange:
+  url: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: gateway.local
+      paths:
+        - path: /api
+          pathType: Prefix
+          service: gateway
+        - path: /health
+          pathType: Exact
+          service: gateway
+        - path: /
+          pathType: Prefix
+          service: dashboard
+  tls: []
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+trustPolicies:
+  default: |
+    version: "1"
+    policies:
+      - name: minimum-reputation
+        match: { all_agents: true }
+        rules:
+          - reputation_gte: 0.3
+      - name: rate-limit
+        match: { all_agents: true }
+        rules:
+          - max_requests_per_minute: 60
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

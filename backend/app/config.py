@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     ASSIST_MAX_TURNS: int = 10
     ASSIST_MAX_TOKENS: int = 4096
 
+    # Gateway
+    REDIS_URL: str = "redis://localhost:6379"
+    GATEWAY_EXCHANGE_URL: str = ""
+    POLICY_RELOAD_INTERVAL_S: int = 30
+    REPUTATION_CACHE_TTL_S: int = 300
+    HEALTH_CHECK_INTERVAL_S: int = 60
+    GATEWAY_ENABLED: bool = True
+
+    @property
+    def effective_exchange_url(self) -> str:
+        return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL
+
     model_config = {"env_file": "../.env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

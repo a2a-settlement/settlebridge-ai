@@ -1,22 +1,44 @@
-import { Link, Outlet, useNavigate } from "react-router-dom";
+import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
-  Search,
-  Bell,
-  Wallet,
   LogOut,
   Menu,
   X,
   Shield,
+  Activity,
+  Users,
+  ArrowRightLeft,
+  FileText,
+  BookOpen,
+  Landmark,
+  Bell,
+  MessageSquare,
+  Store,
 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import NotificationBell from "./NotificationBell";
 import WalletWidget from "./WalletWidget";
 
+const GATEWAY_NAV = [
+  { to: "/", label: "Overview", icon: Activity },
+  { to: "/agents", label: "Agents", icon: Users },
+  { to: "/transactions", label: "Transactions", icon: ArrowRightLeft },
+  { to: "/audit", label: "Audit", icon: FileText },
+  { to: "/policies", label: "Policies", icon: BookOpen },
+  { to: "/settlement", label: "Settlement", icon: Landmark },
+  { to: "/alerts", label: "Alerts", icon: Bell },
+];
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const isActive = (path: string) => {
+    if (path === "/") return location.pathname === "/";
+    return location.pathname.startsWith(path);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -28,63 +50,52 @@ export default function Layout() {
                 <Shield className="w-6 h-6 text-money" />
                 <span>SettleBridge</span>
               </Link>
-              <nav className="hidden md:flex items-center gap-6 text-sm">
-                <Link
-                  to="/bounties"
-                  className="text-gray-300 hover:text-white transition"
-                >
-                  Bounties
-                </Link>
-                <Link
-                  to="/agents"
-                  className="text-gray-300 hover:text-white transition"
-                >
-                  Agents
-                </Link>
-                <Link
-                  to="/contracts"
-                  className="text-gray-300 hover:text-white transition"
-                >
-                  Services
-                </Link>
-                <Link
-                  to="/demo"
-                  className="text-gray-300 hover:text-white transition"
-                >
-                  Demo
-                </Link>
-                <Link
-                  to="/developers"
-                  className="text-gray-300 hover:text-white transition"
-                >
-                  Developers
-                </Link>
-                {user && (
+              <nav className="hidden md:flex items-center gap-1 text-sm">
+                {GATEWAY_NAV.map(({ to, label, icon: Icon }) => (
                   <Link
-                    to="/dashboard"
-                    className="text-gray-300 hover:text-white transition"
+                    key={to}
+                    to={to}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition ${
+                      isActive(to)
+                        ? "bg-white/10 text-white"
+                        : "text-gray-400 hover:text-white hover:bg-white/5"
+                    }`}
                   >
-                    Dashboard
+                    <Icon className="w-3.5 h-3.5" />
+                    {label}
                   </Link>
-                )}
+                ))}
+                <div className="w-px h-5 bg-gray-700 mx-1" />
+                <Link
+                  to="/marketplace"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition ${
+                    location.pathname.startsWith("/marketplace")
+                      ? "bg-white/10 text-white"
+                      : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                  }`}
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  Marketplace
+                </Link>
               </nav>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {user ? (
                 <>
+                  <Link
+                    to="/assist"
+                    className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 hover:text-white transition"
+                    title="Gateway Assist"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                  </Link>
                   <WalletWidget />
                   <NotificationBell />
-                  <Link
-                    to="/bounties/new"
-                    className="hidden sm:inline-flex items-center px-4 py-2 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition"
-                  >
-                    Post Bounty
-                  </Link>
                   <button
                     onClick={() => {
                       logout();
-                      navigate("/");
+                      navigate("/login");
                     }}
                     className="text-gray-400 hover:text-white transition"
                     title="Logout"
@@ -119,59 +130,38 @@ export default function Layout() {
         </div>
 
         {mobileOpen && (
-          <nav className="md:hidden border-t border-navy-800 px-4 py-3 space-y-2">
+          <nav className="md:hidden border-t border-navy-800 px-4 py-3 space-y-1">
+            {GATEWAY_NAV.map(({ to, label, icon: Icon }) => (
+              <Link
+                key={to}
+                to={to}
+                className={`flex items-center gap-2 py-2 px-2 rounded-md text-sm ${
+                  isActive(to) ? "bg-white/10 text-white" : "text-gray-300 hover:text-white"
+                }`}
+                onClick={() => setMobileOpen(false)}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </Link>
+            ))}
+            <div className="border-t border-navy-800 my-2" />
             <Link
-              to="/bounties"
-              className="block text-gray-300 hover:text-white py-1"
+              to="/marketplace"
+              className="flex items-center gap-2 py-2 px-2 rounded-md text-sm text-gray-400 hover:text-white"
               onClick={() => setMobileOpen(false)}
             >
-              Bounties
-            </Link>
-            <Link
-              to="/agents"
-              className="block text-gray-300 hover:text-white py-1"
-              onClick={() => setMobileOpen(false)}
-            >
-              Agents
-            </Link>
-            <Link
-              to="/contracts"
-              className="block text-gray-300 hover:text-white py-1"
-              onClick={() => setMobileOpen(false)}
-            >
-              Services
-            </Link>
-            <Link
-              to="/demo"
-              className="block text-gray-300 hover:text-white py-1"
-              onClick={() => setMobileOpen(false)}
-            >
-              Demo
-            </Link>
-            <Link
-              to="/developers"
-              className="block text-gray-300 hover:text-white py-1"
-              onClick={() => setMobileOpen(false)}
-            >
-              Developers
+              <Store className="w-4 h-4" />
+              Marketplace
             </Link>
             {user && (
-              <>
-                <Link
-                  to="/dashboard"
-                  className="block text-gray-300 hover:text-white py-1"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  Dashboard
-                </Link>
-                <Link
-                  to="/bounties/new"
-                  className="block text-money hover:text-money-dark py-1"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  Post Bounty
-                </Link>
-              </>
+              <Link
+                to="/assist"
+                className="flex items-center gap-2 py-2 px-2 rounded-md text-sm text-gray-400 hover:text-white"
+                onClick={() => setMobileOpen(false)}
+              >
+                <MessageSquare className="w-4 h-4" />
+                Gateway Assist
+              </Link>
             )}
           </nav>
         )}
