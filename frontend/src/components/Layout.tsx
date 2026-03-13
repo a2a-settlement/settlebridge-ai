@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../hooks/useAuth";
+import { useAppConfig } from "../hooks/useAppConfig";
 import NotificationBell from "./NotificationBell";
 import WalletWidget from "./WalletWidget";
 
@@ -31,6 +32,7 @@ const GATEWAY_NAV = [
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const { marketplace_enabled } = useAppConfig();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -65,18 +67,22 @@ export default function Layout() {
                     {label}
                   </Link>
                 ))}
-                <div className="w-px h-5 bg-gray-700 mx-1" />
-                <Link
-                  to="/marketplace"
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition ${
-                    location.pathname.startsWith("/marketplace")
-                      ? "bg-white/10 text-white"
-                      : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
-                  }`}
-                >
-                  <Store className="w-3.5 h-3.5" />
-                  Marketplace
-                </Link>
+                {marketplace_enabled && (
+                  <>
+                    <div className="w-px h-5 bg-gray-700 mx-1" />
+                    <Link
+                      to="/marketplace"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition ${
+                        location.pathname.startsWith("/marketplace")
+                          ? "bg-white/10 text-white"
+                          : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                      }`}
+                    >
+                      <Store className="w-3.5 h-3.5" />
+                      Marketplace
+                    </Link>
+                  </>
+                )}
               </nav>
             </div>
 
@@ -144,15 +150,19 @@ export default function Layout() {
                 {label}
               </Link>
             ))}
-            <div className="border-t border-navy-800 my-2" />
-            <Link
-              to="/marketplace"
-              className="flex items-center gap-2 py-2 px-2 rounded-md text-sm text-gray-400 hover:text-white"
-              onClick={() => setMobileOpen(false)}
-            >
-              <Store className="w-4 h-4" />
-              Marketplace
-            </Link>
+            {marketplace_enabled && (
+              <>
+                <div className="border-t border-navy-800 my-2" />
+                <Link
+                  to="/marketplace"
+                  className="flex items-center gap-2 py-2 px-2 rounded-md text-sm text-gray-400 hover:text-white"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  <Store className="w-4 h-4" />
+                  Marketplace
+                </Link>
+              </>
+            )}
             {user && (
               <Link
                 to="/assist"

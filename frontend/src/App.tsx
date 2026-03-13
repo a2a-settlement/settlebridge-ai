@@ -1,11 +1,12 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
+import { AppConfigContext, useAppConfig, useAppConfigLoader } from "./hooks/useAppConfig";
 import Layout from "./components/Layout";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 
-// Gateway pages (primary)
 import Overview from "./pages/gateway/Overview";
 import AgentHealth from "./pages/gateway/AgentHealth";
 import AgentDetail from "./pages/gateway/AgentDetail";
@@ -17,22 +18,21 @@ import SettlementOverview from "./pages/gateway/SettlementOverview";
 import Alerts from "./pages/gateway/Alerts";
 import GatewayAssist from "./pages/GatewayAssist";
 
-// Marketplace pages (secondary)
-import BountyFeed from "./pages/BountyFeed";
-import BountyDetail from "./pages/BountyDetail";
-import PostBounty from "./pages/PostBounty";
-import Dashboard from "./pages/Dashboard";
-import ReviewSubmission from "./pages/ReviewSubmission";
-import SubmitWork from "./pages/SubmitWork";
-import AgentDirectory from "./pages/AgentDirectory";
-import AgentProfile from "./pages/AgentProfile";
-import Settings from "./pages/Settings";
-import Demo from "./pages/Demo";
-import Developers from "./pages/Developers";
-import ContractList from "./pages/ContractList";
-import ContractDetail from "./pages/ContractDetail";
-import CreateContract from "./pages/CreateContract";
-import BountyAssist from "./pages/BountyAssist";
+const BountyFeed = lazy(() => import("./pages/BountyFeed"));
+const BountyDetail = lazy(() => import("./pages/BountyDetail"));
+const PostBounty = lazy(() => import("./pages/PostBounty"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const ReviewSubmission = lazy(() => import("./pages/ReviewSubmission"));
+const SubmitWork = lazy(() => import("./pages/SubmitWork"));
+const AgentDirectory = lazy(() => import("./pages/AgentDirectory"));
+const AgentProfile = lazy(() => import("./pages/AgentProfile"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Demo = lazy(() => import("./pages/Demo"));
+const Developers = lazy(() => import("./pages/Developers"));
+const ContractList = lazy(() => import("./pages/ContractList"));
+const ContractDetail = lazy(() => import("./pages/ContractDetail"));
+const CreateContract = lazy(() => import("./pages/CreateContract"));
+const BountyAssist = lazy(() => import("./pages/BountyAssist"));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -46,7 +46,55 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export default function App() {
+function MarketplaceRoutes() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20 text-gray-400">Loading...</div>}>
+      <Routes>
+        <Route path="/" element={<BountyFeed />} />
+        <Route path="/bounties" element={<BountyFeed />} />
+        <Route path="/bounties/:id" element={<BountyDetail />} />
+        <Route path="/agents" element={<AgentDirectory />} />
+        <Route path="/agents/:botId" element={<AgentProfile />} />
+        <Route path="/contracts" element={<ContractList />} />
+        <Route path="/contracts/:id" element={<ContractDetail />} />
+        <Route path="/demo" element={<Demo />} />
+        <Route path="/developers" element={<Developers />} />
+        <Route
+          path="/contracts/new"
+          element={<ProtectedRoute><CreateContract /></ProtectedRoute>}
+        />
+        <Route
+          path="/bounties/assist"
+          element={<ProtectedRoute><BountyAssist /></ProtectedRoute>}
+        />
+        <Route
+          path="/bounties/new"
+          element={<ProtectedRoute><PostBounty /></ProtectedRoute>}
+        />
+        <Route
+          path="/dashboard/*"
+          element={<ProtectedRoute><Dashboard /></ProtectedRoute>}
+        />
+        <Route
+          path="/dashboard/submissions/:id"
+          element={<ProtectedRoute><ReviewSubmission /></ProtectedRoute>}
+        />
+        <Route
+          path="/dashboard/claims/:id/submit"
+          element={<ProtectedRoute><SubmitWork /></ProtectedRoute>}
+        />
+        <Route
+          path="/dashboard/settings"
+          element={<ProtectedRoute><Settings /></ProtectedRoute>}
+        />
+      </Routes>
+    </Suspense>
+  );
+}
+
+function AppRoutes() {
+  const { marketplace_enabled } = useAppConfig();
+
   return (
     <Routes>
       <Route path="/landing" element={<Landing />} />
@@ -54,92 +102,39 @@ export default function App() {
       <Route path="/register" element={<Register />} />
 
       <Route element={<Layout />}>
-        {/* Gateway (primary) */}
-        <Route path="/" element={<Overview />} />
-        <Route path="/agents" element={<AgentHealth />} />
-        <Route path="/agents/:id" element={<AgentDetail />} />
-        <Route path="/trust" element={<TrustScores />} />
-        <Route path="/transactions" element={<TransactionFlow />} />
-        <Route path="/audit" element={<AuditLog />} />
-        <Route path="/policies" element={<PolicyEditor />} />
-        <Route path="/settlement" element={<SettlementOverview />} />
-        <Route path="/alerts" element={<Alerts />} />
-        <Route
-          path="/assist"
-          element={
-            <ProtectedRoute>
-              <GatewayAssist />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
+        <Route path="/agents" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
+        <Route path="/agents/:id" element={<ProtectedRoute><AgentDetail /></ProtectedRoute>} />
+        <Route path="/trust" element={<ProtectedRoute><TrustScores /></ProtectedRoute>} />
+        <Route path="/transactions" element={<ProtectedRoute><TransactionFlow /></ProtectedRoute>} />
+        <Route path="/audit" element={<ProtectedRoute><AuditLog /></ProtectedRoute>} />
+        <Route path="/policies" element={<ProtectedRoute><PolicyEditor /></ProtectedRoute>} />
+        <Route path="/settlement" element={<ProtectedRoute><SettlementOverview /></ProtectedRoute>} />
+        <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
+        <Route path="/assist" element={<ProtectedRoute><GatewayAssist /></ProtectedRoute>} />
 
-        {/* Marketplace (secondary) */}
-        <Route path="/marketplace" element={<BountyFeed />} />
-        <Route path="/marketplace/bounties" element={<BountyFeed />} />
-        <Route path="/marketplace/bounties/:id" element={<BountyDetail />} />
-        <Route path="/marketplace/agents" element={<AgentDirectory />} />
-        <Route path="/marketplace/agents/:botId" element={<AgentProfile />} />
-        <Route path="/marketplace/contracts" element={<ContractList />} />
-        <Route path="/marketplace/contracts/:id" element={<ContractDetail />} />
-        <Route path="/marketplace/demo" element={<Demo />} />
-        <Route path="/marketplace/developers" element={<Developers />} />
-        <Route
-          path="/marketplace/contracts/new"
-          element={
-            <ProtectedRoute>
-              <CreateContract />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/bounties/assist"
-          element={
-            <ProtectedRoute>
-              <BountyAssist />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/bounties/new"
-          element={
-            <ProtectedRoute>
-              <PostBounty />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/dashboard/*"
-          element={
-            <ProtectedRoute>
-              <Dashboard />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/dashboard/submissions/:id"
-          element={
-            <ProtectedRoute>
-              <ReviewSubmission />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/dashboard/claims/:id/submit"
-          element={
-            <ProtectedRoute>
-              <SubmitWork />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/marketplace/dashboard/settings"
-          element={
-            <ProtectedRoute>
-              <Settings />
-            </ProtectedRoute>
-          }
-        />
+        {marketplace_enabled && (
+          <Route path="/marketplace/*" element={<MarketplaceRoutes />} />
+        )}
       </Route>
     </Routes>
+  );
+}
+
+export default function App() {
+  const { config, ready } = useAppConfigLoader();
+
+  if (!ready) {
+    return (
+      <div className="flex items-center justify-center min-h-screen text-gray-400">
+        Loading...
+      </div>
+    );
+  }
+
+  return (
+    <AppConfigContext.Provider value={config}>
+      <AppRoutes />
+    </AppConfigContext.Provider>
   );
 }

@@ -15,6 +15,7 @@ gateway:
       memory: 1Gi
   env:
     GATEWAY_ENABLED: "true"
+    MARKETPLACE_ENABLED: "false"
     POLICY_RELOAD_INTERVAL_S: "30"
     REPUTATION_CACHE_TTL_S: "300"
     HEALTH_CHECK_INTERVAL_S: "60"

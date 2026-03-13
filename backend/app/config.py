@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     ASSIST_MAX_TURNS: int = 10
     ASSIST_MAX_TOKENS: int = 4096
 
+    MARKETPLACE_ENABLED: bool = False
+
     # Gateway
     REDIS_URL: str = "redis://localhost:6379"
     GATEWAY_EXCHANGE_URL: str = ""

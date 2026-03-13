@@ -249,6 +249,8 @@ Resources:
               Value: !Sub "redis://${RedisCluster.RedisEndpoint.Address}:6379"
             - Name: GATEWAY_ENABLED
               Value: "true"
+            - Name: MARKETPLACE_ENABLED
+              Value: "false"
           LogConfiguration:
             LogDriver: awslogs
             Options:

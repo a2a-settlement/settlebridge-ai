@@ -10,6 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.middleware.auth import get_current_user
+from app.models.user import User
 from app.models.gateway import (
     AlertEvent,
     AlertRule,
@@ -53,7 +55,10 @@ def set_gateway_components(components: dict[str, Any]) -> None:
 
 
 @router.get("/health", response_model=GatewayHealthResponse)
-async def gateway_health(db: AsyncSession = Depends(get_db)):
+async def gateway_health(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     health_mon = _gateway_components.get("health_monitor")
     startup = _gateway_components.get("startup")
 
@@ -89,7 +94,7 @@ async def gateway_health(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/agents", response_model=list[AgentHealthResponse])
-async def list_agents():
+async def list_agents(_user: User = Depends(get_current_user)):
     health_mon = _gateway_components.get("health_monitor")
     if not health_mon:
         return []
@@ -112,7 +117,11 @@ async def list_agents():
 
 
 @router.get("/agents/{agent_id}/history", response_model=AgentDetailResponse)
-async def agent_detail(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def agent_detail(
+    agent_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     health_mon = _gateway_components.get("health_monitor")
     rep_cache = _gateway_components.get("reputation_cache")
 
@@ -158,6 +167,7 @@ async def list_transactions(
     decision: PolicyDecisionType | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     audit = _gateway_components.get("audit_logger")
@@ -183,6 +193,7 @@ async def list_audit(
     decision: PolicyDecisionType | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     audit = _gateway_components.get("audit_logger")
@@ -201,6 +212,7 @@ async def list_audit(
 @router.get("/audit/export")
 async def export_audit(
     format: str = Query("json", regex="^(json|csv)$"),
+    _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     audit = _gateway_components.get("audit_logger")
@@ -216,7 +228,10 @@ async def export_audit(
 
 
 @router.get("/policies", response_model=list[TrustPolicyResponse])
-async def list_policies(db: AsyncSession = Depends(get_db)):
+async def list_policies(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(TrustPolicy).where(TrustPolicy.active.is_(True)).order_by(TrustPolicy.updated_at.desc())
     )
@@ -224,7 +239,11 @@ async def list_policies(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/policies", response_model=TrustPolicyResponse, status_code=201)
-async def create_policy(body: TrustPolicyCreate, db: AsyncSession = Depends(get_db)):
+async def create_policy(
+    body: TrustPolicyCreate,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     from app.gateway.policy_engine import PolicyEngine
 
     valid, errors = PolicyEngine.validate_yaml(body.yaml_content)
@@ -250,7 +269,11 @@ async def create_policy(body: TrustPolicyCreate, db: AsyncSession = Depends(get_
 
 
 @router.delete("/policies/{policy_id}")
-async def deactivate_policy(policy_id: str, db: AsyncSession = Depends(get_db)):
+async def deactivate_policy(
+    policy_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     import uuid
     from fastapi import HTTPException
 
@@ -266,7 +289,11 @@ async def deactivate_policy(policy_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/policies/validate", response_model=PolicyValidationResult)
-async def validate_policy(body: TrustPolicyCreate, db: AsyncSession = Depends(get_db)):
+async def validate_policy(
+    body: TrustPolicyCreate,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     from app.gateway.policy_engine import PolicyEngine
 
     valid, errors = PolicyEngine.validate_yaml(body.yaml_content)
@@ -284,7 +311,7 @@ async def validate_policy(body: TrustPolicyCreate, db: AsyncSession = Depends(ge
 
 
 @router.get("/settlement/overview", response_model=SettlementOverviewResponse)
-async def settlement_overview():
+async def settlement_overview(_user: User = Depends(get_current_user)):
     startup = _gateway_components.get("startup")
     if not startup or not startup.exchange_client:
         return SettlementOverviewResponse(
@@ -313,7 +340,10 @@ async def settlement_overview():
 
 
 @router.get("/alerts", response_model=AlertListResponse)
-async def list_alerts(db: AsyncSession = Depends(get_db)):
+async def list_alerts(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     events_q = await db.execute(
         select(AlertEvent)
         .where(AlertEvent.resolved_at.is_(None))
@@ -330,7 +360,11 @@ async def list_alerts(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/alerts/rules", response_model=AlertRuleResponse, status_code=201)
-async def create_alert_rule(body: AlertRuleCreate, db: AsyncSession = Depends(get_db)):
+async def create_alert_rule(
+    body: AlertRuleCreate,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     rule = AlertRule(
         name=body.name,
         condition_type=body.condition_type,
@@ -346,7 +380,10 @@ async def create_alert_rule(body: AlertRuleCreate, db: AsyncSession = Depends(ge
 
 @router.put("/alerts/rules/{rule_id}", response_model=AlertRuleResponse)
 async def update_alert_rule(
-    rule_id: str, body: AlertRuleUpdate, db: AsyncSession = Depends(get_db)
+    rule_id: str,
+    body: AlertRuleUpdate,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     import uuid
     from fastapi import HTTPException
@@ -368,7 +405,10 @@ async def update_alert_rule(
 
 
 @router.get("/metrics", response_model=GatewayMetricsResponse)
-async def gateway_metrics(db: AsyncSession = Depends(get_db)):
+async def gateway_metrics(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     health_mon = _gateway_components.get("health_monitor")
     rep_cache = _gateway_components.get("reputation_cache")
 
