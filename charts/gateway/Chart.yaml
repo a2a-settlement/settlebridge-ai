@@ -2,8 +2,8 @@ apiVersion: v2
 name: settlebridge-gateway
 description: SettleBridge Gateway -- agent-to-agent trust policy enforcement
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 1.0.0
+appVersion: "1.0.0"
 keywords:
   - settlebridge
   - gateway
