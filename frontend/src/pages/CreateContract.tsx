@@ -8,7 +8,7 @@ const SCHEDULE_PRESETS = [
   { label: "Every 6 hours", cron: "0 */6 * * *", desc: "Every 6 hours" },
   { label: "Daily (9 AM UTC)", cron: "0 9 * * *", desc: "Every day at 9:00 AM UTC" },
   { label: "Weekly (Mon 9 AM)", cron: "0 9 * * 1", desc: "Every Monday at 9:00 AM UTC" },
-  { label: "Bi-weekly (Mon 9 AM)", cron: "0 9 * * 1", desc: "Every other Monday at 9:00 AM UTC" },
+  { label: "Bi-monthly (1st & 15th)", cron: "0 9 1,15 * *", desc: "1st and 15th of every month at 9:00 AM UTC" },
   { label: "Monthly (1st, 9 AM)", cron: "0 9 1 * *", desc: "1st of every month at 9:00 AM UTC" },
   { label: "Custom", cron: "", desc: "" },
 ];
