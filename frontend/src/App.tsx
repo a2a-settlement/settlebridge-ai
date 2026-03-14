@@ -103,6 +103,7 @@ function AppRoutes() {
 
       <Route element={<Layout />}>
         <Route path="/" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
+        <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/agents" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
         <Route path="/agents/:id" element={<ProtectedRoute><AgentDetail /></ProtectedRoute>} />
         <Route path="/trust" element={<ProtectedRoute><TrustScores /></ProtectedRoute>} />
@@ -116,6 +117,8 @@ function AppRoutes() {
         {marketplace_enabled && (
           <Route path="/marketplace/*" element={<MarketplaceRoutes />} />
         )}
+
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   );
