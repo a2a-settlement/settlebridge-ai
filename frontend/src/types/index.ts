@@ -97,6 +97,13 @@ export type ClaimStatus =
   | "abandoned"
   | "expired";
 
+export interface AttestationFreshness {
+  identity_verified_days_ago: number | null;
+  identity_status: "active" | "expired" | "revoked" | "unknown";
+  capability_status: "active" | "expired" | "revoked" | "unknown";
+  attestation_valid: boolean;
+}
+
 export interface Claim {
   id: string;
   bounty_id: string;
@@ -107,6 +114,7 @@ export interface Claim {
   submitted_at: string | null;
   resolved_at: string | null;
   abandon_reason: string | null;
+  attestation_freshness?: AttestationFreshness | null;
 }
 
 export type SubmissionStatus =

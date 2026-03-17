@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -17,6 +18,7 @@ from app.models.gateway import ReputationSnapshot
 logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = "gw:rep:"
+ATTESTATION_PREFIX = "gw:att:"
 
 
 class ReputationCache:
@@ -91,6 +93,79 @@ class ReputationCache:
         except Exception:
             logger.debug("Exchange fetch failed for %s", agent_id)
             return None
+
+    async def get_attestation_freshness(self, agent_id: str) -> dict | None:
+        """Return cached attestation freshness or fetch from exchange."""
+        if self._redis:
+            try:
+                val = await self._redis.get(f"{ATTESTATION_PREFIX}{agent_id}")
+                if val is not None:
+                    return json.loads(val)
+            except Exception:
+                logger.debug("Redis attestation get failed for %s", agent_id)
+
+        freshness = await self._fetch_attestation_freshness(agent_id)
+        if freshness is not None:
+            await self._cache_attestation_freshness(agent_id, freshness)
+        return freshness
+
+    async def _fetch_attestation_freshness(self, agent_id: str) -> dict | None:
+        if not self._exchange_client:
+            return None
+        try:
+            resp = self._exchange_client.get(
+                "/exchange/attestations",
+                params={"account_id": agent_id, "status": "active"},
+            )
+            attestations = resp.json() if hasattr(resp, "json") else resp
+            if isinstance(attestations, dict):
+                attestations = attestations.get("attestations", [])
+
+            now = datetime.now(timezone.utc)
+            identity_att = next(
+                (a for a in attestations if a.get("attestation_type") == "identity"),
+                None,
+            )
+            capability_att = next(
+                (a for a in attestations if a.get("attestation_type") == "capability"),
+                None,
+            )
+
+            def _status(att: dict | None) -> str:
+                if att is None:
+                    return "unknown"
+                return att.get("status", "unknown")
+
+            identity_days = None
+            if identity_att and identity_att.get("issued_at"):
+                issued = datetime.fromisoformat(identity_att["issued_at"])
+                identity_days = (now - issued).days
+
+            return {
+                "identity_verified_days_ago": identity_days,
+                "identity_status": _status(identity_att),
+                "capability_status": _status(capability_att),
+                "attestation_valid": (
+                    _status(identity_att) == "active"
+                    and _status(capability_att) in ("active", "unknown")
+                ),
+            }
+        except Exception:
+            logger.debug("Exchange attestation fetch failed for %s", agent_id)
+            return None
+
+    async def _cache_attestation_freshness(
+        self, agent_id: str, freshness: dict
+    ) -> None:
+        if self._redis:
+            try:
+                await self._redis.set(
+                    f"{ATTESTATION_PREFIX}{agent_id}",
+                    json.dumps(freshness),
+                    ex=settings.REPUTATION_CACHE_TTL_S,
+                )
+            except Exception:
+                logger.debug("Redis attestation set failed for %s", agent_id)
 
     async def snapshot(self, agent_id: str, bot_id: str, score: float) -> None:
         async with async_session() as session:

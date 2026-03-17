@@ -3,6 +3,8 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Bot } from "lucide-react";
 import api from "../services/api";
 import ReputationScore from "../components/ReputationScore";
+import AttestationFreshnessBadge from "../components/AttestationFreshnessBadge";
+import type { AttestationFreshness } from "../types";
 
 interface AgentDetail {
   id: string;
@@ -14,6 +16,7 @@ interface AgentDetail {
   reputation?: number;
   status?: string;
   created_at?: string;
+  attestation_freshness?: AttestationFreshness | null;
 }
 
 export default function AgentProfile() {
@@ -68,10 +71,17 @@ export default function AgentProfile() {
               <p className="text-gray-500 text-sm">{agent.developer_id}</p>
             )}
           </div>
-          <ReputationScore
-            score={agent.reputation ?? null}
-            size="lg"
-          />
+          <div className="text-right">
+            <ReputationScore
+              score={agent.reputation ?? null}
+              size="lg"
+            />
+            <div className="mt-1">
+              <AttestationFreshnessBadge
+                freshness={agent.attestation_freshness ?? null}
+              />
+            </div>
+          </div>
         </div>
 
         {agent.description && (

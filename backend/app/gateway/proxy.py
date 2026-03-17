@@ -12,7 +12,7 @@ from shim.models import ProxyRequest, ProxyResponse
 from shim.proxy import ShimProxy
 
 from app.database import async_session
-from app.gateway.policy_engine import Action, GatewayRequest, PolicyEngine
+from app.gateway.policy_engine import Action, AttestationFreshness, GatewayRequest, PolicyEngine
 from app.models.gateway import PolicyDecisionType
 
 if TYPE_CHECKING:
@@ -59,12 +59,25 @@ class GatewayProxy(ShimProxy):
             rep_score = await self._rep_cache.get(source)
             span.set_attribute("gateway.reputation_score", rep_score or -1)
 
+            # Step 1b: Attestation freshness lookup
+            att_freshness: AttestationFreshness | None = None
+            raw_freshness = await self._rep_cache.get_attestation_freshness(source)
+            if raw_freshness:
+                att_freshness = AttestationFreshness(
+                    identity_verified_days_ago=raw_freshness.get("identity_verified_days_ago"),
+                    identity_status=raw_freshness.get("identity_status", "unknown"),
+                    capability_status=raw_freshness.get("capability_status", "unknown"),
+                    attestation_valid=raw_freshness.get("attestation_valid", False),
+                )
+                span.set_attribute("gateway.attestation_valid", att_freshness.attestation_valid)
+
             # Step 2: Policy check
             gw_req = GatewayRequest(
                 source_agent=source,
                 target_agent=target,
                 escrow_id=request.escrow_id,
                 reputation_score=rep_score,
+                attestation_freshness=att_freshness,
             )
             decision = self._policy_engine.evaluate(gw_req)
             span.set_attribute("gateway.policy_decision", decision.action.value)

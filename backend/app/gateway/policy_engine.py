@@ -38,6 +38,16 @@ class PolicyDecision:
 
 
 @dataclass
+class AttestationFreshness:
+    """Attestation lifecycle metadata resolved from the exchange."""
+
+    identity_verified_days_ago: int | None = None
+    identity_status: str = "unknown"
+    capability_status: str = "unknown"
+    attestation_valid: bool = False
+
+
+@dataclass
 class GatewayRequest:
     """Normalised request context for policy evaluation."""
 
@@ -47,6 +57,7 @@ class GatewayRequest:
     escrow_amount: float = 0.0
     reputation_score: float | None = None
     attestation_level: str | None = None
+    attestation_freshness: AttestationFreshness | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -182,6 +193,25 @@ class PolicyEngine:
             allowed = req.metadata.get("counterparty_allowed", True)
             if v and not allowed:
                 return "Counterparty not on allowlist"
+
+        elif f == "require_valid_attestation":
+            if v and req.attestation_freshness:
+                if not req.attestation_freshness.attestation_valid:
+                    return (
+                        f"Agent attestation invalid "
+                        f"(identity={req.attestation_freshness.identity_status}, "
+                        f"capability={req.attestation_freshness.capability_status})"
+                    )
+            elif v and not req.attestation_freshness:
+                return "No attestation freshness data available"
+
+        elif f == "max_identity_age_days":
+            if req.attestation_freshness and req.attestation_freshness.identity_verified_days_ago is not None:
+                if req.attestation_freshness.identity_verified_days_ago > v:
+                    return (
+                        f"Identity verified {req.attestation_freshness.identity_verified_days_ago}d ago "
+                        f"> maximum {v}d"
+                    )
 
         return None
 
