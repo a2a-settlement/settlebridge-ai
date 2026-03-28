@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,8 @@ from app.schemas.gateway import (
     ClaimAgentRequest,
     ExchangeAgentSearchResult,
     GatewayAgentResponse,
+    RegisterUtilityAgentRequest,
+    RegisterUtilityAgentResponse,
     GatewayHealthResponse,
     GatewayMetricsResponse,
     PolicyValidationResult,
@@ -174,6 +176,137 @@ async def agent_detail(
 # ---- Agent Claims ----
 
 
+async def _claim_gateway_agent(
+    db: AsyncSession,
+    *,
+    exchange_account_id: str,
+    agent_api_key: str | None,
+) -> GatewayAgent:
+    """Create gateway_agents row, optional exchange claim, health monitor (shared by claim + register)."""
+    from fastapi import HTTPException
+    import httpx
+    from a2a_settlement.client import SettlementExchangeClient
+
+    existing = await db.execute(
+        select(GatewayAgent).where(
+            GatewayAgent.exchange_account_id == exchange_account_id,
+            GatewayAgent.status == "active",
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail="Agent already claimed by this gateway")
+
+    client = SettlementExchangeClient(base_url=settings.effective_exchange_url)
+    try:
+        acct = client.get_account(account_id=exchange_account_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Agent not found on exchange")
+
+    bot_name = acct.get("bot_name", "")
+    description = acct.get("description")
+    skills = acct.get("skills", [])
+
+    exchange_claim_id = None
+    verified = False
+    gw_api_key = settings.GATEWAY_EXCHANGE_API_KEY
+    if gw_api_key:
+        claim_url = f"{settings.effective_exchange_url.rstrip('/')}/v1/accounts/{exchange_account_id}/claim"
+        claim_payload: dict[str, str] = {}
+        if agent_api_key:
+            claim_payload["agent_api_key"] = agent_api_key
+        try:
+            resp = httpx.post(
+                claim_url,
+                json=claim_payload or None,
+                headers={"Authorization": f"Bearer {gw_api_key}"},
+                timeout=10,
+            )
+            if resp.status_code == 201:
+                data = resp.json()
+                exchange_claim_id = data.get("claim_id")
+                verified = data.get("verified", False)
+        except Exception:
+            pass
+
+    agent = GatewayAgent(
+        exchange_account_id=exchange_account_id,
+        bot_name=bot_name,
+        description=description,
+        skills=skills,
+        exchange_claim_id=exchange_claim_id,
+        verified=verified,
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    health_mon = _gateway_components.get("health_monitor")
+    rep_cache = _gateway_components.get("reputation_cache")
+    if health_mon:
+        health_mon.register_agent(exchange_account_id, bot_id=bot_name)
+        health_mon.mark_alive(exchange_account_id)
+    if rep_cache:
+        reputation = acct.get("reputation")
+        if reputation is not None:
+            await rep_cache.set(exchange_account_id, float(reputation))
+
+    return agent
+
+
+@router.post("/agents/register", response_model=RegisterUtilityAgentResponse, status_code=201)
+async def register_utility_agent_via_gateway(
+    request: Request,
+    body: RegisterUtilityAgentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Register on the settlement exchange and claim on this gateway in one step (provisioning secret)."""
+    from fastapi import HTTPException
+    from a2a_settlement.client import SettlementExchangeClient
+
+    secret = request.headers.get("X-SettleBridge-Registration-Secret", "")
+    if not settings.UTILITY_AGENT_REGISTRATION_SECRET or secret != settings.UTILITY_AGENT_REGISTRATION_SECRET:
+        raise HTTPException(
+            status_code=403,
+            detail="Utility agent registration is disabled or the registration secret is invalid",
+        )
+    if not settings.GATEWAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Gateway is disabled")
+
+    ex = SettlementExchangeClient(base_url=settings.effective_exchange_url)
+    try:
+        r = ex.register_account(
+            bot_name=body.bot_name,
+            developer_id=body.developer_id,
+            developer_name=body.developer_name,
+            contact_email=body.contact_email,
+            description=body.description,
+            skills=body.skills,
+            daily_spend_limit=body.daily_spend_limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Exchange registration failed: {exc}") from exc
+
+    acc = r.get("account") or {}
+    account_id = acc.get("id")
+    api_key = r.get("api_key")
+    if not account_id or not api_key:
+        raise HTTPException(status_code=502, detail="Exchange returned an incomplete registration response")
+
+    agent = await _claim_gateway_agent(
+        db,
+        exchange_account_id=account_id,
+        agent_api_key=api_key,
+    )
+    return RegisterUtilityAgentResponse(
+        account_id=account_id,
+        api_key=api_key,
+        bot_name=agent.bot_name,
+        gateway_row_id=agent.id,
+        description=agent.description,
+        skills=agent.skills,
+    )
+
+
 @router.get("/agents/claimed", response_model=list[GatewayAgentResponse])
 async def list_claimed_agents(
     _user: User = Depends(get_current_user),
@@ -191,75 +324,11 @@ async def claim_agent(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from fastapi import HTTPException
-    from app.config import settings
-    from a2a_settlement.client import SettlementExchangeClient
-
-    existing = await db.execute(
-        select(GatewayAgent).where(
-            GatewayAgent.exchange_account_id == body.exchange_account_id,
-            GatewayAgent.status == "active",
-        )
-    )
-    if existing.scalars().first():
-        raise HTTPException(status_code=409, detail="Agent already claimed by this gateway")
-
-    client = SettlementExchangeClient(base_url=settings.A2A_EXCHANGE_URL)
-    try:
-        acct = client.get_account(account_id=body.exchange_account_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Agent not found on exchange")
-
-    bot_name = acct.get("bot_name", "")
-    description = acct.get("description")
-    skills = acct.get("skills", [])
-
-    exchange_claim_id = None
-    verified = False
-    startup = _gateway_components.get("startup")
-    gw_api_key = settings.GATEWAY_EXCHANGE_API_KEY
-    if gw_api_key:
-        import httpx
-        claim_url = f"{settings.effective_exchange_url.rstrip('/')}/v1/accounts/{body.exchange_account_id}/claim"
-        claim_payload = {}
-        if body.agent_api_key:
-            claim_payload["agent_api_key"] = body.agent_api_key
-        try:
-            resp = httpx.post(
-                claim_url,
-                json=claim_payload or None,
-                headers={"Authorization": f"Bearer {gw_api_key}"},
-                timeout=10,
-            )
-            if resp.status_code == 201:
-                data = resp.json()
-                exchange_claim_id = data.get("claim_id")
-                verified = data.get("verified", False)
-        except Exception:
-            pass
-
-    agent = GatewayAgent(
+    agent = await _claim_gateway_agent(
+        db,
         exchange_account_id=body.exchange_account_id,
-        bot_name=bot_name,
-        description=description,
-        skills=skills,
-        exchange_claim_id=exchange_claim_id,
-        verified=verified,
+        agent_api_key=body.agent_api_key,
     )
-    db.add(agent)
-    await db.commit()
-    await db.refresh(agent)
-
-    health_mon = _gateway_components.get("health_monitor")
-    rep_cache = _gateway_components.get("reputation_cache")
-    if health_mon:
-        health_mon.register_agent(body.exchange_account_id, bot_id=bot_name)
-        health_mon.mark_alive(body.exchange_account_id)
-    if rep_cache:
-        reputation = acct.get("reputation")
-        if reputation is not None:
-            await rep_cache.set(body.exchange_account_id, float(reputation))
-
     return GatewayAgentResponse.model_validate(agent)
 
 

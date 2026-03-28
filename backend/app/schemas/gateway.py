@@ -152,6 +152,27 @@ class AlertListResponse(BaseModel):
 # --- Gateway Agent Claims ---
 
 
+class RegisterUtilityAgentRequest(BaseModel):
+    """Register a new exchange provider bot and claim it on this gateway (orchestrated)."""
+
+    bot_name: str = Field(..., min_length=1)
+    developer_id: str = Field(..., min_length=1)
+    developer_name: str = Field(..., min_length=1)
+    contact_email: str = Field(..., min_length=3)
+    description: str | None = None
+    skills: list[str] | None = None
+    daily_spend_limit: int | None = None
+
+
+class RegisterUtilityAgentResponse(BaseModel):
+    account_id: str
+    api_key: str
+    bot_name: str
+    gateway_row_id: uuid.UUID
+    description: str | None = None
+    skills: list[str] | None = None
+
+
 class ClaimAgentRequest(BaseModel):
     exchange_account_id: str = Field(..., min_length=1)
     agent_api_key: str | None = Field(None, description="Agent's exchange API key for verified claims")

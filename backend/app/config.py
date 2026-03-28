@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     HEALTH_CHECK_INTERVAL_S: int = 60
     GATEWAY_ENABLED: bool = True
 
+    # Shared secret for POST /api/gateway/agents/register (utility agents / provisioning).
+    # If empty, that route rejects all requests.
+    UTILITY_AGENT_REGISTRATION_SECRET: str = ""
+
     @property
     def effective_exchange_url(self) -> str:
         return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL
