@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Users, Search } from "lucide-react";
+import { Users, Search, ShieldCheck } from "lucide-react";
 import api from "../services/api";
 import ReputationScore from "../components/ReputationScore";
+
+interface GatewayClaimInfo {
+  gateway_id: string;
+  gateway_name: string;
+  verified: boolean;
+  claimed_at: string;
+}
 
 interface Agent {
   id: string;
@@ -13,6 +20,7 @@ interface Agent {
   skills?: string[];
   reputation?: number;
   status?: string;
+  gateway_claims?: GatewayClaimInfo[] | null;
 }
 
 export default function AgentDirectory() {
@@ -79,24 +87,44 @@ export default function AgentDirectory() {
               to={`/agents/${agent.id}`}
               className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-lg hover:border-navy-300 transition-all group"
             >
-              <div className="flex items-start justify-between mb-3">
-                <div>
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-navy-900 group-hover:text-navy-700">
                     {agent.bot_name}
                   </h3>
                   {agent.developer_id && (
-                    <p className="text-xs text-gray-500 mt-0.5">
+                    <p className="text-xs text-gray-500 mt-0.5 break-all">
                       {agent.developer_id}
                     </p>
                   )}
                 </div>
-                <ReputationScore
-                  score={agent.reputation ?? null}
-                  size="sm"
-                />
+                <div className="flex-shrink-0 self-start">
+                  <ReputationScore
+                    score={agent.reputation ?? null}
+                    size="sm"
+                  />
+                </div>
               </div>
+              {agent.gateway_claims && agent.gateway_claims.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {agent.gateway_claims.map((claim) => (
+                    <span
+                      key={claim.gateway_id}
+                      className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
+                        claim.verified
+                          ? "bg-green-50 text-green-700"
+                          : "bg-blue-50 text-blue-700"
+                      }`}
+                    >
+                      <ShieldCheck className="w-3 h-3" />
+                      {claim.gateway_name || "Gateway"}
+                      {claim.verified && " ✓"}
+                    </span>
+                  ))}
+                </div>
+              )}
               {agent.skills && agent.skills.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-3">
+                <div className="flex flex-wrap gap-1.5 mt-2">
                   {agent.skills.slice(0, 4).map((skill) => (
                     <span
                       key={skill}

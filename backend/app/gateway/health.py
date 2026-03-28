@@ -56,9 +56,10 @@ class AgentStats:
 class HealthMonitor:
     """Tracks per-agent health: latency, error rate, last seen, periodic ping."""
 
-    def __init__(self) -> None:
+    def __init__(self, exchange_health_url: str | None = None) -> None:
         self._agents: dict[str, AgentStats] = {}
         self._running = False
+        self._exchange_health_url = exchange_health_url
 
     def register_agent(
         self, agent_id: str, bot_id: str = "", ping_url: str | None = None
@@ -73,6 +74,13 @@ class HealthMonitor:
                 stats.bot_id = bot_id
             if ping_url:
                 stats.ping_url = ping_url
+
+    def mark_alive(self, agent_id: str) -> None:
+        """Mark an agent as alive (e.g. confirmed active on the exchange)."""
+        stats = self._agents.get(agent_id)
+        if stats:
+            stats.last_seen = datetime.now(timezone.utc)
+            stats.last_ping_ok = True
 
     def record_request(
         self, agent_id: str, latency_ms: float, is_error: bool = False
@@ -97,6 +105,9 @@ class HealthMonitor:
     def get_all_agents(self) -> list[AgentStats]:
         return list(self._agents.values())
 
+    def unregister_agent(self, agent_id: str) -> None:
+        self._agents.pop(agent_id, None)
+
     async def start_ping_loop(self) -> None:
         self._running = True
         while self._running:
@@ -106,11 +117,31 @@ class HealthMonitor:
     async def _ping_all(self) -> None:
         async with httpx.AsyncClient(timeout=5.0) as client:
             tasks = []
+            no_url_agents: list[AgentStats] = []
             for stats in self._agents.values():
                 if stats.ping_url:
                     tasks.append(self._ping_one(client, stats))
+                else:
+                    no_url_agents.append(stats)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+            if no_url_agents and self._exchange_health_url:
+                await self._heartbeat_via_exchange(client, no_url_agents)
+
+    async def _heartbeat_via_exchange(
+        self, client: httpx.AsyncClient, agents: list[AgentStats]
+    ) -> None:
+        """Single exchange health check; if reachable, mark all exchange-registered agents alive."""
+        try:
+            resp = await client.get(self._exchange_health_url)
+            if resp.status_code < 400:
+                now = datetime.now(timezone.utc)
+                for stats in agents:
+                    stats.last_seen = now
+                    stats.last_ping_ok = True
+        except Exception:
+            logger.debug("Exchange heartbeat failed at %s", self._exchange_health_url)
 
     async def _ping_one(self, client: httpx.AsyncClient, stats: AgentStats) -> None:
         try:

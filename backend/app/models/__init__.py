@@ -3,7 +3,7 @@ from app.models.bounty import Bounty
 from app.models.category import Category
 from app.models.claim import Claim
 from app.models.contract import ServiceContract
-from app.models.gateway import AlertEvent, AlertRule, AuditEntry, ReputationSnapshot, TrustPolicy
+from app.models.gateway import AlertEvent, AlertRule, AuditEntry, GatewayAgent, ReputationSnapshot, TrustPolicy
 from app.models.notification import Notification
 from app.models.score_history import BountyMode, ScoreHistory
 from app.models.snapshot import Snapshot
@@ -15,6 +15,7 @@ __all__ = [
     "AssistSession", "User", "Category", "Bounty", "Claim", "Submission",
     "Notification", "ServiceContract", "Snapshot",
     "TrustPolicy", "AuditEntry", "ReputationSnapshot", "AlertRule", "AlertEvent",
+    "GatewayAgent",
     "BountyMode", "ScoreHistory",
     "TrainingRun", "TrainingRunStatus", "TrainingTranscript",
 ]

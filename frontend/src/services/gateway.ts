@@ -5,6 +5,8 @@ import type {
   AlertListResponse,
   AlertRule,
   AuditListResponse,
+  ExchangeAgentResult,
+  GatewayAgentClaim,
   GatewayHealth,
   GatewayMetrics,
   PolicyValidationResult,
@@ -116,6 +118,38 @@ export async function updateAlertRule(
   updates: Partial<AlertRule>
 ): Promise<AlertRule> {
   const { data } = await api.put<AlertRule>(`/gateway/alerts/rules/${ruleId}`, updates);
+  return data;
+}
+
+// --- Agent Claims ---
+
+export async function fetchClaimedAgents(): Promise<GatewayAgentClaim[]> {
+  const { data } = await api.get<GatewayAgentClaim[]>("/gateway/agents/claimed");
+  return data;
+}
+
+export async function claimAgent(
+  exchange_account_id: string,
+  agent_api_key?: string
+): Promise<GatewayAgentClaim> {
+  const { data } = await api.post<GatewayAgentClaim>("/gateway/agents/claim", {
+    exchange_account_id,
+    agent_api_key: agent_api_key || undefined,
+  });
+  return data;
+}
+
+export async function unclaimAgent(exchange_account_id: string): Promise<void> {
+  await api.delete(`/gateway/agents/${exchange_account_id}/unclaim`);
+}
+
+export async function searchExchangeDirectory(
+  q?: string
+): Promise<ExchangeAgentResult[]> {
+  const { data } = await api.get<ExchangeAgentResult[]>(
+    "/gateway/agents/exchange-directory",
+    { params: q ? { q } : {} }
+  );
   return data;
 }
 

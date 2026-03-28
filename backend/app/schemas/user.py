@@ -20,6 +20,10 @@ class UserLoginRequest(BaseModel):
     password: str
 
 
+class ExchangeLoginRequest(BaseModel):
+    api_key: str
+
+
 class LinkExchangeRequest(BaseModel):
     bot_name: str
     developer_id: str = ""

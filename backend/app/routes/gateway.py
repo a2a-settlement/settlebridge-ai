@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.models.user import User
@@ -16,6 +17,7 @@ from app.models.gateway import (
     AlertEvent,
     AlertRule,
     AuditEntry,
+    GatewayAgent,
     PolicyDecisionType,
     TrustPolicy,
 )
@@ -29,6 +31,9 @@ from app.schemas.gateway import (
     AlertRuleUpdate,
     AuditEntryResponse,
     AuditListResponse,
+    ClaimAgentRequest,
+    ExchangeAgentSearchResult,
+    GatewayAgentResponse,
     GatewayHealthResponse,
     GatewayMetricsResponse,
     PolicyValidationResult,
@@ -59,13 +64,15 @@ async def gateway_health(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.main import get_exchange_stats_cache
+
     health_mon = _gateway_components.get("health_monitor")
     startup = _gateway_components.get("startup")
 
     agents = health_mon.get_all_agents() if health_mon else []
     active_count = sum(1 for a in agents if a.status == "active")
 
-    total_tx = (await db.execute(select(func.count(AuditEntry.id)))).scalar() or 0
+    local_tx = (await db.execute(select(func.count(AuditEntry.id)))).scalar() or 0
     violations = (
         await db.execute(
             select(func.count(AuditEntry.id)).where(
@@ -73,6 +80,13 @@ async def gateway_health(
             )
         )
     ).scalar() or 0
+
+    ex_stats = get_exchange_stats_cache()
+    exchange_tx = ex_stats.get("activity_24h", {}).get("transaction_count", 0)
+    total_tx = local_tx + exchange_tx
+
+    outcomes = ex_stats.get("settlement_outcomes") or {}
+    violations += outcomes.get("refunded", 0)
 
     avg_lat = 0.0
     if agents:
@@ -157,6 +171,182 @@ async def agent_detail(
     )
 
 
+# ---- Agent Claims ----
+
+
+@router.get("/agents/claimed", response_model=list[GatewayAgentResponse])
+async def list_claimed_agents(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(GatewayAgent).where(GatewayAgent.status == "active").order_by(GatewayAgent.claimed_at.desc())
+    )
+    return [GatewayAgentResponse.model_validate(a) for a in result.scalars().all()]
+
+
+@router.post("/agents/claim", response_model=GatewayAgentResponse, status_code=201)
+async def claim_agent(
+    body: ClaimAgentRequest,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from fastapi import HTTPException
+    from app.config import settings
+    from a2a_settlement.client import SettlementExchangeClient
+
+    existing = await db.execute(
+        select(GatewayAgent).where(
+            GatewayAgent.exchange_account_id == body.exchange_account_id,
+            GatewayAgent.status == "active",
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail="Agent already claimed by this gateway")
+
+    client = SettlementExchangeClient(base_url=settings.A2A_EXCHANGE_URL)
+    try:
+        acct = client.get_account(account_id=body.exchange_account_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Agent not found on exchange")
+
+    bot_name = acct.get("bot_name", "")
+    description = acct.get("description")
+    skills = acct.get("skills", [])
+
+    exchange_claim_id = None
+    verified = False
+    startup = _gateway_components.get("startup")
+    gw_api_key = settings.GATEWAY_EXCHANGE_API_KEY
+    if gw_api_key:
+        import httpx
+        claim_url = f"{settings.effective_exchange_url.rstrip('/')}/v1/accounts/{body.exchange_account_id}/claim"
+        claim_payload = {}
+        if body.agent_api_key:
+            claim_payload["agent_api_key"] = body.agent_api_key
+        try:
+            resp = httpx.post(
+                claim_url,
+                json=claim_payload or None,
+                headers={"Authorization": f"Bearer {gw_api_key}"},
+                timeout=10,
+            )
+            if resp.status_code == 201:
+                data = resp.json()
+                exchange_claim_id = data.get("claim_id")
+                verified = data.get("verified", False)
+        except Exception:
+            pass
+
+    agent = GatewayAgent(
+        exchange_account_id=body.exchange_account_id,
+        bot_name=bot_name,
+        description=description,
+        skills=skills,
+        exchange_claim_id=exchange_claim_id,
+        verified=verified,
+    )
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    health_mon = _gateway_components.get("health_monitor")
+    rep_cache = _gateway_components.get("reputation_cache")
+    if health_mon:
+        health_mon.register_agent(body.exchange_account_id, bot_id=bot_name)
+        health_mon.mark_alive(body.exchange_account_id)
+    if rep_cache:
+        reputation = acct.get("reputation")
+        if reputation is not None:
+            await rep_cache.set(body.exchange_account_id, float(reputation))
+
+    return GatewayAgentResponse.model_validate(agent)
+
+
+@router.delete("/agents/{exchange_account_id}/unclaim")
+async def unclaim_agent(
+    exchange_account_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from fastapi import HTTPException
+
+    result = await db.execute(
+        select(GatewayAgent).where(
+            GatewayAgent.exchange_account_id == exchange_account_id,
+            GatewayAgent.status == "active",
+        )
+    )
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not claimed by this gateway")
+
+    agent.status = "released"
+    await db.commit()
+
+    health_mon = _gateway_components.get("health_monitor")
+    if health_mon:
+        health_mon.unregister_agent(exchange_account_id)
+
+    gw_api_key = settings.GATEWAY_EXCHANGE_API_KEY
+    if gw_api_key:
+        import httpx
+        unclaim_url = f"{settings.effective_exchange_url.rstrip('/')}/v1/accounts/{exchange_account_id}/claim"
+        try:
+            httpx.delete(
+                unclaim_url,
+                headers={"Authorization": f"Bearer {gw_api_key}"},
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    return {"status": "released", "exchange_account_id": exchange_account_id}
+
+
+@router.get("/agents/exchange-directory", response_model=list[ExchangeAgentSearchResult])
+async def search_exchange_directory(
+    q: str | None = None,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search the exchange directory for agents to claim."""
+    from app.services import exchange as exchange_svc
+
+    try:
+        directory = exchange_svc.get_directory()
+    except Exception:
+        return []
+
+    bots = directory.get("bots", []) if isinstance(directory, dict) else directory
+
+    claimed_result = await db.execute(
+        select(GatewayAgent.exchange_account_id).where(GatewayAgent.status == "active")
+    )
+    claimed_ids = {row[0] for row in claimed_result.all()}
+
+    results = []
+    for bot in bots:
+        bot_name = bot.get("bot_name", "")
+        dev_name = bot.get("developer_name", "")
+        desc = bot.get("description", "")
+        if q:
+            search = q.lower()
+            if not (search in bot_name.lower() or search in dev_name.lower() or search in (desc or "").lower()):
+                continue
+        results.append(ExchangeAgentSearchResult(
+            id=bot.get("id", ""),
+            bot_name=bot_name,
+            developer_name=dev_name,
+            description=desc,
+            skills=bot.get("skills", []),
+            reputation=bot.get("reputation", 0.5),
+            already_claimed=bot.get("id", "") in claimed_ids,
+        ))
+
+    return results
+
+
 # ---- Transactions ----
 
 
@@ -170,16 +360,58 @@ async def list_transactions(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    import hashlib
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+    from app.main import get_exchange_activity_cache
+
     audit = _gateway_components.get("audit_logger")
-    if not audit:
-        return AuditListResponse(entries=[], total=0, page=page, page_size=page_size)
-    entries, total = await audit.query(
-        db, source_agent=source, target_agent=target, decision=decision,
-        page=page, page_size=page_size,
-    )
+    entries: list = []
+    total = 0
+    if audit:
+        entries, total = await audit.query(
+            db, source_agent=source, target_agent=target, decision=decision,
+            page=page, page_size=page_size,
+        )
+
+    if entries:
+        return AuditListResponse(
+            entries=[AuditEntryResponse.model_validate(e) for e in entries],
+            total=total, page=page, page_size=page_size,
+        )
+
+    exchange_entries = get_exchange_activity_cache()
+    mapped = []
+    for ex in exchange_entries:
+        outcome = ex.get("outcome", "approve")
+        try:
+            decision_val = PolicyDecisionType(outcome)
+        except ValueError:
+            decision_val = PolicyDecisionType.APPROVE
+        ts_str = ex.get("timestamp", "")
+        try:
+            ts = _dt.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            ts = _dt.now(_tz.utc)
+        src = ex.get("source_agent", "")
+        tgt = ex.get("target_agent", "")
+        req_hash = hashlib.sha256(f"{src}:{tgt}:{ex.get('escrow_id', '')}:{ts_str}".encode()).hexdigest()
+        mapped.append(AuditEntryResponse(
+            id=_uuid.UUID(ex["id"]) if ex.get("id") else _uuid.uuid4(),
+            timestamp=ts,
+            request_hash=req_hash,
+            source_agent=src,
+            target_agent=tgt,
+            policy_decision=decision_val,
+            escrow_id=ex.get("escrow_id"),
+            latency_ms=None,
+            response_status=200 if outcome == "approve" else 400,
+        ))
+    start = (page - 1) * page_size
+    page_entries = mapped[start:start + page_size]
     return AuditListResponse(
-        entries=[AuditEntryResponse.model_validate(e) for e in entries],
-        total=total, page=page, page_size=page_size,
+        entries=page_entries,
+        total=len(mapped), page=page, page_size=page_size,
     )
 
 
@@ -196,16 +428,64 @@ async def list_audit(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    import hashlib
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+    from app.main import get_exchange_activity_cache
+
     audit = _gateway_components.get("audit_logger")
-    if not audit:
-        return AuditListResponse(entries=[], total=0, page=page, page_size=page_size)
-    entries, total = await audit.query(
-        db, source_agent=source, target_agent=target, decision=decision,
-        page=page, page_size=page_size,
-    )
+    entries: list = []
+    total = 0
+    if audit:
+        entries, total = await audit.query(
+            db, source_agent=source, target_agent=target, decision=decision,
+            page=page, page_size=page_size,
+        )
+
+    if entries:
+        return AuditListResponse(
+            entries=[AuditEntryResponse.model_validate(e) for e in entries],
+            total=total, page=page, page_size=page_size,
+        )
+
+    exchange_entries = get_exchange_activity_cache()
+    mapped = []
+    for ex in exchange_entries:
+        outcome = ex.get("outcome", "approve")
+        try:
+            decision_val = PolicyDecisionType(outcome)
+        except ValueError:
+            decision_val = PolicyDecisionType.APPROVE
+        if decision and decision_val != decision:
+            continue
+        src = ex.get("source_agent", "")
+        tgt = ex.get("target_agent", "")
+        if source and source.lower() not in src.lower():
+            continue
+        if target and target.lower() not in tgt.lower():
+            continue
+        ts_str = ex.get("timestamp", "")
+        try:
+            ts = _dt.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            ts = _dt.now(_tz.utc)
+        req_hash = hashlib.sha256(f"{src}:{tgt}:{ex.get('escrow_id', '')}:{ts_str}".encode()).hexdigest()
+        mapped.append(AuditEntryResponse(
+            id=_uuid.UUID(ex["id"]) if ex.get("id") else _uuid.uuid4(),
+            timestamp=ts,
+            request_hash=req_hash,
+            source_agent=src,
+            target_agent=tgt,
+            policy_decision=decision_val,
+            escrow_id=ex.get("escrow_id"),
+            latency_ms=None,
+            response_status=200 if outcome == "approve" else 400,
+        ))
+    start = (page - 1) * page_size
+    page_entries = mapped[start:start + page_size]
     return AuditListResponse(
-        entries=[AuditEntryResponse.model_validate(e) for e in entries],
-        total=total, page=page, page_size=page_size,
+        entries=page_entries,
+        total=len(mapped), page=page, page_size=page_size,
     )
 
 
@@ -312,28 +592,29 @@ async def validate_policy(
 
 @router.get("/settlement/overview", response_model=SettlementOverviewResponse)
 async def settlement_overview(_user: User = Depends(get_current_user)):
+    from app.main import get_exchange_stats_cache
+
     startup = _gateway_components.get("startup")
+    empty = SettlementOverviewResponse(
+        active_escrows=0, total_locked=0, total_released=0,
+        total_disputed=0, treasury_fees=0,
+    )
     if not startup or not startup.exchange_client:
-        return SettlementOverviewResponse(
-            active_escrows=0, total_locked=0, total_released=0,
-            total_disputed=0, treasury_fees=0,
-        )
-    try:
-        client = startup.exchange_client
-        escrows = client.list_escrows(status="active")
-        active = escrows.get("escrows", [])
-        return SettlementOverviewResponse(
-            active_escrows=len(active),
-            total_locked=sum(e.get("amount", 0) for e in active),
-            total_released=0,
-            total_disputed=0,
-            treasury_fees=0,
-        )
-    except Exception:
-        return SettlementOverviewResponse(
-            active_escrows=0, total_locked=0, total_released=0,
-            total_disputed=0, treasury_fees=0,
-        )
+        return empty
+
+    ex_stats = get_exchange_stats_cache()
+    token = ex_stats.get("token_supply", {})
+    activity = ex_stats.get("activity_24h", {})
+    provenance = ex_stats.get("provenance", {})
+
+    return SettlementOverviewResponse(
+        active_escrows=ex_stats.get("active_escrows", 0),
+        total_locked=token.get("in_escrow", 0),
+        total_released=provenance.get("total_delivered", 0),
+        total_disputed=provenance.get("fabrication_detected", 0),
+        treasury_fees=ex_stats.get("treasury", {}).get("fees_collected", 0),
+        top_agents=[],
+    )
 
 
 # ---- Alerts ----
@@ -409,11 +690,13 @@ async def gateway_metrics(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.main import get_exchange_stats_cache
+
     health_mon = _gateway_components.get("health_monitor")
     rep_cache = _gateway_components.get("reputation_cache")
 
     agents = health_mon.get_all_agents() if health_mon else []
-    total_requests = sum(a.request_count for a in agents)
+    local_requests = sum(a.request_count for a in agents)
     avg_lat = 0.0
     if agents:
         lats = [a.avg_latency_ms for a in agents if a.avg_latency_ms is not None]
@@ -429,6 +712,16 @@ async def gateway_metrics(
             )
         ).scalar() or 0
         decisions[decision_type.value] = count
+
+    ex_stats = get_exchange_stats_cache()
+    exchange_tx = ex_stats.get("activity_24h", {}).get("transaction_count", 0)
+    total_requests = local_requests + exchange_tx
+
+    outcomes = ex_stats.get("settlement_outcomes") or {}
+    if outcomes:
+        decisions["approve"] += outcomes.get("released", 0)
+        decisions["block"] += outcomes.get("refunded", 0)
+        decisions["flag"] += outcomes.get("partial", 0)
 
     error_rate = 0.0
     if agents:

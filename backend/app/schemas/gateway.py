@@ -149,6 +149,42 @@ class AlertListResponse(BaseModel):
     rules: list[AlertRuleResponse]
 
 
+# --- Gateway Agent Claims ---
+
+
+class ClaimAgentRequest(BaseModel):
+    exchange_account_id: str = Field(..., min_length=1)
+    agent_api_key: str | None = Field(None, description="Agent's exchange API key for verified claims")
+
+
+class UnclaimAgentRequest(BaseModel):
+    exchange_account_id: str = Field(..., min_length=1)
+
+
+class GatewayAgentResponse(BaseModel):
+    id: uuid.UUID
+    exchange_account_id: str
+    bot_name: str
+    description: str | None = None
+    skills: list[str] | None = None
+    exchange_claim_id: str | None = None
+    verified: bool
+    claimed_at: datetime
+    status: str
+
+    model_config = {"from_attributes": True}
+
+
+class ExchangeAgentSearchResult(BaseModel):
+    id: str
+    bot_name: str
+    developer_name: str
+    description: str | None = None
+    skills: list[str] = []
+    reputation: float
+    already_claimed: bool = False
+
+
 # --- Gateway Overview ---
 
 

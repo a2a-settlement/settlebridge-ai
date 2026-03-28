@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import (
+    _get_or_create_exchange_user,
     create_access_token,
     get_current_user,
     hash_password,
@@ -15,6 +16,7 @@ from app.middleware.auth import (
 )
 from app.models.user import User
 from app.schemas.user import (
+    ExchangeLoginRequest,
     LinkExchangeRequest,
     TokenResponse,
     UserLoginRequest,
@@ -51,11 +53,30 @@ async def register(body: UserRegisterRequest, db: AsyncSession = Depends(get_db)
 async def login(body: UserLoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user or not user.password_hash or not verify_password(body.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
+    token = create_access_token(user.id)
+    return TokenResponse(access_token=token)
+
+
+@router.post("/exchange-login", response_model=TokenResponse)
+async def exchange_login(body: ExchangeLoginRequest, db: AsyncSession = Depends(get_db)):
+    if not body.api_key.startswith("ate_"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="API key must start with ate_"
+        )
+    try:
+        user = await _get_or_create_exchange_user(body.api_key, db)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Exchange login failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to validate exchange key"
+        )
     token = create_access_token(user.id)
     return TokenResponse(access_token=token)
 

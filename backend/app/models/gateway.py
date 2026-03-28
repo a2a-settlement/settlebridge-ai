@@ -66,7 +66,8 @@ class AuditEntry(Base):
     source_agent: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     target_agent: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     policy_decision: Mapped[PolicyDecisionType] = mapped_column(
-        Enum(PolicyDecisionType), nullable=False
+        Enum(PolicyDecisionType, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
     )
     escrow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -93,11 +94,14 @@ class AlertRule(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     condition_type: Mapped[AlertConditionType] = mapped_column(
-        Enum(AlertConditionType), nullable=False
+        Enum(AlertConditionType, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
     )
     threshold: Mapped[float] = mapped_column(Float, nullable=False)
     channel: Mapped[AlertChannel] = mapped_column(
-        Enum(AlertChannel), nullable=False, default=AlertChannel.DASHBOARD
+        Enum(AlertChannel, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+        default=AlertChannel.DASHBOARD,
     )
     agent_filter: Mapped[str | None] = mapped_column(String(255), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -121,3 +125,19 @@ class AlertEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     rule: Mapped[AlertRule] = relationship(back_populates="events")
+
+
+class GatewayAgent(Base):
+    """Local record of agents claimed by this gateway instance."""
+
+    __tablename__ = "gateway_agents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    exchange_account_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
+    bot_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skills: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    exchange_claim_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")

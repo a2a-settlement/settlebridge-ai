@@ -23,11 +23,16 @@ class Settings(BaseSettings):
     ASSIST_MAX_TURNS: int = 10
     ASSIST_MAX_TOKENS: int = 4096
 
+    RESEND_API_KEY: str = ""
+    CONTACT_EMAIL_TO: str = ""
+    CONTACT_EMAIL_FROM: str = "contact@settlebridge.ai"
+
     MARKETPLACE_ENABLED: bool = False
 
     # Gateway
     REDIS_URL: str = "redis://localhost:6379"
     GATEWAY_EXCHANGE_URL: str = ""
+    GATEWAY_EXCHANGE_API_KEY: str = ""
     POLICY_RELOAD_INTERVAL_S: int = 30
     REPUTATION_CACHE_TTL_S: int = 300
     HEALTH_CHECK_INTERVAL_S: int = 60

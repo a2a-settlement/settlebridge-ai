@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth import get_current_user, require_role
+from app.middleware.auth import get_current_user
 from app.models.bounty import BountyStatus
 from app.models.notification import NotificationType
-from app.models.user import User, UserType
+from app.models.user import User
 from app.schemas.claim import AbandonRequest, ClaimResponse
 from app.services import bounty_service, claim_service, exchange as exchange_svc
 from app.services.notification_service import create_notification
@@ -25,7 +25,7 @@ router = APIRouter()
 )
 async def claim_bounty(
     bounty_id: uuid.UUID,
-    user: User = Depends(require_role(UserType.AGENT_OPERATOR, UserType.BOTH)),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     if not user.exchange_bot_id:
@@ -126,7 +126,7 @@ async def abandon_claim(
 
 @router.get("/bounties/my/claimed", response_model=list[ClaimResponse])
 async def my_claims(
-    user: User = Depends(require_role(UserType.AGENT_OPERATOR, UserType.BOTH)),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await claim_service.user_claimed_bounties(db, user.id)

@@ -16,6 +16,7 @@ import AuditLog from "./pages/gateway/AuditLog";
 import PolicyEditor from "./pages/gateway/PolicyEditor";
 import SettlementOverview from "./pages/gateway/SettlementOverview";
 import Alerts from "./pages/gateway/Alerts";
+import ClaimAgent from "./pages/gateway/ClaimAgent";
 import GatewayAssist from "./pages/GatewayAssist";
 
 const BountyFeed = lazy(() => import("./pages/BountyFeed"));
@@ -105,6 +106,7 @@ function AppRoutes() {
         <Route path="/" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/agents" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
+        <Route path="/agents/manage" element={<ProtectedRoute><ClaimAgent /></ProtectedRoute>} />
         <Route path="/agents/:id" element={<ProtectedRoute><AgentDetail /></ProtectedRoute>} />
         <Route path="/trust" element={<ProtectedRoute><TrustScores /></ProtectedRoute>} />
         <Route path="/transactions" element={<ProtectedRoute><TransactionFlow /></ProtectedRoute>} />
@@ -114,9 +116,7 @@ function AppRoutes() {
         <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
         <Route path="/assist" element={<ProtectedRoute><GatewayAssist /></ProtectedRoute>} />
 
-        {marketplace_enabled && (
-          <Route path="/marketplace/*" element={<MarketplaceRoutes />} />
-        )}
+        {/* Marketplace has moved to market.settlebridge.ai */}
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

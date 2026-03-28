@@ -7,10 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth import get_current_user, require_role
+from app.middleware.auth import get_current_user
 from app.models.bounty import BountyStatus, Difficulty, ProvenanceTier
 from app.models.notification import NotificationType
-from app.models.user import User, UserType
+from app.models.user import User
 from app.schemas.bounty import (
     BountyCreateRequest,
     BountyListResponse,
@@ -59,7 +59,7 @@ async def list_bounties(
 
 @router.get("/my/posted", response_model=list[BountyResponse])
 async def my_posted(
-    user: User = Depends(require_role(UserType.REQUESTER, UserType.BOTH)),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await bounty_service.user_posted_bounties(db, user.id)
@@ -77,7 +77,7 @@ async def get_bounty(bounty_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.post("", response_model=BountyResponse, status_code=status.HTTP_201_CREATED)
 async def create_bounty(
     body: BountyCreateRequest,
-    user: User = Depends(require_role(UserType.REQUESTER, UserType.BOTH)),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     if body.deadline and body.deadline < datetime.now(timezone.utc):

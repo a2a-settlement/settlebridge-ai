@@ -13,6 +13,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  exchangeLogin: (apiKey: string) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -60,6 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await refresh();
   };
 
+  const exchangeLogin = async (apiKey: string) => {
+    const { data } = await api.post<{ access_token: string }>(
+      "/auth/exchange-login",
+      { api_key: apiKey }
+    );
+    localStorage.setItem("sb_token", data.access_token);
+    await refresh();
+  };
+
   const register = async (
     email: string,
     password: string,
@@ -86,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, register, logout, refresh }}
+      value={{ user, loading, login, exchangeLogin, register, logout, refresh }}
     >
       {children}
     </AuthContext.Provider>

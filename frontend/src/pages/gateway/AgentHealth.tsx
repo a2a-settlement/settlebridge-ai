@@ -10,11 +10,19 @@ export default function AgentHealth() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Agent Health</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Monitor status, latency, and reputation across all registered agents
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Agent Health</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Monitor status, latency, and reputation across claimed agents
+          </p>
+        </div>
+        <Link
+          to="/agents/manage"
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
+        >
+          Manage Agents
+        </Link>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

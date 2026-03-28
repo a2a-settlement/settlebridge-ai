@@ -40,8 +40,11 @@ class GatewayStartup:
                 resp = await client.get(f"{url.rstrip('/')}/health")
                 if resp.status_code < 400:
                     self._exchange_connected = True
-                    self._exchange_client = SettlementExchangeClient(base_url=url)
-                    logger.info("Exchange connected at %s", url)
+                    api_key = settings.GATEWAY_EXCHANGE_API_KEY or None
+                    self._exchange_client = SettlementExchangeClient(
+                        base_url=url, api_key=api_key,
+                    )
+                    logger.info("Exchange connected at %s (auth=%s)", url, bool(api_key))
                     return True
                 else:
                     logger.warning("Exchange health check returned %d", resp.status_code)

@@ -106,6 +106,30 @@ export interface AlertListResponse {
   rules: AlertRule[];
 }
 
+// --- Gateway Agent Claims ---
+
+export interface GatewayAgentClaim {
+  id: string;
+  exchange_account_id: string;
+  bot_name: string;
+  description: string | null;
+  skills: string[] | null;
+  exchange_claim_id: string | null;
+  verified: boolean;
+  claimed_at: string;
+  status: string;
+}
+
+export interface ExchangeAgentResult {
+  id: string;
+  bot_name: string;
+  developer_name: string;
+  description: string | null;
+  skills: string[];
+  reputation: number;
+  already_claimed: boolean;
+}
+
 // --- Gateway Overview ---
 
 export interface GatewayHealth {

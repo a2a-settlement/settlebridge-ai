@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import agents, assist, auth, bounties, categories, claims, contracts, notifications, stats, submissions
+from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions
 from app.routes import gateway as gateway_routes
 from app.routes import score_history, training
 from app.services.scheduler import run_scheduler
@@ -36,6 +36,79 @@ async def lifespan(app: FastAPI):
     await _stop_gateway()
 
 
+_exchange_stats_cache: dict = {}
+_exchange_activity_cache: list[dict] = []
+
+
+def get_exchange_stats_cache() -> dict:
+    return _exchange_stats_cache
+
+
+def get_exchange_activity_cache() -> list[dict]:
+    return _exchange_activity_cache
+
+
+async def _seed_agents_from_claimed(
+    client, health_monitor, rep_cache
+) -> None:
+    """Load only claimed agents into the health monitor.
+
+    Reads the local gateway_agents table, then fetches fresh reputation
+    data from the exchange for each claimed agent.
+    """
+    from app.database import async_session
+    from app.models.gateway import GatewayAgent
+    from sqlalchemy import select
+
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(GatewayAgent).where(GatewayAgent.status == "active")
+            )
+            claimed = result.scalars().all()
+
+        if not claimed:
+            logger.info("No claimed agents found; gateway health monitor is empty")
+            return
+
+        for agent in claimed:
+            health_monitor.register_agent(
+                agent.exchange_account_id, bot_id=agent.bot_name
+            )
+            try:
+                acct = client.get_account(account_id=agent.exchange_account_id)
+                reputation = acct.get("reputation")
+                exchange_status = acct.get("status", "")
+                if exchange_status == "active":
+                    health_monitor.mark_alive(agent.exchange_account_id)
+                if reputation is not None:
+                    await rep_cache.set(agent.exchange_account_id, float(reputation))
+            except Exception:
+                logger.debug(
+                    "Could not fetch exchange data for claimed agent %s",
+                    agent.exchange_account_id,
+                )
+
+        logger.info("Seeded %d claimed agents into health monitor", len(claimed))
+    except Exception:
+        logger.warning("Failed to seed claimed agents", exc_info=True)
+
+
+async def _refresh_exchange_stats(client) -> None:
+    """Fetch aggregate stats and recent activity from the exchange and cache them."""
+    global _exchange_stats_cache, _exchange_activity_cache
+    try:
+        _exchange_stats_cache = client.stats()
+        logger.debug("Refreshed exchange stats cache")
+    except Exception:
+        logger.warning("Failed to refresh exchange stats", exc_info=True)
+    try:
+        data = client.recent_activity(limit=20)
+        _exchange_activity_cache = data.get("entries", [])
+    except Exception:
+        logger.warning("Failed to refresh exchange activity", exc_info=True)
+
+
 async def _start_gateway() -> list[asyncio.Task]:
     from app.gateway.alerts import AlertsEngine
     from app.gateway.audit import AuditLogger
@@ -53,9 +126,17 @@ async def _start_gateway() -> list[asyncio.Task]:
     if startup.exchange_client:
         rep_cache.set_exchange_client(startup.exchange_client)
 
+    exchange_health_url = None
+    if startup.exchange_connected:
+        exchange_health_url = f"{settings.effective_exchange_url.rstrip('/')}/health"
+
     audit_logger = AuditLogger()
-    health_monitor = HealthMonitor()
+    health_monitor = HealthMonitor(exchange_health_url=exchange_health_url)
     alerts_engine = AlertsEngine(health_monitor, rep_cache)
+
+    if startup.exchange_client:
+        await _seed_agents_from_claimed(startup.exchange_client, health_monitor, rep_cache)
+        await _refresh_exchange_stats(startup.exchange_client)
 
     gateway_routes.set_gateway_components({
         "startup": startup,
@@ -66,12 +147,22 @@ async def _start_gateway() -> list[asyncio.Task]:
         "alerts_engine": alerts_engine,
     })
 
+    async def _directory_sync_loop():
+        while True:
+            await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL_S * 5)
+            if startup.exchange_client:
+                await _seed_agents_from_claimed(
+                    startup.exchange_client, health_monitor, rep_cache
+                )
+                await _refresh_exchange_stats(startup.exchange_client)
+
     tasks = [
         asyncio.create_task(policy_engine.start_reload_loop()),
         asyncio.create_task(rep_cache.start_refresh_loop()),
         asyncio.create_task(health_monitor.start_ping_loop()),
         asyncio.create_task(alerts_engine.start_eval_loop()),
         asyncio.create_task(startup.start_health_loop()),
+        asyncio.create_task(_directory_sync_loop()),
     ]
     logger.info("Gateway subsystems started")
     return tasks
@@ -97,7 +188,11 @@ app = FastAPI(title=settings.APP_NAME, version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", settings.APP_URL],
+    allow_origins=[
+        "http://localhost:5173",
+        settings.APP_URL,
+        "https://market.settlebridge.ai",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,6 +200,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(contact.router, prefix="/api", tags=["contact"])
 app.include_router(gateway_routes.router, prefix="/api/gateway", tags=["gateway"])
 
 if settings.MARKETPLACE_ENABLED:

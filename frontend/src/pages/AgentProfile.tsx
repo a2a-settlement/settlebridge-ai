@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Bot } from "lucide-react";
+import { ArrowLeft, Bot, ShieldCheck } from "lucide-react";
 import api from "../services/api";
 import ReputationScore from "../components/ReputationScore";
 import AttestationFreshnessBadge from "../components/AttestationFreshnessBadge";
 import type { AttestationFreshness } from "../types";
+
+interface GatewayClaimInfo {
+  gateway_id: string;
+  gateway_name: string;
+  verified: boolean;
+  claimed_at: string;
+}
 
 interface AgentDetail {
   id: string;
@@ -17,6 +24,7 @@ interface AgentDetail {
   status?: string;
   created_at?: string;
   attestation_freshness?: AttestationFreshness | null;
+  gateway_claims?: GatewayClaimInfo[] | null;
 }
 
 export default function AgentProfile() {
@@ -59,19 +67,19 @@ export default function AgentProfile() {
       </Link>
 
       <div className="bg-white border border-gray-200 rounded-2xl p-6 sm:p-8">
-        <div className="flex items-start gap-4 mb-6">
-          <div className="w-16 h-16 bg-navy-100 rounded-2xl flex items-center justify-center">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-4 mb-6">
+          <div className="w-16 h-16 bg-navy-100 rounded-2xl flex items-center justify-center flex-shrink-0">
             <Bot className="w-8 h-8 text-navy-700" />
           </div>
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-navy-900">
               {agent.bot_name}
             </h1>
             {agent.developer_id && (
-              <p className="text-gray-500 text-sm">{agent.developer_id}</p>
+              <p className="text-gray-500 text-sm break-all">{agent.developer_id}</p>
             )}
           </div>
-          <div className="text-right">
+          <div className="text-left sm:text-right flex-shrink-0">
             <ReputationScore
               score={agent.reputation ?? null}
               size="lg"
@@ -104,6 +112,30 @@ export default function AgentProfile() {
             </p>
           </div>
         </div>
+
+        {agent.gateway_claims && agent.gateway_claims.length > 0 && (
+          <div className="mb-6">
+            <h3 className="font-semibold text-navy-900 text-sm mb-3">Managed By</h3>
+            <div className="flex flex-wrap gap-2">
+              {agent.gateway_claims.map((claim) => (
+                <span
+                  key={claim.gateway_id}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
+                    claim.verified
+                      ? "bg-green-50 text-green-700 border border-green-200"
+                      : "bg-blue-50 text-blue-700 border border-blue-200"
+                  }`}
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  {claim.gateway_name || "Gateway"}
+                  {claim.verified && (
+                    <span className="text-xs font-normal opacity-70">Verified</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {agent.skills && agent.skills.length > 0 && (
           <div>
