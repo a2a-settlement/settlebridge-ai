@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.score_history import BountyMode  # noqa: F401 — re-exported for convenience
 
 
 class BountyStatus(str, enum.Enum):
@@ -74,6 +75,9 @@ class Bounty(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settlement_structure: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    mode: Mapped[BountyMode] = mapped_column(
+        Enum(BountyMode), nullable=False, default=BountyMode.PRODUCTION, server_default="production"
+    )
 
     requester: Mapped["User"] = relationship(back_populates="bounties")  # noqa: F821
     category: Mapped["Category | None"] = relationship(lazy="joined")  # noqa: F821

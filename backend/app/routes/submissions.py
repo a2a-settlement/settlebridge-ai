@@ -23,9 +23,12 @@ from app.services import (
     bounty_service,
     claim_service,
     exchange as exchange_svc,
+    mediator as mediator_svc,
     review_service,
     submission_service,
+    training_service,
 )
+from app.models.score_history import BountyMode
 from app.services.notification_service import create_notification
 from app.utils.helpers import compute_content_hash
 
@@ -130,6 +133,75 @@ async def submit_work(
         message=f'An agent submitted work for "{bounty.title}".',
         reference_id=sub.id,
     )
+
+    # Score recording — write to score_history for all bounty modes.
+    # Training bounties: trigger the Settlement Mediator for a structured verdict.
+    # Production bounties: record the ai_review score as a lighter-weight ledger entry.
+    try:
+        agent_id = user.exchange_bot_id or str(user.id)
+        bounty_mode = getattr(bounty, "mode", None) or BountyMode.PRODUCTION
+
+        if bounty_mode == BountyMode.TRAINING and bounty.escrow_id and bounty.escrow_id != "pending_claim":
+            # Trigger the Settlement Mediator for a structured training verdict
+            task_type = (bounty.tags[0] if bounty.tags else None)
+            verdict_dict = await mediator_svc.trigger_mediation(
+                bounty.escrow_id,
+                mode="training",
+                task_type=task_type,
+            )
+            mediator_verdict = verdict_dict.get("verdict", {})
+            numeric_score = float(mediator_verdict.get("confidence", 0.0))
+            reasoning = mediator_verdict.get("reasoning")
+            diagnostics = mediator_verdict.get("structured_diagnostic")
+
+            # Determine the training_run_id by looking up the most recent running
+            # run for this agent+bounty (harness always has exactly one active run)
+            from sqlalchemy import select as sa_select
+            from app.models.training_run import TrainingRun, TrainingRunStatus
+            run_result = await db.execute(
+                sa_select(TrainingRun)
+                .where(
+                    TrainingRun.agent_id == agent_id,
+                    TrainingRun.target_bounty_id == bounty.id,
+                    TrainingRun.status == TrainingRunStatus.RUNNING,
+                )
+                .order_by(TrainingRun.started_at.desc())
+                .limit(1)
+            )
+            active_run = run_result.scalar_one_or_none()
+
+            await training_service.record_score(
+                db,
+                agent_id=agent_id,
+                bounty_id=bounty.id,
+                task_type=task_type,
+                numeric_score=numeric_score,
+                reasoning=reasoning,
+                diagnostics=diagnostics,
+                mode=BountyMode.TRAINING,
+                training_run_id=active_run.id if active_run else None,
+                provenance=provenance_dict,
+                iteration_stake=bounty.reward_amount,
+            )
+        elif ai_review:
+            # Production bounty: record the ai_review score as a ledger entry
+            ai_score_raw = ai_review.get("score", 100)
+            numeric_score = float(ai_score_raw) / 100.0  # normalize 0–100 → 0.0–1.0
+            await training_service.record_score(
+                db,
+                agent_id=agent_id,
+                bounty_id=bounty.id,
+                task_type=bounty.tags[0] if bounty.tags else None,
+                numeric_score=numeric_score,
+                reasoning=ai_review.get("notes"),
+                diagnostics=None,
+                mode=BountyMode.PRODUCTION,
+                training_run_id=None,
+                provenance=provenance_dict,
+                iteration_stake=0,
+            )
+    except Exception as score_exc:
+        logger.warning("Score recording failed (non-fatal): %s", score_exc)
 
     # Auto-approval: use AI review to decide score, holdback, or rejection
     if bounty.auto_approve:

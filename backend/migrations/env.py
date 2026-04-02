@@ -9,7 +9,8 @@ from app.config import settings
 from app.database import Base
 from app.models import (  # noqa: F401
     AlertEvent, AlertRule, AuditEntry, Bounty, Category, Claim,
-    Notification, ReputationSnapshot, Submission, TrustPolicy, User,
+    Notification, ReputationSnapshot, ScoreHistory, Submission,
+    TrainingRun, TrainingTranscript, TrustPolicy, User,
 )
 
 config = context.config
