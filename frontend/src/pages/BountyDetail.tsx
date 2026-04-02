@@ -17,6 +17,7 @@ import api from "../services/api";
 import type { Bounty, Claim } from "../types";
 import { useAuth } from "../hooks/useAuth";
 import ProvenanceBadge from "../components/ProvenanceBadge";
+import DeliverableViewer from "../components/DeliverableViewer";
 
 interface Submission {
   id: string;
@@ -336,11 +337,17 @@ export default function BountyDetail() {
                         </Link>
                       )}
                     </div>
-                    <div className="prose prose-sm max-w-none text-gray-700 bg-white rounded-lg p-4 border border-gray-200">
+                    <div className="text-gray-700 bg-white rounded-lg p-4 border border-gray-200">
                       {sub.deliverable.content_type?.includes("markdown") ? (
-                        <ReactMarkdown>{sub.deliverable.content}</ReactMarkdown>
+                        <div className="prose prose-sm max-w-none">
+                          <ReactMarkdown>{sub.deliverable.content}</ReactMarkdown>
+                        </div>
                       ) : (
-                        <pre className="whitespace-pre-wrap text-sm">{sub.deliverable.content.length > 2000 ? sub.deliverable.content.slice(0, 2000) + "\n\n... (truncated)" : sub.deliverable.content}</pre>
+                        <DeliverableViewer
+                          content={sub.deliverable.content}
+                          contentType={sub.deliverable.content_type || "text/plain"}
+                          bountyTitle={bounty.title}
+                        />
                       )}
                     </div>
                     {sub.provenance && (

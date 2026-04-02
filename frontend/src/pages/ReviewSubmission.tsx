@@ -13,6 +13,7 @@ import ReactMarkdown from "react-markdown";
 import api from "../services/api";
 import type { Submission, Bounty } from "../types";
 import ProvenanceBadge from "../components/ProvenanceBadge";
+import DeliverableViewer from "../components/DeliverableViewer";
 
 const SCORE_LABELS: [number, string, string][] = [
   [0, "Unacceptable", "text-red-600"],
@@ -202,9 +203,15 @@ export default function ReviewSubmission() {
               <ReactMarkdown>{deliverable.content || ""}</ReactMarkdown>
             </div>
           ) : (
-            <pre className="whitespace-pre-wrap text-gray-700 font-mono text-xs">
-              {deliverable.content || JSON.stringify(deliverable, null, 2)}
-            </pre>
+            <DeliverableViewer
+              content={
+                typeof deliverable.content === "string"
+                  ? deliverable.content
+                  : JSON.stringify(deliverable.content ?? deliverable, null, 2)
+              }
+              contentType={deliverable.content_type || "text/plain"}
+              bountyTitle={bounty.title}
+            />
           )}
         </div>
       </div>

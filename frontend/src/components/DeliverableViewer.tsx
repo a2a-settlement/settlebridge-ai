@@ -1,7 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Download, Eye, Code, Table } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import JsonDeliverablePreview from "./JsonDeliverablePreview";
 
 interface DeliverableViewerProps {
   content: string;
@@ -33,6 +34,19 @@ function tryParseJSON(raw: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+/** Treat JSON-looking bodies as JSON even when content_type was omitted. */
+function effectiveContentType(content: string, declared: string): string {
+  if (declared && declared !== "text/plain") return declared;
+  const t = content.trim();
+  if (t.startsWith("{") && t.endsWith("}")) {
+    const parsed = tryParseJSON(t);
+    if (parsed !== null && typeof parsed === "object") {
+      return "application/json";
+    }
+  }
+  return declared || "text/plain";
 }
 
 function parseCSV(raw: string): { headers: string[]; rows: string[][] } {
@@ -87,17 +101,6 @@ function CSVTable({ raw }: { raw: string }) {
   );
 }
 
-function JSONView({ raw }: { raw: string }) {
-  const parsed = tryParseJSON(raw);
-  const formatted = parsed !== null ? JSON.stringify(parsed, null, 2) : raw;
-
-  return (
-    <pre className="whitespace-pre-wrap text-xs font-mono leading-relaxed text-gray-700 overflow-x-auto">
-      {formatted}
-    </pre>
-  );
-}
-
 function CodeView({ raw, language }: { raw: string; language: string }) {
   return (
     <div>
@@ -122,7 +125,7 @@ function PreviewContent({ content, contentType }: { content: string; contentType
         </div>
       );
     case "application/json":
-      return <JSONView raw={content} />;
+      return <JsonDeliverablePreview content={content} />;
     case "text/csv":
       return <CSVTable raw={content} />;
     case "text/x-python":
@@ -155,17 +158,22 @@ export default function DeliverableViewer({
 }: DeliverableViewerProps) {
   const [mode, setMode] = useState<ViewMode>("preview");
 
+  const resolvedType = useMemo(
+    () => effectiveContentType(content, contentType),
+    [content, contentType]
+  );
+
   const slug = (bountyTitle || "deliverable")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 40);
-  const ext = EXTENSION_MAP[contentType] || ".txt";
+  const ext = EXTENSION_MAP[resolvedType] || ".txt";
   const filename = `${slug}${ext}`;
-  const typeLabel = LABEL_MAP[contentType] || contentType;
+  const typeLabel = LABEL_MAP[resolvedType] || resolvedType;
 
   const handleDownload = useCallback(() => {
-    const blob = new Blob([content], { type: contentType });
+    const blob = new Blob([content], { type: resolvedType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -174,7 +182,15 @@ export default function DeliverableViewer({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [content, contentType, filename]);
+  }, [content, resolvedType, filename]);
+
+  const rawDisplay =
+    resolvedType === "application/json"
+      ? (() => {
+          const p = tryParseJSON(content);
+          return p !== null ? JSON.stringify(p, null, 2) : content;
+        })()
+      : content;
 
   return (
     <div>
@@ -189,7 +205,7 @@ export default function DeliverableViewer({
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            {viewIcon(contentType)} Preview
+            {viewIcon(resolvedType)} Preview
           </button>
           <button
             onClick={() => setMode("raw")}
@@ -218,10 +234,10 @@ export default function DeliverableViewer({
       {/* Content area */}
       <div className="bg-gray-50 rounded-lg p-4 min-h-[120px]">
         {mode === "preview" ? (
-          <PreviewContent content={content} contentType={contentType} />
+          <PreviewContent content={content} contentType={resolvedType} />
         ) : (
           <pre className="whitespace-pre-wrap text-xs font-mono text-gray-600 leading-relaxed overflow-x-auto">
-            {content}
+            {rawDisplay}
           </pre>
         )}
       </div>
