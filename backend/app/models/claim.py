@@ -39,6 +39,10 @@ class Claim(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     abandon_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    training_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("training_runs.id"), nullable=True
+    )
+
     bounty: Mapped["Bounty"] = relationship(back_populates="claims")  # noqa: F821
     agent_user: Mapped["User"] = relationship(back_populates="claims")  # noqa: F821
     submissions: Mapped[list["Submission"]] = relationship(back_populates="claim")  # noqa: F821

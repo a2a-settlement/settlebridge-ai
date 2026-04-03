@@ -12,6 +12,11 @@ from app.database import Base
 from app.models.score_history import BountyMode  # noqa: F401 — re-exported for convenience
 
 
+class BountyMode(str, enum.Enum):
+    TRAINING = "training"
+    PRODUCTION = "production"
+
+
 class BountyStatus(str, enum.Enum):
     DRAFT = "draft"
     OPEN = "open"
@@ -77,6 +82,10 @@ class Bounty(Base):
     settlement_structure: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     mode: Mapped[BountyMode] = mapped_column(
         Enum(BountyMode), nullable=False, default=BountyMode.PRODUCTION, server_default="production"
+    )
+
+    mode: Mapped[BountyMode] = mapped_column(
+        Enum(BountyMode), nullable=False, default=BountyMode.PRODUCTION
     )
 
     requester: Mapped["User"] = relationship(back_populates="bounties")  # noqa: F821

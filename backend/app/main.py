@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions
+from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
 from app.routes import score_history, training
 from app.services.scheduler import run_scheduler
@@ -208,6 +208,7 @@ if settings.MARKETPLACE_ENABLED:
     app.include_router(bounties.router, prefix="/api/bounties", tags=["bounties"])
     app.include_router(claims.router, prefix="/api", tags=["claims"])
     app.include_router(submissions.router, prefix="/api", tags=["submissions"])
+    app.include_router(training.router, prefix="/api", tags=["training"])
     app.include_router(contracts.router, prefix="/api/contracts", tags=["contracts"])
     app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
     app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
@@ -215,6 +216,9 @@ if settings.MARKETPLACE_ENABLED:
     app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
     app.include_router(score_history.router, prefix="/api", tags=["score-history"])
     app.include_router(training.router, prefix="/api/training", tags=["training"])
+
+
+app.include_router(submissions.public_router, prefix="/api", tags=["public"])
 
 
 @app.get("/api/config")
