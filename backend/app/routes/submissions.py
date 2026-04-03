@@ -187,7 +187,8 @@ async def submit_work(
             ai_score_raw = ai_review.get("score", 100)
             numeric_score = float(ai_score_raw) / 100.0  # normalize 0–100 → 0.0–1.0
             from app.models.score_history import ScoreHistory, ScoreMode
-            prov_hash = compute_content_hash(sub.deliverable or {})
+            import json as _json
+            prov_hash = compute_content_hash(_json.dumps(sub.deliverable or {}, sort_keys=True))
             score_row = ScoreHistory(
                 agent_user_id=user.id,
                 bounty_id=bounty.id,
