@@ -1,15 +1,9 @@
-"""Service layer for training runs and score history.
-
-Implements the self-improving agent loop: operators create a training run
-against a bounty, each iteration writes a ScoreHistory row, and when the
-run completes a TrainingTranscript is generated with a Merkle-anchored
-provenance chain over all attempts.
-"""
+"""Business logic for the self-improving agent training loop."""
 
 from __future__ import annotations
 
 import hashlib
-import logging
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -18,278 +12,256 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bounty import Bounty
-from app.models.score_history import BountyMode, ScoreHistory
+from app.models.submission import Submission
 from app.models.training_run import TrainingRun, TrainingRunStatus, TrainingTranscript
-from app.models.user import User
+from app.models.score_history import ScoreHistory, ScoreMode
 
-logger = logging.getLogger(__name__)
-
-# Matches apply_ema_update in a2a-settlement/exchange/federation/reputation.py
 _EMA_LAMBDA = 0.1
+_ITER_STAKE_DEFAULT = 100  # ATE per iteration when budget is not further subdivided
 
 
 # ---------------------------------------------------------------------------
-# Merkle helpers (self-contained — no external dependency)
+# Internal helpers
 # ---------------------------------------------------------------------------
 
+def compute_ema(scores: list[float], lam: float = _EMA_LAMBDA) -> float:
+    """Exponential moving average with decay λ (same formula as exchange reputation).
 
-def _sha256(data: str | bytes) -> str:
-    if isinstance(data, str):
-        data = data.encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
-
-
-def _merkle_root(leaves: list[str]) -> str | None:
-    """Compute a simple binary Merkle root over a list of hex leaf hashes."""
-    if not leaves:
-        return None
-    nodes = list(leaves)
-    while len(nodes) > 1:
-        if len(nodes) % 2 == 1:
-            nodes.append(nodes[-1])  # duplicate last leaf if odd count
-        nodes = [
-            _sha256(nodes[i] + nodes[i + 1]) for i in range(0, len(nodes), 2)
-        ]
-    return nodes[0]
-
-
-# ---------------------------------------------------------------------------
-# EMA helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply_ema(current: float, outcome: float, lam: float = _EMA_LAMBDA) -> float:
-    """Single EMA step — matches apply_ema_update on the exchange."""
-    return current * (1.0 - lam) + outcome * lam
-
-
-def _compute_ema_sequence(scores: list[float], initial: float = 0.5) -> float:
-    """Run EMA over an ordered score sequence and return the final value."""
-    ema = initial
-    for s in scores:
-        ema = _apply_ema(ema, s)
+    EMA_t = λ * score_t + (1 - λ) * EMA_{t-1}
+    Seed with the first score so that a single-element list returns that score.
+    """
+    if not scores:
+        return 0.0
+    ema = scores[0]
+    for s in scores[1:]:
+        ema = lam * s + (1 - lam) * ema
     return ema
 
 
-# ---------------------------------------------------------------------------
-# init_training_run
-# ---------------------------------------------------------------------------
+def build_merkle_root(provenance_hashes: list[str]) -> str:
+    """Binary Merkle tree over SHA-256 provenance hashes.
+
+    Each leaf is already a hex SHA-256 string.  Internal nodes hash the
+    concatenation of two child hex strings.  An odd number of leaves duplicates
+    the last one, matching the Bitcoin convention.
+    """
+    if not provenance_hashes:
+        return hashlib.sha256(b"").hexdigest()
+
+    layer = [h.encode() if isinstance(h, str) else h for h in provenance_hashes]
+
+    while len(layer) > 1:
+        if len(layer) % 2 == 1:
+            layer.append(layer[-1])
+        layer = [
+            hashlib.sha256(layer[i] + layer[i + 1]).digest()
+            for i in range(0, len(layer), 2)
+        ]
+
+    return layer[0].hex() if isinstance(layer[0], bytes) else layer[0]
 
 
-async def init_training_run(
+def _provenance_hash_for(submission: Submission) -> str:
+    """Derive a SHA-256 provenance hash for a submission's deliverable."""
+    payload = json.dumps(submission.deliverable or {}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Training run CRUD
+# ---------------------------------------------------------------------------
+
+async def create_run(
     db: AsyncSession,
-    agent_user: User,
+    *,
+    agent_user_id: uuid.UUID,
     bounty_id: uuid.UUID,
     max_iterations: int,
     stake_budget: int,
     score_threshold: float,
-    task_type: str | None = None,
+    task_type: str,
 ) -> TrainingRun:
-    """Create a new training run against a bounty.
-
-    Snapshots the bounty's acceptance_criteria into the run record so that
-    concurrent training runs against the same bounty each hold their own
-    isolated copy.  The Bounty record is not modified.
-
-    Does NOT create an escrow — the first escrow is created when the agent
-    claims the bounty on iteration 1.
-    """
-    result = await db.execute(select(Bounty).where(Bounty.id == bounty_id))
-    bounty = result.scalar_one_or_none()
-    if not bounty:
+    bounty = (await db.execute(select(Bounty).where(Bounty.id == bounty_id))).scalar_one_or_none()
+    if bounty is None:
         raise ValueError(f"Bounty {bounty_id} not found")
 
-    bounty_snapshot: dict[str, Any] = {
-        "bounty_id": str(bounty.id),
-        "title": bounty.title,
-        "description": bounty.description,
-        "acceptance_criteria": bounty.acceptance_criteria or {},
-        "task_type": task_type or bounty.tags[0] if bounty.tags else None,
-        "provenance_tier": bounty.provenance_tier.value if bounty.provenance_tier else None,
-        "snapshotted_at": datetime.now(timezone.utc).isoformat(),
-    }
-
     run = TrainingRun(
-        agent_id=agent_user.exchange_bot_id or str(agent_user.id),
-        target_bounty_id=bounty_id,
-        task_type=task_type,
+        bounty_id=bounty_id,
+        agent_user_id=agent_user_id,
+        status=TrainingRunStatus.RUNNING,
         max_iterations=max_iterations,
         stake_budget=stake_budget,
         stake_spent=0,
         score_threshold=score_threshold,
-        status=TrainingRunStatus.RUNNING,
-        bounty_snapshot=bounty_snapshot,
-        started_at=datetime.now(timezone.utc),
+        task_type=task_type,
+        bounty_snapshot={
+            "title": bounty.title,
+            "description": bounty.description,
+            "acceptance_criteria": bounty.acceptance_criteria,
+            "difficulty": bounty.difficulty.value if bounty.difficulty else None,
+            "reward_amount": bounty.reward_amount,
+        },
+        iterations_completed=0,
     )
     db.add(run)
     await db.flush()
-    logger.info(
-        "Training run %s created for agent %s against bounty %s",
-        run.id,
-        run.agent_id,
-        bounty_id,
-    )
     return run
 
 
-# ---------------------------------------------------------------------------
-# record_score
-# ---------------------------------------------------------------------------
+async def get_run(db: AsyncSession, run_id: uuid.UUID) -> TrainingRun | None:
+    return (
+        await db.execute(select(TrainingRun).where(TrainingRun.id == run_id))
+    ).scalar_one_or_none()
 
+
+# ---------------------------------------------------------------------------
+# Score recording
+# ---------------------------------------------------------------------------
 
 async def record_score(
     db: AsyncSession,
     *,
-    agent_id: str,
-    bounty_id: uuid.UUID,
-    task_type: str | None,
-    numeric_score: float,
-    reasoning: str | None,
-    diagnostics: dict | None,
-    mode: BountyMode,
-    training_run_id: uuid.UUID | None = None,
-    provenance: dict | None = None,
-    iteration_stake: int = 0,
+    run: TrainingRun,
+    submission: Submission,
+    mediator_result: dict[str, Any],
+    iter_stake: int = _ITER_STAKE_DEFAULT,
 ) -> ScoreHistory:
-    """Write a single scored attempt to the score_history ledger.
+    """Write one ScoreHistory row and update run accounting."""
+    confidence: float = float(mediator_result.get("confidence", 0.0))
+    reasoning: str | None = mediator_result.get("reasoning")
+    structured: dict | None = mediator_result.get("structured_diagnostic")
 
-    For training runs, also increments TrainingRun.stake_spent and
-    transitions the run to EXHAUSTED if stake_budget would be exceeded
-    after this iteration.
-    """
-    provenance_hash = (
-        _sha256(str(sorted(provenance.items()))) if provenance else None
-    )
+    # Build diagnostics in the canonical shape the harness expects
+    diagnostics: dict = {}
+    if structured:
+        diagnostics["actionable_gaps"] = structured.get("actionable_gaps", [])
+        diagnostics["details"] = structured.get("details", {})
+        diagnostics["task_type"] = run.task_type
+    diagnostics["raw"] = structured or {}
+
+    prov_hash = _provenance_hash_for(submission)
 
     row = ScoreHistory(
-        agent_id=agent_id,
-        bounty_id=bounty_id,
-        task_type=task_type,
-        numeric_score=max(0.0, min(1.0, numeric_score)),
+        agent_user_id=run.agent_user_id,
+        bounty_id=run.bounty_id,
+        training_run_id=run.id,
+        task_type=run.task_type,
+        numeric_score=confidence,
         reasoning=reasoning,
         diagnostics=diagnostics,
-        mode=mode,
-        training_run_id=training_run_id,
-        provenance_hash=provenance_hash,
-        timestamp=datetime.now(timezone.utc),
+        mode=ScoreMode.TRAINING,
+        provenance_hash=prov_hash,
     )
     db.add(row)
 
-    if training_run_id and iteration_stake:
-        result = await db.execute(
-            select(TrainingRun).where(TrainingRun.id == training_run_id)
-        )
-        run = result.scalar_one_or_none()
-        if run:
-            run.stake_spent = (run.stake_spent or 0) + iteration_stake
-            if run.stake_spent >= run.stake_budget and run.status == TrainingRunStatus.RUNNING:
-                run.status = TrainingRunStatus.EXHAUSTED
-                logger.info("Training run %s budget exhausted", run.id)
+    run.iterations_completed += 1
+    run.stake_spent += iter_stake
 
     await db.flush()
     return row
 
 
 # ---------------------------------------------------------------------------
-# generate_transcript
+# Score history query
 # ---------------------------------------------------------------------------
 
+async def get_score_history(
+    db: AsyncSession,
+    *,
+    training_run_id: uuid.UUID | None = None,
+    agent_user_id: uuid.UUID | None = None,
+    mode: str | None = None,
+    task_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[ScoreHistory]:
+    q = select(ScoreHistory).order_by(ScoreHistory.created_at.asc())
 
-async def generate_transcript(db: AsyncSession, run_id: uuid.UUID) -> TrainingTranscript:
-    """Generate and persist an immutable TrainingTranscript for a completed run.
+    if training_run_id is not None:
+        q = q.where(ScoreHistory.training_run_id == training_run_id)
+    if agent_user_id is not None:
+        q = q.where(ScoreHistory.agent_user_id == agent_user_id)
+    if mode is not None:
+        q = q.where(ScoreHistory.mode == ScoreMode(mode.upper()))
+    if task_type is not None:
+        q = q.where(ScoreHistory.task_type == task_type)
 
-    - Fetches all ScoreHistory rows for the run ordered by timestamp.
-    - Computes training EMA using λ=0.1 (same as exchange production EMA).
-    - Builds a Merkle root over the provenance_hash column.
-    - Writes a TrainingTranscript row (unique per run — fails if already exists).
-    """
-    result = await db.execute(
-        select(TrainingRun).where(TrainingRun.id == run_id)
-    )
-    run = result.scalar_one_or_none()
-    if not run:
+    q = q.limit(limit).offset(offset)
+    return list((await db.execute(q)).scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Transcript generation
+# ---------------------------------------------------------------------------
+
+async def complete_run(
+    db: AsyncSession,
+    *,
+    run_id: uuid.UUID,
+    agent_user_id: uuid.UUID,
+) -> TrainingTranscript:
+    """Finalise a training run: compute EMA, build Merkle root, persist transcript."""
+    run = await get_run(db, run_id)
+    if run is None:
         raise ValueError(f"TrainingRun {run_id} not found")
+    if run.agent_user_id != agent_user_id:
+        raise PermissionError("Not your training run")
+    if run.status == TrainingRunStatus.COMPLETED:
+        # Idempotent — return existing transcript
+        existing = (
+            await db.execute(
+                select(TrainingTranscript).where(TrainingTranscript.training_run_id == run_id)
+            )
+        ).scalar_one_or_none()
+        if existing:
+            return existing
 
-    # Check no transcript already exists
-    existing = await db.execute(
-        select(TrainingTranscript).where(TrainingTranscript.training_run_id == run_id)
-    )
-    if existing.scalar_one_or_none():
-        raise ValueError(f"Transcript already exists for run {run_id}")
+    history = await get_score_history(db, training_run_id=run_id)
 
-    # Fetch all score rows ordered by timestamp
-    rows_result = await db.execute(
-        select(ScoreHistory)
-        .where(ScoreHistory.training_run_id == run_id)
-        .order_by(ScoreHistory.timestamp)
-    )
-    rows = list(rows_result.scalars().all())
+    scores = [row.numeric_score for row in history]
+    ema = compute_ema(scores)
+    hashes = [row.provenance_hash for row in history if row.provenance_hash]
+    merkle_root = build_merkle_root(hashes)
 
-    # Compute training EMA (λ=0.1, initial=0.5, same formula as exchange)
-    scores = [r.numeric_score for r in rows]
-    training_ema = _compute_ema_sequence(scores) if scores else 0.5
+    # Fetch agent display id from user
+    from app.models.user import User
+    user = (await db.execute(select(User).where(User.id == agent_user_id))).scalar_one_or_none()
+    agent_display_id = (user.exchange_bot_id or str(agent_user_id)) if user else str(agent_user_id)
 
-    # Merkle root over provenance hashes (skip None hashes)
-    leaf_hashes = [r.provenance_hash for r in rows if r.provenance_hash]
-    merkle_root = _merkle_root(leaf_hashes)
-
-    # Build the ordered attempt sequence for the signed payload
     attempts = [
         {
             "iteration": i + 1,
-            "score_history_id": str(r.id),
-            "numeric_score": r.numeric_score,
-            "reasoning": r.reasoning,
-            "diagnostics": r.diagnostics,
-            "provenance_hash": r.provenance_hash,
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "numeric_score": row.numeric_score,
+            "reasoning": row.reasoning,
+            "diagnostics": row.diagnostics or {},
+            "provenance_hash": row.provenance_hash,
+            "timestamp": row.created_at.isoformat() if row.created_at else None,
         }
-        for i, r in enumerate(rows)
+        for i, row in enumerate(history)
     ]
-
-    now = datetime.now(timezone.utc)
 
     signed_payload: dict[str, Any] = {
         "schema_version": "1.0",
-        "training_run_id": str(run_id),
-        "agent_id": run.agent_id,
-        "bounty_id": str(run.target_bounty_id),
-        "task_type": run.task_type,
-        "total_iterations": len(rows),
-        "total_stake_spent": run.stake_spent or 0,
-        "score_threshold": run.score_threshold,
-        "final_training_ema": training_ema,
         "score_trajectory": scores,
-        "merkle_root": merkle_root,
         "attempts": attempts,
-        "generated_at": now.isoformat(),
+        "merkle_root": merkle_root,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     transcript = TrainingTranscript(
         training_run_id=run_id,
-        agent_id=run.agent_id,
-        bounty_id=run.target_bounty_id,
-        total_iterations=len(rows),
-        total_stake_spent=run.stake_spent or 0,
-        final_production_ema=None,  # fetched from exchange by caller if needed
-        final_training_ema=training_ema,
+        agent_display_id=agent_display_id,
+        bounty_id=run.bounty_id,
+        total_iterations=run.iterations_completed,
+        total_stake_spent=run.stake_spent,
+        final_training_ema=ema,
         merkle_root=merkle_root,
         signed_payload=signed_payload,
-        generated_at=now,
     )
     db.add(transcript)
 
-    # Mark run as completed if not already exhausted
-    if run.status == TrainingRunStatus.RUNNING:
-        run.status = TrainingRunStatus.COMPLETED
-    run.completed_at = now
+    run.status = TrainingRunStatus.COMPLETED
+    run.completed_at = datetime.now(timezone.utc)
 
     await db.flush()
-    logger.info(
-        "Transcript generated for training run %s: %d iterations, EMA=%.4f, merkle=%s",
-        run_id,
-        len(rows),
-        training_ema,
-        merkle_root,
-    )
     return transcript

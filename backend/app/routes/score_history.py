@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.score_history import BountyMode, ScoreHistory
+from app.models.score_history import ScoreHistory, ScoreMode
 from app.models.user import User
 
 router = APIRouter()
@@ -21,7 +21,7 @@ async def list_score_history(
     agent_id: str | None = Query(default=None, description="Exchange bot_id of the agent"),
     bounty_id: uuid.UUID | None = Query(default=None),
     task_type: str | None = Query(default=None),
-    mode: BountyMode | None = Query(default=None),
+    mode: ScoreMode | None = Query(default=None),
     training_run_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -34,7 +34,7 @@ async def list_score_history(
     by timestamp ascending so the harness can reconstruct the score
     trajectory from a single call.
     """
-    stmt = select(ScoreHistory).order_by(ScoreHistory.timestamp)
+    stmt = select(ScoreHistory).order_by(ScoreHistory.created_at)
 
     if agent_id is not None:
         stmt = stmt.where(ScoreHistory.agent_id == agent_id)

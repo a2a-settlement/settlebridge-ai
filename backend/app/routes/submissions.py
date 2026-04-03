@@ -30,7 +30,8 @@ from app.services import (
     submission_service,
     training_service,
 )
-from app.models.score_history import BountyMode
+from app.models.bounty import BountyMode
+from app.models.score_history import ScoreMode
 from app.services.mediator import trigger_training_mediation
 from app.services.notification_service import create_notification
 from app.utils.helpers import compute_content_hash
@@ -146,55 +147,38 @@ async def submit_work(
     # Training bounties: trigger the Settlement Mediator for a structured verdict.
     # Production bounties: record the ai_review score as a lighter-weight ledger entry.
     try:
-        agent_id = user.exchange_bot_id or str(user.id)
         bounty_mode = getattr(bounty, "mode", None) or BountyMode.PRODUCTION
 
         if bounty_mode == BountyMode.TRAINING and bounty.escrow_id and bounty.escrow_id != "pending_claim":
             # Trigger the Settlement Mediator for a structured training verdict
-            task_type = (bounty.tags[0] if bounty.tags else None)
-            verdict_dict = await mediator_svc.trigger_mediation(
-                bounty.escrow_id,
-                mode="training",
-                task_type=task_type,
-            )
-            mediator_verdict = verdict_dict.get("verdict", {})
-            numeric_score = float(mediator_verdict.get("confidence", 0.0))
-            reasoning = mediator_verdict.get("reasoning")
-            diagnostics = mediator_verdict.get("structured_diagnostic")
+            task_type = (bounty.tags[0] if bounty.tags else None) or bounty.task_type or "general"
+            verdict_dict = await trigger_training_mediation(bounty.escrow_id, task_type)
 
-            # Determine the training_run_id by looking up the most recent running
-            # run for this agent+bounty (harness always has exactly one active run)
-            from sqlalchemy import select as sa_select
+            # Look up the active training run for this user+bounty
             from app.models.training_run import TrainingRun, TrainingRunStatus
             run_result = await db.execute(
-                sa_select(TrainingRun)
+                select(TrainingRun)
                 .where(
-                    TrainingRun.agent_id == agent_id,
-                    TrainingRun.target_bounty_id == bounty.id,
+                    TrainingRun.agent_user_id == user.id,
+                    TrainingRun.bounty_id == bounty.id,
                     TrainingRun.status == TrainingRunStatus.RUNNING,
                 )
-                .order_by(TrainingRun.started_at.desc())
+                .order_by(TrainingRun.created_at.desc())
                 .limit(1)
             )
             active_run = run_result.scalar_one_or_none()
 
-            await training_service.record_score(
-                db,
-                agent_id=agent_id,
-                bounty_id=bounty.id,
-                task_type=task_type,
-                numeric_score=numeric_score,
-                reasoning=reasoning,
-                diagnostics=diagnostics,
-                mode=BountyMode.TRAINING,
-                training_run_id=active_run.id if active_run else None,
-                provenance=provenance_dict,
-                iteration_stake=bounty.reward_amount,
-            )
+            if active_run is not None:
+                await training_service.record_score(
+                    db,
+                    run=active_run,
+                    submission=sub,
+                    mediator_result=verdict_dict,
+                    iter_stake=bounty.reward_amount,
+                )
 
             # Reset bounty to OPEN so the harness can claim it again on the
-            # next training iteration. The escrow is cleared because each
-            # iteration creates a fresh one at claim time.
+            # next training iteration.
             bounty.status = BountyStatus.OPEN
             bounty.escrow_id = None
 
@@ -202,19 +186,20 @@ async def submit_work(
             # Production bounty: record the ai_review score as a ledger entry
             ai_score_raw = ai_review.get("score", 100)
             numeric_score = float(ai_score_raw) / 100.0  # normalize 0–100 → 0.0–1.0
-            await training_service.record_score(
-                db,
-                agent_id=agent_id,
+            from app.models.score_history import ScoreHistory, ScoreMode
+            prov_hash = compute_content_hash(sub.deliverable or {})
+            score_row = ScoreHistory(
+                agent_user_id=user.id,
                 bounty_id=bounty.id,
                 task_type=bounty.tags[0] if bounty.tags else None,
                 numeric_score=numeric_score,
                 reasoning=ai_review.get("notes"),
                 diagnostics=None,
-                mode=BountyMode.PRODUCTION,
+                mode=ScoreMode.PRODUCTION,
                 training_run_id=None,
-                provenance=provenance_dict,
-                iteration_stake=0,
+                provenance_hash=prov_hash,
             )
+            db.add(score_row)
     except Exception as score_exc:
         logger.warning("Score recording failed (non-fatal): %s", score_exc)
 

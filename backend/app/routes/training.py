@@ -1,23 +1,17 @@
-"""Training run management endpoints.
-
-POST  /api/training/runs              — init a training run
-GET   /api/training/runs/{run_id}     — status + iteration count
-POST  /api/training/runs/{run_id}/complete  — trigger transcript generation
-GET   /api/training/runs/{run_id}/transcript — return immutable transcript
-"""
-
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.models.training_run import TrainingRun, TrainingTranscript
+from app.models.score_history import ScoreHistory
 from app.models.user import User
 from app.services import training_service
 
@@ -25,58 +19,82 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Request / response schemas
+# Request / Response schemas
 # ---------------------------------------------------------------------------
 
-
-class InitTrainingRunRequest(BaseModel):
+class CreateRunRequest(BaseModel):
     bounty_id: uuid.UUID
-    max_iterations: int = Field(ge=1, le=500)
-    stake_budget: int = Field(ge=1, description="Total micro-stake budget in ATE for this run")
-    score_threshold: float = Field(ge=0.0, le=1.0, description="Stop when score >= this value")
-    task_type: str | None = None
+    max_iterations: int = 10
+    stake_budget: int = 1000
+    score_threshold: float = 0.85
+    task_type: str
 
 
 class TrainingRunResponse(BaseModel):
-    run_id: str
-    agent_id: str
-    target_bounty_id: str
-    task_type: str | None
+    run_id: uuid.UUID
+    status: str
+    bounty_id: uuid.UUID
     max_iterations: int
     stake_budget: int
     stake_spent: int
     score_threshold: float
-    status: str
-    iteration_count: int
-    started_at: str
-    completed_at: str | None
+    task_type: str
+    iterations_completed: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
-class CompleteTrainingRunRequest(BaseModel):
-    """Optional body — no fields required, but allows future extension."""
-    pass
+class ScoreHistoryRow(BaseModel):
+    id: uuid.UUID
+    agent_user_id: uuid.UUID
+    bounty_id: uuid.UUID
+    training_run_id: uuid.UUID | None = None
+    task_type: str | None = None
+    numeric_score: float
+    reasoning: str | None = None
+    diagnostics: dict | None = None
+    mode: str
+    provenance_hash: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TranscriptResponse(BaseModel):
+    id: uuid.UUID
+    training_run_id: uuid.UUID
+    agent_id: str
+    bounty_id: uuid.UUID
+    total_iterations: int
+    total_stake_spent: int
+    final_training_ema: float
+    merkle_root: str
+    signed_payload: dict[str, Any]
+    generated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Endpoints
 # ---------------------------------------------------------------------------
 
-
-@router.post("/runs", status_code=status.HTTP_201_CREATED)
-async def init_training_run(
-    body: InitTrainingRunRequest,
+@router.post(
+    "/training/runs",
+    response_model=TrainingRunResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["training"],
+)
+async def create_training_run(
+    body: CreateRunRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Initialise a training run against a bounty.
-
-    Snapshots the bounty's acceptance criteria into the run.  Does not create
-    an escrow — the harness creates one per iteration by claiming the bounty.
-    """
     try:
-        run = await training_service.init_training_run(
+        run = await training_service.create_run(
             db,
-            agent_user=user,
+            agent_user_id=user.id,
             bounty_id=body.bounty_id,
             max_iterations=body.max_iterations,
             stake_budget=body.stake_budget,
@@ -88,109 +106,145 @@ async def init_training_run(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    return {"run_id": str(run.id), "status": run.status.value}
-
-
-@router.get("/runs/{run_id}", response_model=TrainingRunResponse)
-async def get_training_run(
-    run_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Return status and current iteration count for a training run."""
-    result = await db.execute(select(TrainingRun).where(TrainingRun.id == run_id))
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Training run not found")
-
-    # Count scored iterations
-    from sqlalchemy import func, select as sa_select
-    from app.models.score_history import ScoreHistory
-
-    count_result = await db.execute(
-        sa_select(func.count()).where(ScoreHistory.training_run_id == run_id)
-    )
-    iteration_count = count_result.scalar() or 0
-
     return TrainingRunResponse(
-        run_id=str(run.id),
-        agent_id=run.agent_id,
-        target_bounty_id=str(run.target_bounty_id),
-        task_type=run.task_type,
+        run_id=run.id,
+        status=run.status.value,
+        bounty_id=run.bounty_id,
         max_iterations=run.max_iterations,
         stake_budget=run.stake_budget,
-        stake_spent=run.stake_spent or 0,
+        stake_spent=run.stake_spent,
         score_threshold=run.score_threshold,
-        status=run.status.value,
-        iteration_count=iteration_count,
-        started_at=run.started_at.isoformat() if run.started_at else "",
-        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+        task_type=run.task_type,
+        iterations_completed=run.iterations_completed,
+        created_at=run.created_at,
     )
 
 
-@router.post("/runs/{run_id}/complete", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/training/runs/{run_id}/complete",
+    response_model=TranscriptResponse,
+    tags=["training"],
+)
 async def complete_training_run(
     run_id: uuid.UUID,
-    _body: CompleteTrainingRunRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger transcript generation for a training run.
-
-    Idempotency: returns 409 if a transcript already exists for this run.
-    The generated transcript is immutable — it cannot be modified or deleted.
-    """
     try:
-        transcript = await training_service.generate_transcript(db, run_id)
+        transcript = await training_service.complete_run(
+            db, run_id=run_id, agent_user_id=user.id
+        )
         await db.commit()
         await db.refresh(transcript)
     except ValueError as exc:
-        msg = str(exc)
-        if "not found" in msg:
-            raise HTTPException(status_code=404, detail=msg)
-        if "already exists" in msg:
-            raise HTTPException(status_code=409, detail=msg)
-        raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
-    return {
-        "transcript_id": str(transcript.id),
-        "run_id": str(run_id),
-        "total_iterations": transcript.total_iterations,
-        "final_training_ema": transcript.final_training_ema,
-        "merkle_root": transcript.merkle_root,
-        "generated_at": transcript.generated_at.isoformat() if transcript.generated_at else None,
-    }
+    return _transcript_response(transcript)
 
 
-@router.get("/runs/{run_id}/transcript")
-async def get_transcript(
+@router.get(
+    "/training/runs/{run_id}/transcript",
+    response_model=TranscriptResponse,
+    tags=["training"],
+)
+async def get_training_transcript(
     run_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the immutable training transcript for a completed run."""
-    result = await db.execute(
-        select(TrainingTranscript).where(TrainingTranscript.training_run_id == run_id)
-    )
-    transcript = result.scalar_one_or_none()
-    if not transcript:
+    from sqlalchemy import select
+
+    run = await training_service.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if run.agent_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not your training run")
+
+    transcript = (
+        await db.execute(
+            select(TrainingTranscript).where(TrainingTranscript.training_run_id == run_id)
+        )
+    ).scalar_one_or_none()
+
+    if transcript is None:
         raise HTTPException(
             status_code=404,
-            detail="Transcript not found — call POST /complete first",
+            detail="Transcript not yet generated — POST /training/runs/{run_id}/complete first",
         )
 
-    return {
-        "id": str(transcript.id),
-        "training_run_id": str(transcript.training_run_id),
-        "agent_id": transcript.agent_id,
-        "bounty_id": str(transcript.bounty_id),
-        "total_iterations": transcript.total_iterations,
-        "total_stake_spent": transcript.total_stake_spent,
-        "final_production_ema": transcript.final_production_ema,
-        "final_training_ema": transcript.final_training_ema,
-        "merkle_root": transcript.merkle_root,
-        "signed_payload": transcript.signed_payload,
-        "generated_at": (
-            transcript.generated_at.isoformat() if transcript.generated_at else None
-        ),
-    }
+    return _transcript_response(transcript)
+
+
+@router.get(
+    "/score-history",
+    response_model=list[ScoreHistoryRow],
+    tags=["training"],
+)
+async def list_score_history(
+    training_run_id: uuid.UUID | None = Query(default=None),
+    agent_id: str | None = Query(default=None, description="SettleBridge user UUID of the agent"),
+    mode: str | None = Query(default=None, description="training or production"),
+    task_type: str | None = Query(default=None),
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Callers can query by agent_id (UUID string) or implicitly for themselves
+    agent_user_id: uuid.UUID | None = None
+    if agent_id:
+        try:
+            agent_user_id = uuid.UUID(agent_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="agent_id must be a valid UUID")
+    elif training_run_id is None:
+        # Default to the calling user's own history
+        agent_user_id = user.id
+
+    rows = await training_service.get_score_history(
+        db,
+        training_run_id=training_run_id,
+        agent_user_id=agent_user_id,
+        mode=mode,
+        task_type=task_type,
+        limit=limit,
+        offset=offset,
+    )
+    return [_score_row_response(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _transcript_response(t: TrainingTranscript) -> TranscriptResponse:
+    return TranscriptResponse(
+        id=t.id,
+        training_run_id=t.training_run_id,
+        agent_id=t.agent_display_id,
+        bounty_id=t.bounty_id,
+        total_iterations=t.total_iterations,
+        total_stake_spent=t.total_stake_spent,
+        final_training_ema=t.final_training_ema,
+        merkle_root=t.merkle_root,
+        signed_payload=t.signed_payload,
+        generated_at=t.generated_at,
+    )
+
+
+def _score_row_response(r: ScoreHistory) -> ScoreHistoryRow:
+    return ScoreHistoryRow(
+        id=r.id,
+        agent_user_id=r.agent_user_id,
+        bounty_id=r.bounty_id,
+        training_run_id=r.training_run_id,
+        task_type=r.task_type,
+        numeric_score=r.numeric_score,
+        reasoning=r.reasoning,
+        diagnostics=r.diagnostics,
+        mode=r.mode.value,
+        provenance_hash=r.provenance_hash,
+        created_at=r.created_at,
+    )
