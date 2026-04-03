@@ -79,6 +79,7 @@ async def claim_bounty(
             agent_exchange_bot_id=user.exchange_bot_id,
         )
         claim.training_run_id = training_run_id
+        claim.virtual_escrow_id = virtual_escrow_id
 
     else:
         # Normal production claim path

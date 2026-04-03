@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -25,13 +26,10 @@ from app.services import (
     bounty_service,
     claim_service,
     exchange as exchange_svc,
-    mediator as mediator_svc,
     review_service,
     submission_service,
     training_service,
 )
-from app.models.bounty import BountyMode
-from app.models.score_history import ScoreMode
 from app.services.mediator import trigger_training_mediation
 from app.services.notification_service import create_notification
 from app.utils.helpers import compute_content_hash
@@ -143,67 +141,6 @@ async def submit_work(
         reference_id=sub.id,
     )
 
-    # Score recording — write to score_history for all bounty modes.
-    # Training bounties: trigger the Settlement Mediator for a structured verdict.
-    # Production bounties: record the ai_review score as a lighter-weight ledger entry.
-    try:
-        bounty_mode = getattr(bounty, "mode", None) or BountyMode.PRODUCTION
-
-        if bounty_mode == BountyMode.TRAINING and bounty.escrow_id and bounty.escrow_id != "pending_claim":
-            # Trigger the Settlement Mediator for a structured training verdict
-            task_type = (bounty.tags[0] if bounty.tags else None) or bounty.task_type or "general"
-            verdict_dict = await trigger_training_mediation(bounty.escrow_id, task_type)
-
-            # Look up the active training run for this user+bounty
-            from app.models.training_run import TrainingRun, TrainingRunStatus
-            run_result = await db.execute(
-                select(TrainingRun)
-                .where(
-                    TrainingRun.agent_user_id == user.id,
-                    TrainingRun.bounty_id == bounty.id,
-                    TrainingRun.status == TrainingRunStatus.RUNNING,
-                )
-                .order_by(TrainingRun.created_at.desc())
-                .limit(1)
-            )
-            active_run = run_result.scalar_one_or_none()
-
-            if active_run is not None:
-                await training_service.record_score(
-                    db,
-                    run=active_run,
-                    submission=sub,
-                    mediator_result=verdict_dict,
-                    iter_stake=bounty.reward_amount,
-                )
-
-            # Reset bounty to OPEN so the harness can claim it again on the
-            # next training iteration.
-            bounty.status = BountyStatus.OPEN
-            bounty.escrow_id = None
-
-        elif ai_review:
-            # Production bounty: record the ai_review score as a ledger entry
-            ai_score_raw = ai_review.get("score", 100)
-            numeric_score = float(ai_score_raw) / 100.0  # normalize 0–100 → 0.0–1.0
-            from app.models.score_history import ScoreHistory, ScoreMode
-            import json as _json
-            prov_hash = compute_content_hash(_json.dumps(sub.deliverable or {}, sort_keys=True))
-            score_row = ScoreHistory(
-                agent_user_id=user.id,
-                bounty_id=bounty.id,
-                task_type=bounty.tags[0] if bounty.tags else None,
-                numeric_score=numeric_score,
-                reasoning=ai_review.get("notes"),
-                diagnostics=None,
-                mode=ScoreMode.PRODUCTION,
-                training_run_id=None,
-                provenance_hash=prov_hash,
-            )
-            db.add(score_row)
-    except Exception as score_exc:
-        logger.warning("Score recording failed (non-fatal): %s", score_exc)
-
     # Auto-approval: use AI review to decide score, holdback, or rejection
     if bounty.auto_approve:
         rec = ai_review.get("recommendation", "approve")
@@ -305,7 +242,7 @@ async def submit_work(
     # Training path: call mediator, record score, reset bounty for next iteration
     if claim.training_run_id:
         run = await training_service.get_run(db, claim.training_run_id)
-        escrow_id = bounty.escrow_id or ""
+        escrow_id = claim.virtual_escrow_id or bounty.escrow_id or ""
         is_virtual_escrow = escrow_id.startswith("training:")
         if run is not None and escrow_id and escrow_id != "pending_claim":
             try:

@@ -309,3 +309,19 @@ export interface AssistSession {
   updated_at: string;
   finalized_bounty_id: string | null;
 }
+
+export interface TrainingCardData {
+  run_id: string;
+  public_title: string;
+  bounty_title: string;
+  agent_display_name: string;
+  status: "RUNNING" | "COMPLETED" | "CANCELLED";
+  iterations: number;
+  scores: number[];
+  final_ema: number;
+  score_threshold: number;
+  threshold_reached: boolean;
+  merkle_root: string | null;
+  created_at: string;
+  completed_at: string | null;
+}

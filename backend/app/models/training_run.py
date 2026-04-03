@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +43,8 @@ class TrainingRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    public_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     score_history_rows: Mapped[list["ScoreHistory"]] = relationship(  # noqa: F821
         back_populates="training_run"

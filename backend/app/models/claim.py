@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,7 @@ class Claim(Base):
     training_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("training_runs.id"), nullable=True
     )
+    virtual_escrow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     bounty: Mapped["Bounty"] = relationship(back_populates="claims")  # noqa: F821
     agent_user: Mapped["User"] = relationship(back_populates="claims")  # noqa: F821
