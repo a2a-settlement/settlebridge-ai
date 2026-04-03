@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:marketplace": "tsc -b && vite build --base / --outDir dist-marketplace-new",
+    "build:marketplace": "tsc -b && vite build --base / --outDir dist-marketplace-new --config vite.marketplace.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

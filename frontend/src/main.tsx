@@ -7,7 +7,7 @@ import "./app.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter basename="/app">
+    <BrowserRouter basename={import.meta.env.VITE_BASENAME ?? "/app"}>
       <AuthProvider>
         <App />
       </AuthProvider>
