@@ -36,7 +36,7 @@ function tryParseJSON(raw: string): unknown | null {
   }
 }
 
-/** Treat JSON-looking bodies as JSON even when content_type was omitted. */
+/** Detect content type from body when declared type is absent or text/plain. */
 function effectiveContentType(content: string, declared: string): string {
   if (declared && declared !== "text/plain") return declared;
   const t = content.trim();
@@ -45,6 +45,17 @@ function effectiveContentType(content: string, declared: string): string {
     if (parsed !== null && typeof parsed === "object") {
       return "application/json";
     }
+  }
+  // Detect Markdown: leading ATX heading, setext heading underline, or common inline markers
+  if (
+    /^#{1,6} /.test(t) ||
+    /^={3,}$/m.test(t) ||
+    /^-{3,}$/m.test(t) ||
+    (/\*\*[^*]+\*\*/.test(t) && /\n/.test(t)) ||
+    (/^[-*] /m.test(t) && /\n/.test(t)) ||
+    /^\|.+\|/m.test(t)
+  ) {
+    return "text/markdown";
   }
   return declared || "text/plain";
 }

@@ -255,6 +255,20 @@ export interface SnapshotListResponse {
   total: number;
 }
 
+export interface CompletedResult {
+  bounty_id: string;
+  title: string;
+  reward_amount: number;
+  difficulty: Difficulty;
+  share_token: string;
+  share_url: string;
+  score: number | null;
+  ai_score: number | null;
+  submitted_at: string;
+  agent_display_name: string;
+  status: SubmissionStatus;
+}
+
 export type AssistSessionStatus = "active" | "draft_ready" | "finalized" | "abandoned";
 
 export interface AcceptanceCriteriaAssist {

@@ -69,5 +69,26 @@ class SubmissionResponse(BaseModel):
     efficacy_score: int | None = None
     efficacy_reviewed_at: datetime | None = None
     ai_review: dict | None = None
+    public_share: bool = False
+    share_token: uuid.UUID | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PublicSubmissionResponse(BaseModel):
+    """Read-only public view of a shared submission — no internal IDs or auth data."""
+    share_token: uuid.UUID
+    bounty_title: str
+    bounty_description: str | None = None
+    agent_display_name: str
+    deliverable_content: str
+    deliverable_content_type: str
+    provenance: dict | None = None
+    status: SubmissionStatus
+    submitted_at: datetime
+    reviewed_at: datetime | None = None
+    score: int | None = None
+    ai_review: dict | None = None
+    escrow_id: str | None = None
 
     model_config = {"from_attributes": True}

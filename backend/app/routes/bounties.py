@@ -57,6 +57,62 @@ async def list_bounties(
     )
 
 
+@router.get("/completed-results", tags=["bounties"])
+async def completed_results(
+    limit: int = Query(12, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """Public list of completed bounties that have an approved, publicly shared submission."""
+    from sqlalchemy import select, desc
+    from app.models.submission import Submission, SubmissionStatus
+    from app.models.bounty import Bounty
+    from app.models.user import User as UserModel
+
+    rows = await db.execute(
+        select(
+            Bounty.id,
+            Bounty.title,
+            Bounty.reward_amount,
+            Bounty.difficulty,
+            Submission.share_token,
+            Submission.score,
+            Submission.submitted_at,
+            Submission.ai_review,
+            Submission.status.label("submission_status"),
+            UserModel.display_name.label("agent_display_name"),
+        )
+        .join(Submission, Submission.bounty_id == Bounty.id)
+        .join(UserModel, UserModel.id == Submission.agent_user_id)
+        .where(
+            Submission.public_share.is_(True),
+            Submission.share_token.is_not(None),
+            Submission.status.in_([
+                SubmissionStatus.APPROVED,
+                SubmissionStatus.PARTIALLY_APPROVED,
+                SubmissionStatus.PENDING_REVIEW,
+            ]),
+        )
+        .order_by(desc(Submission.submitted_at))
+        .limit(limit)
+    )
+    results = []
+    for row in rows.all():
+        results.append({
+            "bounty_id": str(row.id),
+            "title": row.title,
+            "reward_amount": row.reward_amount,
+            "difficulty": row.difficulty.value if hasattr(row.difficulty, "value") else row.difficulty,
+            "share_token": str(row.share_token),
+            "share_url": f"https://settlebridge.ai/shared/{row.share_token}",
+            "score": row.score,
+            "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+            "agent_display_name": row.agent_display_name,
+            "ai_score": row.ai_review.get("score") if row.ai_review else None,
+            "status": row.submission_status.value if hasattr(row.submission_status, "value") else str(row.submission_status),
+        })
+    return results
+
+
 @router.get("/my/posted", response_model=list[BountyResponse])
 async def my_posted(
     user: User = Depends(get_current_user),

@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,9 @@ class Submission(Base):
     efficacy_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     ai_review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    public_share: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    share_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, unique=True, index=True)
 
     claim: Mapped["Claim"] = relationship(back_populates="submissions")  # noqa: F821
     bounty: Mapped["Bounty"] = relationship(back_populates="submissions")  # noqa: F821

@@ -327,10 +327,18 @@ function StructuredReportView({ report }: { report: Record<string, unknown> }) {
         <div className="grid sm:grid-cols-2 gap-3">
           <MetaRow label="Generated" value={report.generated_at} />
           <MetaRow label="Source agent" value={report.source_agent} />
-          <MetaRow label="Endpoint" value={report.agent_endpoint} href />
           <MetaRow label="Agent card" value={report.agent_card} href />
           <MetaRow label="Query cost" value={report.query_cost_ate != null ? `${report.query_cost_ate} ATE` : null} />
           <MetaRow label="Settlement" value={report.settlement_method} />
+          {typeof report.agent_endpoint === "string" && report.agent_endpoint && (
+            <div className="text-sm sm:col-span-2">
+              <span className="text-gray-500">A2A endpoint</span>
+              <span className="ml-2 font-mono text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded break-all select-all">
+                {String(report.agent_endpoint)}
+              </span>
+              <span className="ml-2 text-xs text-gray-400">(programmatic · POST only)</span>
+            </div>
+          )}
         </div>
       </header>
 
