@@ -10,22 +10,26 @@ to ``POST /api/claims/{id}/submit`` on each iteration.
 
 Boundary contract for ``mutation_callback``
 ------------------------------------------
-The callback receives the Mediator's reasoning and structured diagnostic from
-the previous iteration and MUST return a ``dict`` that will be used verbatim
-as the ``deliverable`` field of the next submission request body.
+The callback receives the Mediator's reasoning, structured diagnostic, and the
+best-scoring deliverable seen so far.  It MUST return a ``dict`` that will be
+used verbatim as the ``deliverable`` field of the next submission request body.
 
 Signature::
 
-    def my_callback(reasoning: str, diagnostics: dict) -> dict:
-        # reasoning   — plain-text explanation from the Mediator
-        # diagnostics — {"task_type": ..., "actionable_gaps": [...], "details": {...}}
+    def my_callback(reasoning: str, diagnostics: dict, best_deliverable: dict) -> dict:
+        # reasoning        — plain-text explanation from the Mediator
+        # diagnostics      — {"task_type": ..., "actionable_gaps": [...], "details": {...}}
+        # best_deliverable — the deliverable that produced the highest score so far
         # Return the next submission's deliverable payload.
         return {"content": "...updated output...", "format": "text"}
 
-What the operator puts in that dict is entirely their responsibility — it can
-be a manually crafted output, a regenerated result from a different prompt, or
-anything else expressed as a serialisable dict.  The harness does not inspect
-or validate the returned value beyond JSON-serialisability.
+When ``versioning=True`` (default), ``best_deliverable`` is the deliverable
+from the highest-scoring iteration, not the most recent one.  Callbacks should
+use it as the starting point for the next mutation rather than the last
+iteration's deliverable, which may have regressed.
+
+When ``versioning=False`` (legacy), ``best_deliverable`` equals the most recent
+deliverable, preserving the original behaviour.
 
 Budget enforcement (v1 limitation)
 -----------------------------------
@@ -52,13 +56,16 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
-MutationCallback = Callable[[str, dict], dict]
+# (reasoning, diagnostics, best_deliverable) -> next deliverable
+MutationCallback = Callable[[str, dict, dict], dict]
 
 _DEFAULT_POLL_INTERVAL = 5.0   # seconds between score-history polls
 _DEFAULT_POLL_TIMEOUT  = 120.0 # seconds before giving up on a score appearing
 _RETRY_WAIT_MIN        = 1.0
 _RETRY_WAIT_MAX        = 10.0
 _RETRY_MAX_ATTEMPTS    = 4
+
+_EMA_LAMBDA = 0.1  # matches SettleBridge server-side EMA λ
 
 
 class HarnessError(RuntimeError):
@@ -79,13 +86,17 @@ class TrainingHarness:
         max_iterations:    Hard cap on the number of training iterations.
         stake_budget:      Total ATE micro-stake budget across all iterations.
         score_threshold:   Stop early when ``numeric_score >= score_threshold``.
-        mutation_callback: Callable that receives ``(reasoning, diagnostics)``
-                           from the previous iteration and returns the next
-                           submission's ``deliverable`` dict.
+        mutation_callback: Callable ``(reasoning, diagnostics, best_deliverable)``
+                           that returns the next submission's deliverable dict.
         initial_deliverable: The deliverable dict for the very first iteration.
         task_type:         Optional task type string forwarded to the Mediator.
         poll_interval:     Seconds between score-history polls (default 5 s).
         poll_timeout:      Seconds before giving up waiting for a score (default 120 s).
+        versioning:        When True (default), keep/revert logic is active —
+                           mutation always starts from the best-scoring
+                           deliverable, not the most recent one.  Set to False
+                           to restore the original always-mutate-from-latest
+                           behaviour.
     """
 
     def __init__(
@@ -102,6 +113,7 @@ class TrainingHarness:
         task_type: str | None = None,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
         poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+        versioning: bool = True,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
@@ -114,10 +126,17 @@ class TrainingHarness:
         self.task_type = task_type
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
+        self.versioning = versioning
 
         self._client: httpx.Client | None = None
         self.run_id: str | None = None
         self._stake_spent = 0
+
+        # Best-so-far tracking (populated during run())
+        self._best_deliverable: dict | None = None
+        self._best_score: float = -1.0
+        self._best_iteration: int = 0
+        self._improvement_history: list[dict] = []
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -183,11 +202,13 @@ class TrainingHarness:
         deadline = time.monotonic() + self.poll_timeout
         last_count = 0
         while time.monotonic() < deadline:
-            rows = self._get(
+            raw = self._get(
                 "/api/score-history",
                 training_run_id=self.run_id,
                 limit=500,
-            ).get("items", [])
+            )
+            # Support both envelope {"items": [...]} and bare list responses
+            rows = raw if isinstance(raw, list) else raw.get("items", [])
             if len(rows) > last_count:
                 return rows[-1]  # most recent row
             time.sleep(self.poll_interval)
@@ -241,18 +262,27 @@ class TrainingHarness:
                 2. Claim the bounty (creates a new micro-escrow on the exchange)
                 3. Submit the current deliverable
                 4. Poll score-history until the Mediator verdict appears
-                5. If score >= threshold → stop (success)
-                6. Call mutation_callback(reasoning, diagnostics) → next deliverable
+                5. keep/revert: update best_deliverable if score improved
+                6. If score >= threshold → stop (success)
+                7. Call mutation_callback(reasoning, diagnostics, best_deliverable)
             After loop: complete run → fetch and return transcript
 
         Returns:
-            The transcript dict from ``GET /api/training/runs/{id}/transcript``.
+            The transcript dict from ``GET /api/training/runs/{id}/transcript``,
+            augmented with client-side fields: ``best_score``, ``best_iteration``,
+            and ``improvement_history``.
 
         Raises:
             BudgetExhaustedError: If the remaining stake budget is too small to
                                    proceed before starting a new iteration.
             HarnessError: On non-retryable API failures.
         """
+        # Reset per-run state so the harness is reusable
+        self._best_deliverable = None
+        self._best_score = -1.0
+        self._best_iteration = 0
+        self._improvement_history = []
+
         with httpx.Client(timeout=30.0) as client:
             self._client = client
             try:
@@ -318,7 +348,36 @@ class TrainingHarness:
             except Exception:
                 pass  # non-fatal; client-side counter is the backup
 
-            # 4. Check threshold
+            # 4. Keep/revert: update best-so-far state
+            if self.versioning:
+                kept = last_score > self._best_score
+                if kept:
+                    self._best_score = last_score
+                    self._best_deliverable = deliverable
+                    self._best_iteration = iteration
+                    logger.info(
+                        "Iteration %d kept as new best (score=%.4f)", iteration, last_score
+                    )
+                else:
+                    logger.info(
+                        "Iteration %d reverted (score=%.4f < best=%.4f)",
+                        iteration, last_score, self._best_score,
+                    )
+            else:
+                # Legacy mode: always advance from most recent deliverable
+                self._best_deliverable = deliverable
+                self._best_score = max(self._best_score, last_score)
+                kept = True
+
+            self._improvement_history.append({
+                "iteration_index": iteration,
+                "score": last_score,
+                "kept": kept,
+                "cumulative_best": self._best_score,
+                "reasoning": last_reasoning,
+            })
+
+            # 5. Check threshold
             if last_score is not None and last_score >= self.score_threshold:
                 logger.info(
                     "Score threshold %.4f reached (score=%.4f). Stopping.",
@@ -326,10 +385,184 @@ class TrainingHarness:
                 )
                 break
 
-            # 5. Mutate for next iteration (skip on last iteration)
+            # 6. Mutate for next iteration (skip on last iteration)
             if iteration < self.max_iterations:
-                deliverable = self.mutation_callback(last_reasoning, last_diagnostics)
+                deliverable = self.mutation_callback(
+                    last_reasoning,
+                    last_diagnostics,
+                    self._best_deliverable,
+                )
 
-        # Complete the run and return the transcript
+        # Complete the run, fetch transcript, and augment with client-side fields
         self._complete_run()
-        return self._fetch_transcript()
+        transcript = self._fetch_transcript()
+        transcript["best_score"] = self._best_score
+        transcript["best_iteration"] = self._best_iteration
+        transcript["improvement_history"] = self._improvement_history
+        return transcript
+
+    # ------------------------------------------------------------------
+    # Visualisation
+    # ------------------------------------------------------------------
+
+    def plot(self, format: str = "html") -> "str | bytes":
+        """Generate a score trajectory visualisation from the completed run.
+
+        Must be called after ``run()``.  Uses ``improvement_history`` built
+        during the run to render two series: raw score per iteration and a
+        running EMA line matching the SettleBridge server λ=0.1.
+
+        Args:
+            format: ``"html"`` (default) returns a self-contained Plotly HTML
+                    string.  ``"png"`` returns PNG bytes via matplotlib.
+
+        Returns:
+            ``str`` for ``format="html"``, ``bytes`` for ``format="png"``.
+
+        Raises:
+            RuntimeError: If called before ``run()`` (no history available).
+            ImportError:  If the required viz library is not installed.
+                          Install with ``pip install 'settlebridge-harness[viz]'``.
+            ValueError:   If ``format`` is not ``"html"`` or ``"png"``.
+        """
+        if not self._improvement_history:
+            raise RuntimeError(
+                "No improvement history — call run() before plot()."
+            )
+        if format not in ("html", "png"):
+            raise ValueError(f"format must be 'html' or 'png', got {format!r}")
+
+        iterations = [h["iteration_index"] for h in self._improvement_history]
+        scores = [h["score"] for h in self._improvement_history]
+        kept_flags = [h["kept"] for h in self._improvement_history]
+        reasonings = [h.get("reasoning", "") for h in self._improvement_history]
+
+        # Running EMA (λ=0.1, same as SettleBridge server)
+        ema_values: list[float] = []
+        ema = scores[0]
+        for s in scores:
+            ema = _EMA_LAMBDA * s + (1 - _EMA_LAMBDA) * ema
+            ema_values.append(ema)
+
+        if format == "html":
+            try:
+                import plotly.graph_objects as go
+            except ImportError:
+                raise ImportError(
+                    "Plotly is not installed. "
+                    "Run: pip install 'settlebridge-harness[viz]'"
+                )
+
+            keep_x = [iterations[i] for i, k in enumerate(kept_flags) if k]
+            keep_y = [scores[i] for i, k in enumerate(kept_flags) if k]
+            keep_hover = [reasonings[i] for i, k in enumerate(kept_flags) if k]
+
+            revert_x = [iterations[i] for i, k in enumerate(kept_flags) if not k]
+            revert_y = [scores[i] for i, k in enumerate(kept_flags) if not k]
+            revert_hover = [reasonings[i] for i, k in enumerate(kept_flags) if not k]
+
+            fig = go.Figure()
+
+            # Keep markers
+            fig.add_trace(go.Scatter(
+                x=keep_x, y=keep_y,
+                mode="markers",
+                marker=dict(color="#2ecc71", size=10, symbol="circle"),
+                name="Keep",
+                hovertext=keep_hover,
+                hovertemplate="Iter %{x}<br>Score: %{y:.4f}<br>%{hovertext}<extra></extra>",
+            ))
+
+            # Revert markers
+            fig.add_trace(go.Scatter(
+                x=revert_x, y=revert_y,
+                mode="markers",
+                marker=dict(color="#e74c3c", size=10, symbol="x"),
+                name="Revert",
+                hovertext=revert_hover,
+                hovertemplate="Iter %{x}<br>Score: %{y:.4f}<br>%{hovertext}<extra></extra>",
+            ))
+
+            # Raw score line (behind markers)
+            fig.add_trace(go.Scatter(
+                x=iterations, y=scores,
+                mode="lines",
+                line=dict(color="#95a5a6", width=1, dash="dot"),
+                name="Raw score",
+                showlegend=True,
+            ))
+
+            # EMA line
+            fig.add_trace(go.Scatter(
+                x=iterations, y=ema_values,
+                mode="lines",
+                line=dict(color="#3498db", width=2),
+                name=f"EMA (λ={_EMA_LAMBDA})",
+            ))
+
+            # Threshold line
+            fig.add_hline(
+                y=self.score_threshold,
+                line_dash="dash",
+                line_color="#f39c12",
+                annotation_text=f"Threshold {self.score_threshold}",
+                annotation_position="top right",
+            )
+
+            fig.update_layout(
+                title="SettleBridge Training Trajectory",
+                xaxis_title="Iteration",
+                yaxis_title="Score",
+                yaxis=dict(range=[0, 1.05]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                hovermode="x unified",
+            )
+
+            return fig.to_html(full_html=True, include_plotlyjs="cdn")
+
+        else:  # format == "png"
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+            except ImportError:
+                raise ImportError(
+                    "Matplotlib is not installed. "
+                    "Run: pip install 'settlebridge-harness[viz]'"
+                )
+
+            from io import BytesIO
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+
+            keep_x = [iterations[i] for i, k in enumerate(kept_flags) if k]
+            keep_y = [scores[i] for i, k in enumerate(kept_flags) if k]
+            revert_x = [iterations[i] for i, k in enumerate(kept_flags) if not k]
+            revert_y = [scores[i] for i, k in enumerate(kept_flags) if not k]
+
+            ax.plot(iterations, scores, color="#95a5a6", linewidth=1,
+                    linestyle="dotted", label="Raw score")
+            ax.plot(iterations, ema_values, color="#3498db", linewidth=2,
+                    label=f"EMA (λ={_EMA_LAMBDA})")
+            ax.axhline(y=self.score_threshold, color="#f39c12", linestyle="--",
+                       label=f"Threshold {self.score_threshold}")
+
+            if keep_x:
+                ax.scatter(keep_x, keep_y, color="#2ecc71", s=80,
+                           zorder=5, label="Keep")
+            if revert_x:
+                ax.scatter(revert_x, revert_y, color="#e74c3c", s=80,
+                           marker="x", zorder=5, label="Revert")
+
+            ax.set_xlabel("Iteration")
+            ax.set_ylabel("Score")
+            ax.set_ylim(0, 1.05)
+            ax.set_title("SettleBridge Training Trajectory")
+            ax.legend(loc="lower right")
+            fig.tight_layout()
+
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=150)
+            plt.close(fig)
+            buf.seek(0)
+            return buf.read()
