@@ -183,6 +183,13 @@ async def submit_work(
                 provenance=provenance_dict,
                 iteration_stake=bounty.reward_amount,
             )
+
+            # Reset bounty to OPEN so the harness can claim it again on the
+            # next training iteration. The escrow is cleared because each
+            # iteration creates a fresh one at claim time.
+            bounty.status = BountyStatus.OPEN
+            bounty.escrow_id = None
+
         elif ai_review:
             # Production bounty: record the ai_review score as a ledger entry
             ai_score_raw = ai_review.get("score", 100)
