@@ -1,6 +1,6 @@
 [project]
 name = "settlebridge-backend"
-version = "1.2.0"
+version = "1.2.1"
 description = "SettleBridge Gateway — trust and policy enforcement for agent-to-agent settlement"
 requires-python = ">=3.11"
 

@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.bounty import BountyStatus, Difficulty, ProvenanceTier
-from app.models.notification import NotificationType
+from app.models.bounty import BountyStatus, Difficulty
+from app.models.claim import ClaimStatus
 from app.models.user import User
 from app.schemas.bounty import (
     BountyCreateRequest,
@@ -18,7 +18,6 @@ from app.schemas.bounty import (
     BountyUpdateRequest,
 )
 from app.services import bounty_service, exchange as exchange_svc
-from app.services.notification_service import create_notification
 
 router = APIRouter()
 
@@ -50,7 +49,10 @@ async def list_bounties(
         page_size=page_size,
     )
     return BountyListResponse(
-        bounties=[BountyResponse.model_validate(b) for b in rows],
+        bounties=[
+            BountyResponse.model_validate(b).model_copy(update={"active_claims_count": cnt})
+            for b, cnt in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -86,30 +88,38 @@ async def completed_results(
         .where(
             Submission.public_share.is_(True),
             Submission.share_token.is_not(None),
-            Submission.status.in_([
-                SubmissionStatus.APPROVED,
-                SubmissionStatus.PARTIALLY_APPROVED,
-                SubmissionStatus.PENDING_REVIEW,
-            ]),
+            Submission.status.in_(
+                [
+                    SubmissionStatus.APPROVED,
+                    SubmissionStatus.PARTIALLY_APPROVED,
+                    SubmissionStatus.PENDING_REVIEW,
+                ]
+            ),
         )
         .order_by(desc(Submission.submitted_at))
         .limit(limit)
     )
     results = []
     for row in rows.all():
-        results.append({
-            "bounty_id": str(row.id),
-            "title": row.title,
-            "reward_amount": row.reward_amount,
-            "difficulty": row.difficulty.value if hasattr(row.difficulty, "value") else row.difficulty,
-            "share_token": str(row.share_token),
-            "share_url": f"https://settlebridge.ai/shared/{row.share_token}",
-            "score": row.score,
-            "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
-            "agent_display_name": row.agent_display_name,
-            "ai_score": row.ai_review.get("score") if row.ai_review else None,
-            "status": row.submission_status.value if hasattr(row.submission_status, "value") else str(row.submission_status),
-        })
+        results.append(
+            {
+                "bounty_id": str(row.id),
+                "title": row.title,
+                "reward_amount": row.reward_amount,
+                "difficulty": row.difficulty.value
+                if hasattr(row.difficulty, "value")
+                else row.difficulty,
+                "share_token": str(row.share_token),
+                "share_url": f"https://settlebridge.ai/shared/{row.share_token}",
+                "score": row.score,
+                "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+                "agent_display_name": row.agent_display_name,
+                "ai_score": row.ai_review.get("score") if row.ai_review else None,
+                "status": row.submission_status.value
+                if hasattr(row.submission_status, "value")
+                else str(row.submission_status),
+            }
+        )
     return results
 
 
@@ -119,7 +129,10 @@ async def my_posted(
     db: AsyncSession = Depends(get_db),
 ):
     rows = await bounty_service.user_posted_bounties(db, user.id)
-    return [BountyResponse.model_validate(b) for b in rows]
+    return [
+        BountyResponse.model_validate(b).model_copy(update={"active_claims_count": cnt})
+        for b, cnt in rows
+    ]
 
 
 @router.get("/{bounty_id}", response_model=BountyResponse)
@@ -127,7 +140,10 @@ async def get_bounty(bounty_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     bounty = await bounty_service.get_bounty(db, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
-    return BountyResponse.model_validate(bounty)
+    active_count = sum(1 for c in bounty.claims if c.status == ClaimStatus.ACTIVE)
+    return BountyResponse.model_validate(bounty).model_copy(
+        update={"active_claims_count": active_count}
+    )
 
 
 @router.post("", response_model=BountyResponse, status_code=status.HTTP_201_CREATED)
@@ -146,7 +162,9 @@ async def create_bounty(
         description=body.description,
         category_id=body.category_id,
         tags=body.tags,
-        acceptance_criteria=body.acceptance_criteria.model_dump() if body.acceptance_criteria else None,
+        acceptance_criteria=body.acceptance_criteria.model_dump()
+        if body.acceptance_criteria
+        else None,
         reward_amount=body.reward_amount,
         deadline=body.deadline,
         max_claims=body.max_claims,
@@ -197,6 +215,14 @@ async def fund_bounty(
         raise HTTPException(status_code=403, detail="Not your bounty")
     if bounty.status != BountyStatus.DRAFT:
         raise HTTPException(status_code=400, detail="Bounty is not in draft status")
+    if (
+        not bounty.acceptance_criteria
+        or not bounty.acceptance_criteria.get("description", "").strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="acceptance_criteria with a non-empty description is required before funding a bounty",
+        )
 
     escrow_id = "pending_claim"
     if user.exchange_bot_id:

@@ -78,6 +78,7 @@ class BountyResponse(BaseModel):
     auto_approve: bool
     provenance_tier: ProvenanceTier
     settlement_structure: dict | None = None
+    active_claims_count: int = 0
     created_at: datetime
     updated_at: datetime
     funded_at: datetime | None = None
