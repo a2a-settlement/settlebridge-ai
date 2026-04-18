@@ -33,6 +33,8 @@ class AlertConditionType(str, enum.Enum):
     ERROR_RATE_ABOVE = "error_rate_above"
     ANOMALOUS_VOLUME = "anomalous_volume"
     POLICY_VIOLATION_SPIKE = "policy_violation_spike"
+    SELF_DEALING_RATIO_ABOVE = "self_dealing_ratio_above"
+    PRINCIPAL_CLUSTER_EXPANSION = "principal_cluster_expansion"
 
 
 class AlertChannel(str, enum.Enum):
@@ -83,6 +85,8 @@ class ReputationSnapshot(Base):
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     bot_id: Mapped[str] = mapped_column(String(255), nullable=False)
     reputation_score: Mapped[float] = mapped_column(Float, nullable=False)
+    self_dealing_ratio_90d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    counterparty_hhi: Mapped[float | None] = mapped_column(Float, nullable=True)
     snapshot_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
@@ -141,3 +145,4 @@ class GatewayAgent(Base):
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    principal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

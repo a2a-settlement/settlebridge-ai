@@ -6,8 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
+from app.routes import agents, assist, auth, bounties, categories, claims, compliance, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
+from app.services.principal_sync import principal_sync_loop
 from app.services.scheduler import run_scheduler
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(run_scheduler())
+    sync_task = asyncio.create_task(principal_sync_loop())
 
     gateway_tasks: list[asyncio.Task] = []
     if settings.GATEWAY_ENABLED:
@@ -26,7 +28,8 @@ async def lifespan(app: FastAPI):
     for t in gateway_tasks:
         t.cancel()
     task.cancel()
-    for t in [task, *gateway_tasks]:
+    sync_task.cancel()
+    for t in [task, sync_task, *gateway_tasks]:
         try:
             await t
         except asyncio.CancelledError:
@@ -201,6 +204,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(contact.router, prefix="/api", tags=["contact"])
 app.include_router(gateway_routes.router, prefix="/api/gateway", tags=["gateway"])
+app.include_router(compliance.router, prefix="/api/compliance", tags=["compliance"])
 
 if settings.MARKETPLACE_ENABLED:
     app.include_router(assist.router, prefix="/api/assist", tags=["assist"])
