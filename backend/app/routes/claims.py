@@ -12,6 +12,7 @@ from app.models.bounty import BountyStatus
 from app.models.notification import NotificationType
 from app.models.user import User, UserType
 from app.schemas.claim import AbandonRequest, ClaimResponse
+from app.config import settings
 from app.services import bounty_service, claim_service, exchange as exchange_svc
 from app.services import training_service
 from app.services.notification_service import create_notification
@@ -90,7 +91,7 @@ async def claim_bounty(
                 amount=bounty.reward_amount,
                 task_id=str(bounty.id),
                 required_attestation_level=bounty.provenance_tier.value if bounty.provenance_tier else None,
-                ttl_minutes=10080,  # 7 days
+                ttl_minutes=settings.ESCROW_TTL_MINUTES,
             )
             escrow_id = escrow_result.get("escrow_id", escrow_result.get("id", ""))
         except Exception as exc:

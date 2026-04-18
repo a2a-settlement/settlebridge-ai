@@ -22,6 +22,7 @@ from app.schemas.submission import (
     SubmissionResponse,
     SubmitWorkRequest,
 )
+from app.middleware.auth import get_optional_user
 from app.services import (
     bounty_service,
     claim_service,
@@ -113,6 +114,26 @@ async def submit_work(
         provenance=provenance_dict,
     )
 
+    # Fetch prior reviewed submissions for this bounty+claim to give the
+    # reviewer iteration context (scores, issues flagged, improvement credit).
+    prior_subs_for_review: list[dict] = []
+    try:
+        prior_subs = await submission_service.list_submissions_for_bounty(db, bounty.id)
+        for ps in reversed(prior_subs):  # chronological order
+            if ps.id == sub.id:
+                continue
+            if ps.claim_id != claim.id:
+                continue
+            if ps.ai_review or ps.score is not None:
+                prior_subs_for_review.append({
+                    "submitted_at": ps.submitted_at.isoformat() if ps.submitted_at else "",
+                    "status": ps.status.value,
+                    "score": ps.score,
+                    "ai_review": ps.ai_review,
+                })
+    except Exception as exc:
+        logger.warning("Failed to load prior submissions for review context (non-fatal): %s", exc)
+
     # AI-assisted review via Haiku
     ai_review: dict = {}
     try:
@@ -125,6 +146,7 @@ async def submit_work(
             difficulty=bounty.difficulty.value if bounty.difficulty else "medium",
             deliverable_content=body.deliverable.content,
             provenance=provenance_dict,
+            prior_submissions=prior_subs_for_review or None,
         )
         if ai_review:
             sub.ai_review = ai_review
@@ -245,26 +267,62 @@ async def submit_work(
         escrow_id = claim.virtual_escrow_id or bounty.escrow_id or ""
         is_virtual_escrow = escrow_id.startswith("training:")
         if run is not None and escrow_id and escrow_id != "pending_claim":
-            try:
-                mediator_result = await trigger_training_mediation(escrow_id, run.task_type)
-                score = float(mediator_result.get("confidence", 0.0))
-                await training_service.record_score(
-                    db,
-                    run=run,
-                    submission=sub,
-                    mediator_result=mediator_result,
-                    iter_stake=100,
-                )
-                if not is_virtual_escrow:
-                    try:
-                        if score >= run.score_threshold:
-                            exchange_svc.release_escrow(user, escrow_id)
-                        else:
-                            exchange_svc.refund_escrow(user, escrow_id, reason="training score below threshold")
-                    except Exception as exc:
-                        logger.warning("Training escrow settle failed (non-fatal): %s", exc)
-            except Exception as exc:
-                logger.warning("Training mediation failed (non-fatal): %s", exc)
+            mediator_result: dict | None = None
+
+            # For virtual training escrows the real mediator cannot look up the
+            # deliverable from the exchange (it doesn't exist there).  Try the
+            # external mediator first; if it fails, fall back to the AI review
+            # that was already performed in this request so scores are never lost.
+            if not is_virtual_escrow:
+                try:
+                    mediator_result = await trigger_training_mediation(escrow_id, run.task_type)
+                except Exception as exc:
+                    logger.warning("Training mediation failed for real escrow (non-fatal): %s", exc)
+            else:
+                try:
+                    mediator_result = await trigger_training_mediation(escrow_id, run.task_type)
+                except Exception as exc:
+                    logger.warning(
+                        "Mediator rejected virtual escrow %s — using AI review score as fallback: %s",
+                        escrow_id, exc,
+                    )
+                    # Build a synthetic mediator result from the AI review.
+                    if ai_review:
+                        raw_score = ai_review.get("score", 0)
+                        issues = ai_review.get("issues", [])
+                        mediator_result = {
+                            "confidence": round(raw_score / 100.0, 4),
+                            "reasoning": ai_review.get("notes", ""),
+                            "structured_diagnostic": {
+                                "actionable_gaps": issues,
+                                "details": {"source": "ai_review", "raw_score": raw_score},
+                            },
+                            "verdict": {},
+                            "_raw": {"source": "ai_review_fallback"},
+                        }
+
+            if mediator_result is not None:
+                try:
+                    score = float(mediator_result.get("confidence", 0.0))
+                    await training_service.record_score(
+                        db,
+                        run=run,
+                        submission=sub,
+                        mediator_result=mediator_result,
+                        iter_stake=100,
+                    )
+                    if not is_virtual_escrow:
+                        try:
+                            if score >= run.score_threshold:
+                                exchange_svc.release_escrow(user, escrow_id)
+                            else:
+                                exchange_svc.refund_escrow(user, escrow_id, reason="training score below threshold")
+                        except Exception as exc:
+                            logger.warning("Training escrow settle failed (non-fatal): %s", exc)
+                except Exception as exc:
+                    logger.warning("Training score recording failed (non-fatal): %s", exc)
+            else:
+                logger.warning("No mediator result and no AI review fallback — skipping score for %s", escrow_id)
 
         # Restore bounty to OPEN so the harness can claim again next iteration
         from app.models.bounty import BountyStatus as _BS
@@ -283,12 +341,20 @@ async def submit_work(
 @router.get("/bounties/{bounty_id}/submissions", response_model=list[SubmissionResponse], tags=["submissions"])
 async def list_bounty_submissions(
     bounty_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     bounty = await bounty_service.get_bounty(db, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
+
+    # Completed bounties are publicly readable so anonymous visitors can see
+    # results on the Completed Results feed.  All other statuses require the
+    # caller to be authenticated (owner, agent, or any logged-in user).
+    from app.models.bounty import BountyStatus
+    if bounty.status != BountyStatus.COMPLETED and user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     subs = await submission_service.list_submissions_for_bounty(db, bounty_id)
     return [SubmissionResponse.model_validate(s) for s in subs]
 

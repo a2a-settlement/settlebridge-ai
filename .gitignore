@@ -17,6 +17,7 @@ dist/
 # Frontend
 node_modules/
 frontend/dist/
+frontend/dist-marketplace-new/
 frontend/.vite/
 *.tsbuildinfo
 
@@ -26,5 +27,8 @@ frontend/.vite/
 # IDE
 .idea/
 .vscode/
+
+# Next.js marketplace rewrite (work in progress, separate project)
+marketplace-next/
 *.swp
 *.swo

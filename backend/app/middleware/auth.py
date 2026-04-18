@@ -122,6 +122,27 @@ async def get_current_user(
     return user
 
 
+_optional_security = HTTPBearer(auto_error=False)
+
+
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_security),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Like get_current_user but returns None instead of raising 401."""
+    if credentials is None:
+        return None
+    try:
+        token = credentials.credentials
+        if token.startswith("ate_"):
+            return await _get_or_create_exchange_user(token, db)
+        user_id = decode_token(token)
+        result = await db.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
+    except HTTPException:
+        return None
+
+
 def require_role(*roles: UserType):
     """Dependency factory that checks the user has one of the allowed roles."""
 

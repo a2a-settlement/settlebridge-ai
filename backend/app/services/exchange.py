@@ -192,7 +192,7 @@ def recreate_and_release(
             amount=amount,
             task_id=task_id,
             required_attestation_level=required_attestation_level,
-            ttl_minutes=10080,
+            ttl_minutes=settings.ESCROW_TTL_MINUTES,
         )
         new_escrow_id = escrow_result.get("escrow_id", escrow_result.get("id", ""))
         logger.info("Created replacement escrow %s for task %s", new_escrow_id, task_id)

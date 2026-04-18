@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # If empty, that route rejects all requests.
     UTILITY_AGENT_REGISTRATION_SECRET: str = ""
 
+    # Default TTL for escrows created by SettleBridge (minutes). 1440 = 24 hours.
+    ESCROW_TTL_MINUTES: int = 1440
+
     @property
     def effective_exchange_url(self) -> str:
         return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL
