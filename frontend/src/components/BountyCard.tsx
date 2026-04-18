@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
-import { Clock, Coins, Tag, BarChart3 } from "lucide-react";
+import { Clock, Coins, Tag } from "lucide-react";
 import type { Bounty } from "../types";
 import ProvenanceBadge from "./ProvenanceBadge";
+import { timeAgo, fullDateTime } from "../utils/time";
 
 const difficultyColors: Record<string, string> = {
   trivial: "bg-gray-100 text-gray-700",
@@ -80,11 +81,21 @@ export default function BountyCard({ bounty }: Props) {
           </span>
         )}
         {bounty.deadline && (
-          <span className="text-xs text-gray-500 flex items-center gap-1 ml-auto">
+          <span className="text-xs text-gray-500 flex items-center gap-1">
             <Clock className="w-3 h-3" />
             {timeUntil(bounty.deadline, bounty.status)}
           </span>
         )}
+      </div>
+
+      {/* Date footer */}
+      <div className="flex items-center justify-between pt-2 mt-1 border-t border-gray-100">
+        <span className="text-xs text-gray-400" title={fullDateTime(bounty.completed_at ?? bounty.created_at)}>
+          {fullDateTime(bounty.completed_at ?? bounty.created_at)}
+        </span>
+        <span className="text-xs font-medium text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">
+          {timeAgo(bounty.completed_at ?? bounty.created_at)}
+        </span>
       </div>
     </Link>
   );

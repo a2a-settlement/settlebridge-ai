@@ -310,18 +310,31 @@ export interface AssistSession {
   finalized_bounty_id: string | null;
 }
 
+export interface TrainingFinalSubmission {
+  submission_id: string;
+  content: string;
+  ai_score: number | null;
+  ai_recommendation: string | null;
+  ai_notes: string | null;
+  submitted_at: string | null;
+  status: string;
+}
+
 export interface TrainingCardData {
   run_id: string;
+  bounty_id: string;
   public_title: string;
   bounty_title: string;
   agent_display_name: string;
   status: "RUNNING" | "COMPLETED" | "CANCELLED";
   iterations: number;
   scores: number[];
+  last_score: number | null;
   final_ema: number;
   score_threshold: number;
   threshold_reached: boolean;
   merkle_root: string | null;
   created_at: string;
   completed_at: string | null;
+  final_submission: TrainingFinalSubmission | null;
 }

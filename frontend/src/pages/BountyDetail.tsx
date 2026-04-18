@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -11,6 +11,8 @@ import {
   XCircle,
   FileText,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import api from "../services/api";
@@ -18,6 +20,17 @@ import type { Bounty, Claim } from "../types";
 import { useAuth } from "../hooks/useAuth";
 import ProvenanceBadge from "../components/ProvenanceBadge";
 import DeliverableViewer from "../components/DeliverableViewer";
+
+interface AiReview {
+  score: number;
+  recommendation: "approve" | "partial_approve" | "reject";
+  notes: string;
+  issues?: string[];
+  holdback?: boolean;
+  holdback_percent?: number;
+  efficacy_criteria?: string;
+  model?: string;
+}
 
 interface Submission {
   id: string;
@@ -36,6 +49,174 @@ interface Submission {
   efficacy_criteria: string | null;
   efficacy_score: number | null;
   efficacy_reviewed_at: string | null;
+  ai_review: AiReview | null;
+}
+
+function SubmissionCard({
+  sub,
+  index,
+  isOwner,
+  bountyTitle,
+}: {
+  sub: Submission;
+  index: number;
+  isOwner: boolean;
+  bountyTitle: string;
+}) {
+  const [showNotes, setShowNotes] = useState(false);
+  const [showDeliverable, setShowDeliverable] = useState(index === 0);
+
+  const aiScore = sub.ai_review?.score ?? null;
+  const aiRec = sub.ai_review?.recommendation ?? null;
+  const aiNotes = sub.ai_review?.notes ?? null;
+
+  const scoreColor =
+    aiScore === null ? "bg-gray-100 text-gray-500" :
+    aiScore >= 90 ? "bg-green-100 text-green-800" :
+    aiScore >= 75 ? "bg-amber-100 text-amber-800" :
+    "bg-red-100 text-red-800";
+
+  const recLabel =
+    aiRec === "approve" ? "Approved" :
+    aiRec === "partial_approve" ? "Partial Approve" :
+    aiRec === "reject" ? "Rejected" : null;
+
+  const statusColors: Record<string, string> = {
+    approved: "bg-green-100 text-green-800",
+    rejected: "bg-red-100 text-red-700",
+    disputed: "bg-red-100 text-red-700",
+    partially_approved: "bg-amber-100 text-amber-700",
+    pending_review: "bg-indigo-100 text-indigo-700",
+  };
+
+  return (
+    <div className="bg-gray-50 rounded-xl border border-gray-200 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-gray-100">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-semibold text-gray-400">#{index + 1}</span>
+
+          {/* AI Score + Recommendation */}
+          {aiScore !== null && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-400 font-medium">AI</span>
+              <span className={`text-sm font-bold px-3 py-1 rounded-full ${scoreColor}`}>
+                {aiScore}/100
+              </span>
+              {recLabel && (
+                <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full ${scoreColor}`}>
+                  {recLabel}
+                </span>
+              )}
+            </span>
+          )}
+
+          {/* Formal status — always shown, labelled clearly */}
+          <span className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-400 font-medium">Status</span>
+            <span className={`text-xs font-medium px-2.5 py-1 rounded-full capitalize ${statusColors[sub.status] ?? "bg-gray-100 text-gray-600"}`}>
+              {sub.status.replace(/_/g, " ")}
+            </span>
+          </span>
+
+          <span className="text-xs text-gray-400">
+            {new Date(sub.submitted_at).toLocaleString()}
+          </span>
+        </div>
+
+        {isOwner && sub.status === "pending_review" && (
+          <a
+            href={`/dashboard/submissions/${sub.id}`}
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-navy-900 text-white rounded-lg text-xs font-semibold hover:bg-navy-800 transition flex-shrink-0"
+          >
+            <CheckCircle className="w-3.5 h-3.5" /> Review & Score
+          </a>
+        )}
+        {isOwner && sub.status === "partially_approved" && (
+          <a
+            href={`/dashboard/submissions/${sub.id}`}
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 transition flex-shrink-0"
+          >
+            <AlertTriangle className="w-3.5 h-3.5" /> Efficacy Review
+          </a>
+        )}
+      </div>
+
+      {/* AI Review Notes (collapsible) */}
+      {aiNotes && (
+        <div className="px-5 py-3 border-b border-gray-100 bg-indigo-50/40">
+          <button
+            onClick={() => setShowNotes((v) => !v)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <span className="text-xs font-semibold text-indigo-700 flex items-center gap-1.5">
+              <CheckCircle className="w-3.5 h-3.5" />
+              AI Review
+              {sub.ai_review?.holdback && sub.ai_review.holdback_percent && (
+                <span className="ml-2 text-amber-600 bg-amber-100 rounded-full px-2 py-0.5 font-medium">
+                  {sub.ai_review.holdback_percent}% holdback
+                </span>
+              )}
+            </span>
+            {showNotes ? (
+              <ChevronUp className="w-3.5 h-3.5 text-indigo-400" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 text-indigo-400" />
+            )}
+          </button>
+          {showNotes && (
+            <p className="mt-2 text-xs text-gray-600 leading-relaxed">{aiNotes}</p>
+          )}
+        </div>
+      )}
+
+      {/* Deliverable (collapsible) */}
+      <div>
+        <button
+          onClick={() => setShowDeliverable((v) => !v)}
+          className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-gray-100 transition"
+        >
+          <span className="text-xs font-semibold text-gray-600">Deliverable</span>
+          {showDeliverable ? (
+            <ChevronUp className="w-3.5 h-3.5 text-gray-400" />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+          )}
+        </button>
+        {showDeliverable && (
+          <div className="px-5 pb-4">
+            <div className="text-gray-700 bg-white rounded-lg p-4 border border-gray-200">
+              {sub.deliverable.content_type?.includes("markdown") ? (
+                <div className="prose prose-sm max-w-none">
+                  <ReactMarkdown>{sub.deliverable.content}</ReactMarkdown>
+                </div>
+              ) : (
+                <DeliverableViewer
+                  content={sub.deliverable.content}
+                  contentType={sub.deliverable.content_type || "text/plain"}
+                  bountyTitle={bountyTitle}
+                />
+              )}
+            </div>
+            {sub.provenance && (
+              <div className="mt-3 text-xs text-gray-500">
+                <span className="font-medium">Provenance:</span>{" "}
+                {sub.provenance.source_refs?.join(", ") || sub.provenance.attestation_level || "self-declared"}
+                {sub.provenance.content_hash && (
+                  <span className="ml-2 font-mono">[hash: {sub.provenance.content_hash.slice(0, 12)}...]</span>
+                )}
+              </div>
+            )}
+            {sub.reviewer_notes && (
+              <div className="mt-2 text-xs text-gray-600 italic">
+                Review notes: {sub.reviewer_notes}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function BountyDetail() {
@@ -56,7 +237,11 @@ export default function BountyDetail() {
       .get<Bounty>(`/bounties/${id}`)
       .then(({ data }) => {
         setBounty(data);
-        if (["in_review", "submitted", "completed", "disputed"].includes(data.status)) {
+        // Completed bounties are publicly readable; other statuses require auth.
+        const canFetchSubs =
+          data.status === "completed" ||
+          (user && ["in_review", "submitted", "disputed"].includes(data.status));
+        if (canFetchSubs) {
           api.get<Submission[]>(`/bounties/${id}/submissions`).then(({ data: subs }) => {
             setSubmissions(subs);
           }).catch(() => {});
@@ -303,69 +488,17 @@ export default function BountyDetail() {
                 Submissions ({submissions.length})
               </h3>
               <div className="space-y-4">
-                {submissions.map((sub) => (
-                  <div key={sub.id} className="bg-gray-50 rounded-xl p-5">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-                          sub.status === "approved" ? "bg-green-100 text-green-800" :
-                          sub.status === "rejected" ? "bg-red-100 text-red-700" :
-                          sub.status === "disputed" ? "bg-red-100 text-red-700" :
-                          sub.status === "partially_approved" ? "bg-amber-100 text-amber-700" :
-                          "bg-indigo-100 text-indigo-700"
-                        }`}>
-                          {sub.status.replace("_", " ")}
-                        </span>
-                        <span className="text-xs text-gray-500">
-                          {new Date(sub.submitted_at).toLocaleString()}
-                        </span>
-                      </div>
-                      {isOwner && sub.status === "pending_review" && (
-                        <Link
-                          to={`/dashboard/submissions/${sub.id}`}
-                          className="flex items-center gap-1.5 px-4 py-2 bg-navy-900 text-white rounded-lg text-xs font-semibold hover:bg-navy-800 transition"
-                        >
-                          <CheckCircle className="w-3.5 h-3.5" /> Review & Score
-                        </Link>
-                      )}
-                      {isOwner && sub.status === "partially_approved" && (
-                        <Link
-                          to={`/dashboard/submissions/${sub.id}`}
-                          className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 transition"
-                        >
-                          <AlertTriangle className="w-3.5 h-3.5" /> Efficacy Review
-                        </Link>
-                      )}
-                    </div>
-                    <div className="text-gray-700 bg-white rounded-lg p-4 border border-gray-200">
-                      {sub.deliverable.content_type?.includes("markdown") ? (
-                        <div className="prose prose-sm max-w-none">
-                          <ReactMarkdown>{sub.deliverable.content}</ReactMarkdown>
-                        </div>
-                      ) : (
-                        <DeliverableViewer
-                          content={sub.deliverable.content}
-                          contentType={sub.deliverable.content_type || "text/plain"}
-                          bountyTitle={bounty.title}
-                        />
-                      )}
-                    </div>
-                    {sub.provenance && (
-                      <div className="mt-3 text-xs text-gray-500">
-                        <span className="font-medium">Provenance:</span>{" "}
-                        {sub.provenance.source_refs?.join(", ") || sub.provenance.attestation_level || "self-declared"}
-                        {sub.provenance.content_hash && (
-                          <span className="ml-2 font-mono">[hash: {sub.provenance.content_hash.slice(0, 12)}...]</span>
-                        )}
-                      </div>
-                    )}
-                    {sub.reviewer_notes && (
-                      <div className="mt-2 text-xs text-gray-600 italic">
-                        Review notes: {sub.reviewer_notes}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {[...submissions]
+                  .sort((a, b) => (b.ai_review?.score ?? 0) - (a.ai_review?.score ?? 0))
+                  .map((sub, idx) => (
+                    <SubmissionCard
+                      key={sub.id}
+                      sub={sub}
+                      index={idx}
+                      isOwner={!!isOwner}
+                      bountyTitle={bounty.title}
+                    />
+                  ))}
               </div>
             </div>
           )}

@@ -75,9 +75,13 @@ export default function BountyFeed() {
 
     Promise.all([fetchBounties, fetchTraining])
       .then(([b, t]) => {
-        setBounties(b);
+        // Deduplicate: if a training run already covers a bounty, don't show
+        // that bounty as a plain card too (avoids double-listing).
+        const coveredBountyIds = new Set(t.map((r) => r.bounty_id));
+        const dedupedBounties = b.filter((bty) => !coveredBountyIds.has(bty.id));
+        setBounties(dedupedBounties);
         setTrainingRuns(t);
-        setTotal(b.length + t.length);
+        setTotal(dedupedBounties.length + t.length);
       })
       .finally(() => setLoading(false));
   }, [viewMode, resultType]);
@@ -261,13 +265,19 @@ export default function BountyFeed() {
             </div>
           ) : (
             <div className="grid md:grid-cols-2 gap-4">
-              {/* Interleave by date: training runs first (newest) then bounties */}
-              {trainingRuns.map((r) => (
-                <TrainingRunCard key={r.run_id} run={r} />
-              ))}
-              {bounties.map((b) => (
-                <BountyCard key={b.id} bounty={b} />
-              ))}
+              {/* Merge and sort by date descending so newest items appear first */}
+              {[
+                ...trainingRuns.map((r) => ({ type: "training" as const, date: r.completed_at ?? r.created_at, item: r })),
+                ...bounties.map((b) => ({ type: "bounty" as const, date: b.completed_at ?? b.created_at, item: b })),
+              ]
+                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                .map((entry) =>
+                  entry.type === "training" ? (
+                    <TrainingRunCard key={entry.item.run_id} run={entry.item} />
+                  ) : (
+                    <BountyCard key={entry.item.id} bounty={entry.item} />
+                  )
+                )}
             </div>
           )}
         </div>

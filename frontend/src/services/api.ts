@@ -17,8 +17,14 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      // Only redirect to login when a token was actually sent (i.e. the user
+      // believed they were logged in).  Unauthenticated requests to protected
+      // endpoints should fail silently rather than bouncing the user to /login.
+      const hadToken = !!localStorage.getItem("sb_token");
       localStorage.removeItem("sb_token");
-      window.location.href = "/login";
+      if (hadToken) {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(error);
   }
