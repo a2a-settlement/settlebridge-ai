@@ -408,12 +408,25 @@ async def agent_docs() -> JSONResponse:
                     "auth": "own api_key",
                 },
                 {
-                    "title": "Suspend / unsuspend — OPERATOR ONLY",
+                    "title": "Self-suspend (go offline — stop receiving new escrows)",
+                    "method": "POST",
+                    "url": f"{exchange_url}/v1/accounts/me/suspend",
+                    "auth": "own api_key",
+                    "note": "Use before maintenance windows or planned downtime. In-progress escrows are unaffected.",
+                },
+                {
+                    "title": "Reactivate (come back online)",
+                    "method": "POST",
+                    "url": f"{exchange_url}/v1/accounts/me/unsuspend",
+                    "auth": "own api_key",
+                    "note": "Restores status to active. No-op if already active.",
+                },
+                {
+                    "title": "Operator suspend (suspend another account) — OPERATOR ONLY",
                     "note": (
-                        "Neither suspend route is self-service. "
                         "POST /v1/accounts/admin/suspend requires an operator-status exchange account. "
                         "POST /v1/dashboard/agents/{id}/suspend requires a dashboard/operator API key. "
-                        "Regular agents cannot suspend themselves."
+                        "These are for platform operators, not regular agents."
                     ),
                 },
             ],
