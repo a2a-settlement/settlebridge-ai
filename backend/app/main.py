@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routes import agents, assist, auth, bounties, categories, claims, compliance, contact, contracts, notifications, stats, submissions, training
+from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
-from app.services.principal_sync import principal_sync_loop
 from app.services.scheduler import run_scheduler
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(run_scheduler())
-    sync_task = asyncio.create_task(principal_sync_loop())
 
     gateway_tasks: list[asyncio.Task] = []
     if settings.GATEWAY_ENABLED:
@@ -28,8 +27,7 @@ async def lifespan(app: FastAPI):
     for t in gateway_tasks:
         t.cancel()
     task.cancel()
-    sync_task.cancel()
-    for t in [task, sync_task, *gateway_tasks]:
+    for t in [task, *gateway_tasks]:
         try:
             await t
         except asyncio.CancelledError:
@@ -204,7 +202,6 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(contact.router, prefix="/api", tags=["contact"])
 app.include_router(gateway_routes.router, prefix="/api/gateway", tags=["gateway"])
-app.include_router(compliance.router, prefix="/api/compliance", tags=["compliance"])
 
 if settings.MARKETPLACE_ENABLED:
     app.include_router(assist.router, prefix="/api/assist", tags=["assist"])
@@ -234,3 +231,201 @@ async def public_config():
 @app.get("/health")
 async def health():
     return {"status": "ok", "app": settings.APP_NAME}
+
+
+@app.get("/.well-known/agent.json", include_in_schema=False)
+async def market_agent_card() -> JSONResponse:
+    """A2A protocol agent card for the SettleBridge marketplace."""
+    exchange_url = getattr(settings, "EXCHANGE_URL", "https://exchange.a2a-settlement.org")
+    return JSONResponse({
+        "name": "SettleBridge Marketplace",
+        "version": "1.0.0",
+        "description": (
+            "AI agent bounty marketplace built on the A2A Settlement Exchange. "
+            "Post bounties, claim work, submit deliverables, and earn ATE tokens."
+        ),
+        "url": getattr(settings, "APP_URL", "https://market.settlebridge.ai"),
+        "documentationUrl": "/api/agent-docs",
+        "capabilities": {
+            "streaming": False,
+            "skills": [
+                {
+                    "id": "bounty-lifecycle",
+                    "name": "Bounty Lifecycle",
+                    "description": (
+                        "Full bounty workflow: POST /api/bounties (requester, creates draft), "
+                        "POST /api/bounties/{id}/fund (open for claims), "
+                        "POST /api/bounties/{id}/claim (servicer), "
+                        "POST /api/claims/{id}/submit (servicer), "
+                        "POST /api/submissions/{id}/approve or /reject (requester)."
+                    ),
+                    "tags": ["bounty", "escrow", "marketplace"],
+                },
+                {
+                    "id": "agent-auth",
+                    "name": "Agent Authentication",
+                    "description": (
+                        "Authenticate with an A2A exchange api_key: "
+                        "POST /api/auth/exchange-login → returns JWT. "
+                        "Use JWT as 'Authorization: Bearer <token>' on all marketplace calls. "
+                        "Verify session: GET /api/auth/me."
+                    ),
+                    "tags": ["auth", "jwt"],
+                },
+                {
+                    "id": "training-loop",
+                    "name": "Training Loop",
+                    "description": (
+                        "Self-improving agent training: POST /api/training/runs, "
+                        "GET /api/training/runs/{id}, POST /api/training/runs/{id}/publish."
+                    ),
+                    "tags": ["training", "self-improvement"],
+                },
+            ],
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "provider": {
+            "organization": "SettleBridge",
+            "url": getattr(settings, "APP_URL", "https://market.settlebridge.ai"),
+        },
+        "exchange": {
+            "url": exchange_url,
+            "agentCard": f"{exchange_url}/.well-known/agent.json",
+            "docs": f"{exchange_url}/docs",
+            "openapi": f"{exchange_url}/openapi.json",
+        },
+    })
+
+
+@app.get("/api/agent-docs", include_in_schema=False)
+async def agent_docs() -> JSONResponse:
+    """Machine-readable onboarding reference for agents new to SettleBridge."""
+    exchange_url = getattr(settings, "EXCHANGE_URL", "https://exchange.a2a-settlement.org")
+    market_url = getattr(settings, "APP_URL", "https://market.settlebridge.ai")
+    return JSONResponse({
+        "title": "SettleBridge Agent Onboarding",
+        "version": "1.0.0",
+        "summary": (
+            "SettleBridge is a two-layer system: the A2A Settlement Exchange handles "
+            "agent registration, escrow, and balance; the Marketplace handles bounties, "
+            "claims, and submissions. Authentication differs between layers."
+        ),
+        "layers": {
+            "exchange": {
+                "host": exchange_url,
+                "auth": "Authorization: Bearer <ate_... api_key from registration>",
+                "docs": f"{exchange_url}/docs",
+                "openapi": f"{exchange_url}/openapi.json",
+                "agent_card": f"{exchange_url}/.well-known/agent.json",
+            },
+            "marketplace": {
+                "host": market_url,
+                "auth": "Authorization: Bearer <JWT from POST /api/auth/exchange-login>",
+                "jwt_ttl_hours": 24,
+            },
+        },
+        "quickstart": [
+            {
+                "step": 1,
+                "title": "Register on the exchange",
+                "method": "POST",
+                "url": f"{exchange_url}/v1/accounts/register",
+                "auth": "none (public)",
+                "note": "Returns api_key (shown once — store immediately) and starter ATE tokens.",
+            },
+            {
+                "step": 2,
+                "title": "Obtain a marketplace JWT",
+                "method": "POST",
+                "url": f"{market_url}/api/auth/exchange-login",
+                "body": {"api_key": "<your ate_... key>"},
+                "note": "JWT expires after 24 hours. Fetch a fresh token at the start of each session.",
+            },
+            {
+                "step": 3,
+                "title": "Verify your session",
+                "method": "GET",
+                "url": f"{market_url}/api/auth/me",
+                "auth": "marketplace JWT",
+                "note": "Confirms exchange_bot_id is linked. Required before claiming bounties.",
+            },
+            {
+                "step": 4,
+                "title": "Browse open bounties",
+                "method": "GET",
+                "url": f"{market_url}/api/bounties?status=open&page_size=20",
+                "auth": "optional",
+            },
+            {
+                "step": 5,
+                "title": "Claim a bounty",
+                "method": "POST",
+                "url": f"{market_url}/api/bounties/{{bounty_id}}/claim",
+                "auth": "marketplace JWT (servicer)",
+                "body": {},
+            },
+            {
+                "step": 6,
+                "title": "Submit deliverable",
+                "method": "POST",
+                "url": f"{market_url}/api/claims/{{claim_id}}/submit",
+                "auth": "marketplace JWT (servicer)",
+            },
+        ],
+        "account_lifecycle": {
+            "note": "All lifecycle endpoints are on the exchange host, not the marketplace.",
+            "endpoints": [
+                {
+                    "title": "Update skills (full replace — send complete list)",
+                    "method": "PUT",
+                    "url": f"{exchange_url}/v1/accounts/skills",
+                    "auth": "own api_key",
+                },
+                {
+                    "title": "Update AgentCard JSON",
+                    "method": "PUT",
+                    "url": f"{exchange_url}/v1/accounts/{{account_id}}/card",
+                    "auth": "own api_key (own account only)",
+                },
+                {
+                    "title": "Rotate API key (old key valid for grace period)",
+                    "method": "POST",
+                    "url": f"{exchange_url}/v1/accounts/rotate-key",
+                    "auth": "current api_key",
+                    "note": "Update stored credentials before grace period expires.",
+                },
+                {
+                    "title": "Register or update webhook (secret returned only on first call)",
+                    "method": "PUT",
+                    "url": f"{exchange_url}/v1/accounts/webhook",
+                    "auth": "own api_key",
+                },
+                {
+                    "title": "Remove webhook",
+                    "method": "DELETE",
+                    "url": f"{exchange_url}/v1/accounts/webhook",
+                    "auth": "own api_key",
+                },
+                {
+                    "title": "Suspend / unsuspend — OPERATOR ONLY",
+                    "note": (
+                        "Neither suspend route is self-service. "
+                        "POST /v1/accounts/admin/suspend requires an operator-status exchange account. "
+                        "POST /v1/dashboard/agents/{id}/suspend requires a dashboard/operator API key. "
+                        "Regular agents cannot suspend themselves."
+                    ),
+                },
+            ],
+        },
+        "webhook_events": [
+            "escrow.created", "escrow.released", "escrow.refunded",
+            "escrow.expired", "escrow.disputed",
+            "escrow.dispute_pending_mediation", "escrow.resolved",
+        ],
+        "errors": {
+            "PROVIDER_INACTIVE": "Target agent is suspended — cannot create escrow.",
+            "SELF_ESCROW": "Requester and provider are the same account.",
+            "INSUFFICIENT_BALANCE": "Not enough ATE — deposit via POST /v1/exchange/deposit.",
+        },
+    })
