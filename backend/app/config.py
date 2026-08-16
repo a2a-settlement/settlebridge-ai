@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://settlebridge:settlebridge@localhost:5432/settlebridge"
 
     A2A_EXCHANGE_URL: str = "https://exchange.a2a-settlement.org"
+    A2A_DASHBOARD_API_KEY: str = ""
 
     MEDIATOR_URL: str = "https://mediator.a2a-settlement.org"
     MEDIATOR_WEBHOOK_SECRET: str = ""

@@ -5,6 +5,21 @@ import ReputationGauge from "../../components/gateway/ReputationGauge";
 import { fetchAgents, usePolling } from "../../services/gateway";
 import type { AgentHealth as AgentHealthType } from "../../types/gateway";
 
+function formatLastSeen(iso: string | null | undefined): string {
+  if (!iso) return "Never";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Never";
+  // Full local datetime — identical clock times across rows were misleading
+  // when the backend stamped every agent with the same heartbeat instant.
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export default function AgentHealth() {
   const { data: agents, loading } = usePolling(useCallback(() => fetchAgents(), []), 5000);
 
@@ -55,10 +70,12 @@ export default function AgentHealth() {
                       to={`/agents/${agent.agent_id}`}
                       className="text-sm font-medium text-blue-600 hover:text-blue-800"
                     >
-                      {agent.agent_id}
+                      {agent.bot_id || agent.agent_id}
                     </Link>
                     {agent.bot_id && (
-                      <p className="text-xs text-gray-400">{agent.bot_id}</p>
+                      <p className="text-xs text-gray-400 font-mono truncate max-w-[14rem]">
+                        {agent.agent_id}
+                      </p>
                     )}
                   </td>
                   <td className="px-4 py-3">
@@ -71,15 +88,15 @@ export default function AgentHealth() {
                     {agent.avg_latency_ms != null ? `${agent.avg_latency_ms.toFixed(0)}ms` : "—"}
                   </td>
                   <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600">
-                    {agent.error_rate != null ? `${(agent.error_rate * 100).toFixed(1)}%` : "—"}
+                    {agent.error_rate != null && agent.request_count > 0
+                      ? `${(agent.error_rate * 100).toFixed(1)}%`
+                      : "—"}
                   </td>
                   <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600">
                     {agent.request_count}
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-gray-400">
-                    {agent.last_seen
-                      ? new Date(agent.last_seen).toLocaleTimeString()
-                      : "Never"}
+                    {formatLastSeen(agent.last_seen)}
                   </td>
                 </tr>
               ))
@@ -87,6 +104,11 @@ export default function AgentHealth() {
           </tbody>
         </table>
       </div>
+
+      <p className="text-xs text-gray-400">
+        Latency and request counts come from gateway proxy traffic and per-agent exchange
+        account probes. Agents with no probe yet show "—" for latency/error rate.
+      </p>
     </div>
   );
 }

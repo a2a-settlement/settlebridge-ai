@@ -794,8 +794,8 @@ async def gateway_metrics(
 
     error_rate = 0.0
     if agents:
-        error_rates = [a.error_rate for a in agents]
-        error_rate = sum(error_rates) / len(error_rates)
+        error_rates = [a.error_rate for a in agents if a.error_rate is not None]
+        error_rate = sum(error_rates) / len(error_rates) if error_rates else 0.0
 
     return GatewayMetricsResponse(
         transactions_per_hour=total_requests,

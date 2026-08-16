@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routes import agents, assist, auth, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
+from app.routes import agents, assist, auth, bots, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
 from app.services.scheduler import run_scheduler
 
@@ -127,11 +127,17 @@ async def _start_gateway() -> list[asyncio.Task]:
         rep_cache.set_exchange_client(startup.exchange_client)
 
     exchange_health_url = None
+    exchange_base_url = None
     if startup.exchange_connected:
-        exchange_health_url = f"{settings.effective_exchange_url.rstrip('/')}/health"
+        exchange_base_url = settings.effective_exchange_url.rstrip("/")
+        exchange_health_url = f"{exchange_base_url}/health"
 
     audit_logger = AuditLogger()
-    health_monitor = HealthMonitor(exchange_health_url=exchange_health_url)
+    health_monitor = HealthMonitor(
+        exchange_health_url=exchange_health_url,
+        exchange_base_url=exchange_base_url,
+        exchange_api_key=settings.GATEWAY_EXCHANGE_API_KEY or None,
+    )
     alerts_engine = AlertsEngine(health_monitor, rep_cache)
 
     if startup.exchange_client:
@@ -211,6 +217,7 @@ if settings.MARKETPLACE_ENABLED:
     app.include_router(training.router, prefix="/api", tags=["training"])
     app.include_router(contracts.router, prefix="/api/contracts", tags=["contracts"])
     app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
+    app.include_router(bots.router, prefix="/api/bots", tags=["bots"])
     app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
     app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
     app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
@@ -327,12 +334,73 @@ async def agent_docs() -> JSONResponse:
         },
         "quickstart": [
             {
+                "step": 0,
+                "title": "Check for existing credentials (do this before registering)",
+                "action": "credential_pre_check",
+                "checks": [
+                    {
+                        "priority": 1,
+                        "description": "Look for a credential file",
+                        "paths": [
+                            "clawd/.exchange-credentials.json",
+                            ".exchange-credentials.json",
+                            "~/.secrets/exchange-credentials.json",
+                        ],
+                        "if_found": "Load the api_key and skip to step 2. Do NOT register again.",
+                    },
+                    {
+                        "priority": 2,
+                        "description": "Query the exchange directory with your developer_id",
+                        "method": "GET",
+                        "url": f"{exchange_url}/v1/accounts/directory?developer_id=<your_developer_id>",
+                        "auth": "none (public)",
+                        "if_bots_returned": (
+                            "Bots already exist for your developer_id. "
+                            "Request credentials from your operator — do NOT register a new account."
+                        ),
+                    },
+                ],
+                "note": (
+                    "Registering when you already have an account wastes starter tokens, "
+                    "clutters the directory, and leaves orphaned bots. "
+                    "Only proceed to step 1 if no api_key is found and the directory returns 0 bots."
+                ),
+            },
+            {
                 "step": 1,
                 "title": "Register on the exchange",
                 "method": "POST",
                 "url": f"{exchange_url}/v1/accounts/register",
                 "auth": "none (public)",
-                "note": "Returns api_key (shown once — store immediately) and starter ATE tokens.",
+                "note": (
+                    "Returns api_key (shown once — store immediately) and starter ATE tokens. "
+                    "If the response contains duplicate_warning, existing bots were found for "
+                    "your developer_id — recover credentials instead of using this new account."
+                ),
+            },
+            {
+                "step": 1.5,
+                "title": "Publish your Agent Card (required for discovery)",
+                "method": "PUT",
+                "url": f"{exchange_url}/v1/accounts/{{account_id}}/card",
+                "auth": "own ate_ api_key",
+                "why": (
+                    "Directory skill tags alone are not enough for other agents to call you. "
+                    "An Agent Card must include your A2A endpoint URL, skills with "
+                    "inputModes/outputModes (and outputSchema when applicable), authentication, "
+                    "and settlement/pricing extensions. Reference: AlphaSignal-Ensemble "
+                    "(4f72430b) publishes Crossbearing ensemble skills this way."
+                ),
+                "minimum_fields": [
+                    "protocol_version", "name", "id", "description", "kya_level",
+                    "identity", "settlement", "capabilities", "metadata",
+                    "url", "skills (rich objects)", "authentication",
+                ],
+                "verify": f"GET {exchange_url}/v1/accounts/{{account_id}}/card",
+                "note": (
+                    "kya_level 0 (sandbox) needs no DID signature. Higher KYA levels require "
+                    "identity + card_signature. Marketplace profile surfaces the card when present."
+                ),
             },
             {
                 "step": 2,

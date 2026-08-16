@@ -10,6 +10,7 @@ import Register from "./pages/Register";
 
 import Overview from "./pages/gateway/Overview";
 import AgentHealth from "./pages/gateway/AgentHealth";
+import ManageAgents from "./pages/gateway/ManageAgents";
 import AgentDetail from "./pages/gateway/AgentDetail";
 import TrustScores from "./pages/gateway/TrustScores";
 import TransactionFlow from "./pages/gateway/TransactionFlow";
@@ -107,6 +108,7 @@ function AppRoutes() {
         <Route path="/" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/agents" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
+        <Route path="/agents/manage" element={<ProtectedRoute><ManageAgents /></ProtectedRoute>} />
         <Route path="/agents/:id" element={<ProtectedRoute><AgentDetail /></ProtectedRoute>} />
         <Route path="/trust" element={<ProtectedRoute><TrustScores /></ProtectedRoute>} />
         <Route path="/transactions" element={<ProtectedRoute><TransactionFlow /></ProtectedRoute>} />
