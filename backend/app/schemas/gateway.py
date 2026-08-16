@@ -192,6 +192,8 @@ class GatewayAgentResponse(BaseModel):
     verified: bool
     claimed_at: datetime
     status: str
+    # Populated on claim only: why the exchange-side claim did not record.
+    exchange_claim_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -217,6 +219,10 @@ class GatewayHealthResponse(BaseModel):
     policy_violations_24h: int
     avg_latency_ms: float
     exchange_connected: bool
+    # Exchange identity this gateway authenticates as. Claims are only recorded
+    # on the exchange when the account is of type "gateway".
+    exchange_account_type: str | None = None
+    can_claim_on_exchange: bool = False
 
 
 class SettlementOverviewResponse(BaseModel):
