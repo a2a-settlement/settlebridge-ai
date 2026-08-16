@@ -53,7 +53,9 @@ function effectiveContentType(content: string, declared: string): string {
     /^-{3,}$/m.test(t) ||
     (/\*\*[^*]+\*\*/.test(t) && /\n/.test(t)) ||
     (/^[-*] /m.test(t) && /\n/.test(t)) ||
-    /^\|.+\|/m.test(t)
+    /^\|.+\|/m.test(t) ||
+    /^(\s*[-*] |\s*\d+\.\s)/m.test(t) ||
+    (/\n[^\n]/.test(t) && /\*\*[^*]+\*\*/.test(t))
   ) {
     return "text/markdown";
   }

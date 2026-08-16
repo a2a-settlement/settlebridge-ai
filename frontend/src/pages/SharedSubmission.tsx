@@ -73,6 +73,23 @@ function fmt(iso: string) {
   });
 }
 
+function splitAiReviewNotes(notes: string): string[] {
+  const normalized = notes.trim();
+  if (!normalized) return [];
+
+  const explicitLines = normalized
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .filter(Boolean);
+  if (explicitLines.length > 1) return explicitLines;
+
+  if (normalized.length < 180) return [normalized];
+  return normalized
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
 export default function SharedSubmission() {
   const { token } = useParams<{ token: string }>();
   const [data, setData] = useState<SharedData | null>(null);
@@ -113,6 +130,9 @@ export default function SharedSubmission() {
     : null;
 
   const provenance = data.provenance;
+  const aiNoteItems = data.ai_review?.notes
+    ? splitAiReviewNotes(data.ai_review.notes)
+    : [];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -199,8 +219,18 @@ export default function SharedSubmission() {
               )}
             </div>
 
-            {data.ai_review.notes && (
-              <p className="text-sm text-gray-700 leading-relaxed mb-4">{data.ai_review.notes}</p>
+            {aiNoteItems.length === 1 && (
+              <p className="text-sm text-gray-700 leading-relaxed mb-4 whitespace-pre-wrap">
+                {aiNoteItems[0]}
+              </p>
+            )}
+
+            {aiNoteItems.length > 1 && (
+              <ul className="list-disc list-outside ml-5 space-y-1.5 text-sm text-gray-700 mb-4">
+                {aiNoteItems.map((note, i) => (
+                  <li key={i}>{note}</li>
+                ))}
+              </ul>
             )}
 
             {data.ai_review.issues && data.ai_review.issues.length > 0 && (

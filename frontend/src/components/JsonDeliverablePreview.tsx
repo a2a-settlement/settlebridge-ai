@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 /**
  * Human-readable preview for JSON bounty deliverables.
  * Detects structured “analyst report” payloads; otherwise renders a sectioned document view.
@@ -23,10 +25,196 @@ function isStructuredReport(obj: Record<string, unknown>): boolean {
   );
 }
 
+function isForecastBandsRow(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.mean === "number" &&
+    typeof r.p10 === "number" &&
+    typeof r.p25 === "number" &&
+    typeof r.p75 === "number" &&
+    typeof r.p90 === "number" &&
+    (typeof r.date === "string" || typeof r.day === "number")
+  );
+}
+
+function isEnsembleForecast(obj: Record<string, unknown>): boolean {
+  const hasWeights =
+    obj.model_weights !== null &&
+    typeof obj.model_weights === "object" &&
+    !Array.isArray(obj.model_weights);
+
+  if (typeof obj.ticker !== "string" || typeof obj.forecast_horizon_days !== "number" || !hasWeights) {
+    return false;
+  }
+
+  if (Array.isArray(obj.predictions) && obj.predictions.length > 0 && isForecastBandsRow(obj.predictions[0])) {
+    return true;
+  }
+
+  if (Array.isArray(obj.forecast_bands) && obj.forecast_bands.length > 0 && isForecastBandsRow(obj.forecast_bands[0])) {
+    return true;
+  }
+
+  return false;
+}
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : null;
+}
+
+interface Prediction {
+  day?: number;
+  date?: string;
+  mean: number;
+  p10: number;
+  p25: number;
+  p75: number;
+  p90: number;
+}
+
+function getForecastRows(obj: Record<string, unknown>): Prediction[] {
+  const rows = Array.isArray(obj.predictions) ? obj.predictions : obj.forecast_bands;
+  return Array.isArray(rows) ? (rows as Prediction[]) : [];
+}
+
+function getChartUrl(obj: Record<string, unknown>, ticker: string, rows: Prediction[]): string | null {
+  for (const key of ["chart_url", "plot_url", "image_url"]) {
+    const v = obj[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  const firstDate = rows[0]?.date;
+  if (!firstDate) return null;
+  const datePart = firstDate.replace(/\D/g, "");
+  if (datePart.length !== 8) return null;
+  return `https://alphasignal.fund/static/charts/${ticker.toUpperCase()}_forecast_${datePart}.png`;
+}
+
+function ForecastChart({ url, ticker }: { url: string; ticker: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+
+  return (
+    <figure className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+      <img
+        src={url}
+        alt={`${ticker} forecast chart`}
+        className="w-full h-auto bg-navy-950"
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+      <figcaption className="px-3 py-2 text-xs text-gray-500 border-t border-gray-100 break-all">
+        Forecast chart:{" "}
+        <a href={url} target="_blank" rel="noreferrer" className="text-navy-600 hover:underline">
+          {url}
+        </a>
+      </figcaption>
+    </figure>
+  );
+}
+
+function EnsembleForecastView({ obj }: { obj: Record<string, unknown> }) {
+  const ticker = String(obj.ticker);
+  const horizon = Number(obj.forecast_horizon_days);
+  const rows = getForecastRows(obj);
+  const weights = obj.model_weights as Record<string, number>;
+  const lastClose =
+    typeof obj.last_actual_close === "number"
+      ? obj.last_actual_close
+      : typeof obj.last_close === "number"
+      ? obj.last_close
+      : null;
+  const lastPred = rows[rows.length - 1];
+  const chartUrl = getChartUrl(obj, ticker, rows);
+  const showDay = rows.some((p) => p.day != null);
+  const maxWeight = Math.max(...Object.values(weights).map(Number));
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-navy-50 rounded-xl p-3 text-center">
+          <div className="text-xs text-gray-500 mb-1">Ticker</div>
+          <div className="text-2xl font-bold text-navy-900">{ticker}</div>
+        </div>
+        <div className="bg-navy-50 rounded-xl p-3 text-center">
+          <div className="text-xs text-gray-500 mb-1">Horizon</div>
+          <div className="text-2xl font-bold text-navy-900">{horizon}d</div>
+        </div>
+        <div className="bg-navy-50 rounded-xl p-3 text-center">
+          <div className="text-xs text-gray-500 mb-1">{lastClose != null ? "Last Close" : "Target"}</div>
+          <div className="text-2xl font-bold text-navy-900">
+            ${Number(lastClose ?? lastPred?.mean ?? 0).toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {chartUrl && <ForecastChart url={chartUrl} ticker={ticker} />}
+
+      <div>
+        <h4 className="text-sm font-semibold text-navy-900 mb-2">{horizon}-Day Price Forecast</h4>
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 text-left">
+                {showDay && <th className="px-3 py-2 text-gray-600 font-semibold">Day</th>}
+                <th className="px-3 py-2 text-gray-600 font-semibold">Date</th>
+                <th className="px-3 py-2 text-right text-gray-700 font-semibold">Mean</th>
+                <th className="px-3 py-2 text-right text-gray-400 font-medium">P10</th>
+                <th className="px-3 py-2 text-right text-gray-500 font-medium">P25</th>
+                <th className="px-3 py-2 text-right text-gray-500 font-medium">P75</th>
+                <th className="px-3 py-2 text-right text-gray-400 font-medium">P90</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p, i) => {
+                const up = lastClose != null ? p.mean >= lastClose : p.mean >= rows[0].mean;
+                return (
+                  <tr key={i} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                    {showDay && <td className="px-3 py-1.5 font-mono text-gray-500 text-center">{p.day ?? "—"}</td>}
+                    <td className="px-3 py-1.5 font-mono text-gray-600">{p.date ?? "—"}</td>
+                    <td className={`px-3 py-1.5 text-right font-semibold font-mono ${up ? "text-emerald-700" : "text-rose-700"}`}>
+                      ${p.mean.toFixed(2)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-gray-400">${p.p10.toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-gray-500">${p.p25.toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-gray-500">${p.p75.toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-gray-400">${p.p90.toFixed(2)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {Object.keys(weights).length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-navy-900 mb-2">Model Weights</h4>
+          <div className="space-y-2">
+            {Object.entries(weights)
+              .sort(([, a], [, b]) => Number(b) - Number(a))
+              .map(([model, weight]) => {
+                const pct = (Number(weight) * 100).toFixed(1);
+                const barWidth = maxWeight > 0 ? (Number(weight) / maxWeight) * 100 : 0;
+                return (
+                  <div key={model} className="flex items-center gap-3">
+                    <div className="w-28 text-xs text-gray-600 truncate capitalize shrink-0">
+                      {model.replace(/_/g, " ")}
+                    </div>
+                    <div className="flex-1 h-3.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-navy-600 rounded-full transition-all" style={{ width: `${barWidth}%` }} />
+                    </div>
+                    <div className="w-12 text-right text-xs font-mono text-gray-700 shrink-0">{pct}%</div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function fmtValue(v: unknown): string {
@@ -446,6 +634,10 @@ export default function JsonDeliverablePreview({ content }: { content: string })
         {content}
       </pre>
     );
+  }
+
+  if (isEnsembleForecast(obj)) {
+    return <EnsembleForecastView obj={obj} />;
   }
 
   if (isStructuredReport(obj)) {
