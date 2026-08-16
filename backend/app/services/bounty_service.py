@@ -10,6 +10,16 @@ from sqlalchemy.orm import selectinload
 from app.models.bounty import Bounty, BountyStatus, Difficulty
 from app.models.claim import Claim, ClaimStatus
 
+# Visible to anonymous callers. DRAFT / CANCELLED / EXPIRED are owner-only.
+PUBLIC_BOUNTY_STATUSES = (
+    BountyStatus.OPEN,
+    BountyStatus.CLAIMED,
+    BountyStatus.SUBMITTED,
+    BountyStatus.IN_REVIEW,
+    BountyStatus.DISPUTED,
+    BountyStatus.COMPLETED,
+)
+
 
 async def create_bounty(db: AsyncSession, *, requester_id: uuid.UUID, **kwargs) -> Bounty:
     bounty = Bounty(requester_id=requester_id, status=BountyStatus.DRAFT, **kwargs)
@@ -45,7 +55,7 @@ async def _batch_active_claims_counts(
 async def list_bounties(
     db: AsyncSession,
     *,
-    status: BountyStatus | None = None,
+    statuses: list[BountyStatus] | None = None,
     category_id: uuid.UUID | None = None,
     difficulty: Difficulty | None = None,
     min_reward: int | None = None,
@@ -54,13 +64,22 @@ async def list_bounties(
     search: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    viewer_id: uuid.UUID | None = None,
 ) -> tuple[list[tuple[Bounty, int]], int]:
     q = select(Bounty).options(selectinload(Bounty.category))
     count_q = select(func.count()).select_from(Bounty)
 
     filters = []
-    if status:
-        filters.append(Bounty.status == status)
+    if statuses:
+        filters.append(Bounty.status.in_(statuses))
+
+    # Anonymous callers only see the public set; owners also see their own
+    # draft / cancelled / expired rows.
+    visibility = Bounty.status.in_(PUBLIC_BOUNTY_STATUSES)
+    if viewer_id:
+        visibility = or_(visibility, Bounty.requester_id == viewer_id)
+    filters.append(visibility)
+
     if category_id:
         filters.append(Bounty.category_id == category_id)
     if difficulty:
