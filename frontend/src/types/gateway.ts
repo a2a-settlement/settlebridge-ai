@@ -118,6 +118,7 @@ export interface GatewayAgentClaim {
   verified: boolean;
   claimed_at: string;
   status: string;
+  exchange_claim_error?: string | null;
 }
 
 export interface ExchangeAgentResult {
@@ -140,6 +141,8 @@ export interface GatewayHealth {
   policy_violations_24h: number;
   avg_latency_ms: number;
   exchange_connected: boolean;
+  exchange_account_type?: string | null;
+  can_claim_on_exchange?: boolean;
 }
 
 export interface SettlementOverview {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -45,6 +46,8 @@ from app.schemas.gateway import (
     TrustPolicyResponse,
     TrustPolicyUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -103,6 +106,8 @@ async def gateway_health(
         policy_violations_24h=violations,
         avg_latency_ms=round(avg_lat, 2),
         exchange_connected=startup.exchange_connected if startup else False,
+        exchange_account_type=startup.gateway_account_type if startup else None,
+        can_claim_on_exchange=startup.can_claim_on_exchange if startup else False,
     )
 
 
@@ -181,8 +186,13 @@ async def _claim_gateway_agent(
     *,
     exchange_account_id: str,
     agent_api_key: str | None,
-) -> GatewayAgent:
-    """Create gateway_agents row, optional exchange claim, health monitor (shared by claim + register)."""
+) -> tuple[GatewayAgent, str | None]:
+    """Create gateway_agents row, optional exchange claim, health monitor (shared by claim + register).
+
+    Returns the local row plus the reason the exchange-side claim did not
+    record, if any. A failed exchange claim still yields a usable local claim
+    for monitoring, but the agent stays unverified.
+    """
     from fastapi import HTTPException
     import httpx
     from a2a_settlement.client import SettlementExchangeClient
@@ -208,8 +218,11 @@ async def _claim_gateway_agent(
 
     exchange_claim_id = None
     verified = False
+    claim_error: str | None = None
     gw_api_key = settings.GATEWAY_EXCHANGE_API_KEY
-    if gw_api_key:
+    if not gw_api_key:
+        claim_error = "GATEWAY_EXCHANGE_API_KEY is not configured"
+    else:
         claim_url = f"{settings.effective_exchange_url.rstrip('/')}/v1/accounts/{exchange_account_id}/claim"
         claim_payload: dict[str, str] = {}
         if agent_api_key:
@@ -225,8 +238,18 @@ async def _claim_gateway_agent(
                 data = resp.json()
                 exchange_claim_id = data.get("claim_id")
                 verified = data.get("verified", False)
-        except Exception:
-            pass
+            else:
+                detail = resp.text
+                try:
+                    detail = resp.json().get("detail", detail)
+                except Exception:
+                    pass
+                claim_error = f"Exchange claim rejected ({resp.status_code}): {detail}"
+        except Exception as exc:
+            claim_error = f"Exchange claim failed: {exc}"
+
+    if claim_error:
+        logger.warning("Exchange claim not recorded for %s: %s", exchange_account_id, claim_error)
 
     agent = GatewayAgent(
         exchange_account_id=exchange_account_id,
@@ -250,7 +273,7 @@ async def _claim_gateway_agent(
         if reputation is not None:
             await rep_cache.set(exchange_account_id, float(reputation))
 
-    return agent
+    return agent, claim_error
 
 
 @router.post("/agents/register", response_model=RegisterUtilityAgentResponse, status_code=201)
@@ -292,7 +315,7 @@ async def register_utility_agent_via_gateway(
     if not account_id or not api_key:
         raise HTTPException(status_code=502, detail="Exchange returned an incomplete registration response")
 
-    agent = await _claim_gateway_agent(
+    agent, _ = await _claim_gateway_agent(
         db,
         exchange_account_id=account_id,
         agent_api_key=api_key,
@@ -324,12 +347,14 @@ async def claim_agent(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await _claim_gateway_agent(
+    agent, claim_error = await _claim_gateway_agent(
         db,
         exchange_account_id=body.exchange_account_id,
         agent_api_key=body.agent_api_key,
     )
-    return GatewayAgentResponse.model_validate(agent)
+    response = GatewayAgentResponse.model_validate(agent)
+    response.exchange_claim_error = claim_error
+    return response
 
 
 @router.delete("/agents/{exchange_account_id}/unclaim")

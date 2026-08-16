@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import {
   claimAgent,
   fetchClaimedAgents,
+  fetchGatewayHealth,
   searchExchangeDirectory,
   unclaimAgent,
   usePolling,
@@ -15,6 +16,7 @@ export default function ManageAgents() {
     loading,
     refresh,
   } = usePolling(useCallback(() => fetchClaimedAgents(), []), 15000);
+  const { data: health } = usePolling(useCallback(() => fetchGatewayHealth(), []), 30000);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ExchangeAgentResult[] | null>(null);
@@ -97,6 +99,19 @@ export default function ManageAgents() {
         </div>
       )}
 
+      {health && !health.can_claim_on_exchange && (
+        <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+          <p className="font-medium">Claims are recorded locally only</p>
+          <p className="mt-0.5 text-yellow-700">
+            This gateway authenticates to the exchange as an account of type{" "}
+            <span className="font-mono">{health.exchange_account_type ?? "unknown"}</span>.
+            The exchange only accepts claims from <span className="font-mono">gateway</span>{" "}
+            accounts, so agents stay key-unverified and no claim is recorded on the
+            exchange. Monitoring and policy still work.
+          </p>
+        </div>
+      )}
+
       <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-800">Claimed on this gateway</h2>
@@ -106,7 +121,12 @@ export default function ManageAgents() {
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Bot</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Account</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Verified</th>
+              <th
+                className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"
+                title="Whether the agent's own API key was presented at claim time, proving key ownership. Unrelated to health or attestation."
+              >
+                Key-verified
+              </th>
               <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
           </thead>
@@ -150,6 +170,10 @@ export default function ManageAgents() {
             )}
           </tbody>
         </table>
+        <p className="px-4 py-3 text-xs text-gray-400 border-t border-gray-100">
+          Key-verified means the agent's own API key was presented when claiming, proving
+          key ownership. A soft claim is still enough for health monitoring and policy.
+        </p>
       </section>
 
       <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
