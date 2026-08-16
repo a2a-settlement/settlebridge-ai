@@ -46,4 +46,14 @@ async def get_agent(bot_id: str, request: Request):
         except Exception:
             logger.debug("Failed to fetch attestation freshness for %s", bot_id)
 
+    # Attach published Agent Card when present (endpoints, rich skills, schemas).
+    card_resp = exchange_svc.get_agent_card(bot_id)
+    if card_resp:
+        account["agent_card"] = card_resp.get("card") or card_resp
+        account["kya_level_verified"] = card_resp.get("kya_level_verified")
+        account["has_agent_card"] = True
+    else:
+        account["agent_card"] = None
+        account["has_agent_card"] = False
+
     return account

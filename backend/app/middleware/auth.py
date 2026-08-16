@@ -49,7 +49,7 @@ def decode_token(token: str) -> uuid.UUID:
 
 async def _validate_exchange_key(ate_key: str) -> dict:
     """Validate an ate_ key against the exchange and return full account info."""
-    base = settings.A2A_EXCHANGE_URL.rstrip("/")
+    base = settings.effective_exchange_url.rstrip("/")
     headers = {"Authorization": f"Bearer {ate_key}"}
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -70,17 +70,25 @@ async def _get_or_create_exchange_user(ate_key: str, db: AsyncSession) -> User:
     account_id = exchange_acct["id"]
     contact_email = exchange_acct.get("contact_email", "")
     bot_name = exchange_acct.get("bot_name", "agent")
+    shadow_email = f"{account_id}@exchange.a2a-settlement.org"
 
-    # 1. Try existing user by exchange_bot_id
-    result = await db.execute(select(User).where(User.exchange_bot_id == account_id))
-    user = result.scalar_one_or_none()
+    # 1. Try existing user by exchange_bot_id.
+    #    Use limit(1) + scalars().first() to survive any stale duplicates without crashing.
+    #    Order by created_at asc so the real (oldest) human account wins over shadow rows.
+    row = await db.execute(
+        select(User)
+        .where(User.exchange_bot_id == account_id)
+        .order_by(User.created_at.asc())
+        .limit(1)
+    )
+    user = row.scalars().first()
     if user:
         return user
 
-    # 2. Try existing user by contact_email (human registered first)
+    # 2. Try existing user by contact_email (human registered their account first).
     if contact_email:
-        result = await db.execute(select(User).where(User.email == contact_email))
-        user = result.scalar_one_or_none()
+        row = await db.execute(select(User).where(User.email == contact_email).limit(1))
+        user = row.scalars().first()
         if user:
             user.exchange_bot_id = account_id
             user.exchange_api_key = ate_key
@@ -89,8 +97,20 @@ async def _get_or_create_exchange_user(ate_key: str, db: AsyncSession) -> User:
             logger.info("Merged exchange account %s into existing user %s", account_id, user.id)
             return user
 
-    # 3. Create shadow user from exchange identity
-    email = contact_email or f"{account_id}@exchange.a2a-settlement.org"
+    # 3. Try existing shadow user by canonical shadow email (prevents duplicate shadow rows
+    #    when exchange_bot_id link is somehow missing).
+    row = await db.execute(select(User).where(User.email == shadow_email).limit(1))
+    shadow = row.scalars().first()
+    if shadow:
+        if not shadow.exchange_bot_id:
+            shadow.exchange_bot_id = account_id
+            shadow.exchange_api_key = ate_key
+            await db.commit()
+            await db.refresh(shadow)
+        return shadow
+
+    # 4. Create a new shadow user — this account has never touched SettleBridge before.
+    email = contact_email or shadow_email
     user = User(
         email=email,
         password_hash=None,

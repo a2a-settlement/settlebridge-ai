@@ -28,6 +28,7 @@ class User(Base):
     exchange_bot_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     exchange_api_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     exchange_balance_cached: Mapped[float | None] = mapped_column(Float, nullable=True)
+    managed_developer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

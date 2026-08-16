@@ -29,6 +29,6 @@ frontend/.vite/
 .vscode/
 
 # Next.js marketplace rewrite (work in progress, separate project)
-marketplace-next/
+# marketplace-next has its own .gitignore (node_modules, .next, .env*)
 *.swp
 *.swo

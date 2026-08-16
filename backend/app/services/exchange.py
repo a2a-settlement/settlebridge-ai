@@ -48,14 +48,14 @@ def _map_provenance(prov: dict, content_hash: str | None = None) -> dict:
 
 
 def _public_client() -> SettlementExchangeClient:
-    return SettlementExchangeClient(base_url=settings.A2A_EXCHANGE_URL)
+    return SettlementExchangeClient(base_url=settings.effective_exchange_url)
 
 
 def _user_client(user: User) -> SettlementExchangeClient:
     if not user.exchange_api_key:
         raise ValueError("User has not linked an exchange account")
     return SettlementExchangeClient(
-        base_url=settings.A2A_EXCHANGE_URL, api_key=user.exchange_api_key
+        base_url=settings.effective_exchange_url, api_key=user.exchange_api_key
     )
 
 
@@ -81,6 +81,33 @@ def register_account(
 def get_balance(user: User) -> dict[str, Any]:
     client = _user_client(user)
     return client.get_balance()
+
+
+def get_balance_dashboard(account_id: str) -> dict[str, Any]:
+    """Check balance for a specific account using the operator dashboard API key.
+
+    Immune to user-key rotation — uses the stable server-side dashboard key.
+    Returns a dict with at least {"available": int, "account_id": str}.
+    """
+    import httpx
+
+    if not settings.A2A_DASHBOARD_API_KEY:
+        raise ValueError("A2A_DASHBOARD_API_KEY not configured on this server")
+
+    base = settings.effective_exchange_url.rstrip("/")
+    resp = httpx.get(
+        f"{base}/v1/agents/{account_id}",
+        headers={"Authorization": f"Bearer {settings.A2A_DASHBOARD_API_KEY}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "available": int(data.get("balance", 0)),
+        "account_id": account_id,
+        "status": data.get("status"),
+        "reputation": data.get("reputation"),
+    }
 
 
 def create_escrow(
@@ -155,19 +182,45 @@ def dispute_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, An
 
 def get_escrow(user: User, escrow_id: str) -> dict[str, Any]:
     import httpx
-    url = f"{settings.A2A_EXCHANGE_URL}/v1/exchange/escrows/{escrow_id}"
+    url = f"{settings.effective_exchange_url}/v1/exchange/escrows/{escrow_id}"
     resp = httpx.get(url, headers={"Authorization": f"Bearer {user.exchange_api_key}"}, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
 
-def is_escrow_expired(user: User, escrow_id: str) -> bool:
+def get_escrow_status(escrow_id: str, api_key: str | None = None) -> str | None:
+    """Fetch escrow status string. Uses api_key or the dashboard operator key."""
+    import httpx
+
+    key = api_key or settings.A2A_DASHBOARD_API_KEY
+    if not key:
+        return None
+    url = f"{settings.effective_exchange_url}/v1/exchange/escrows/{escrow_id}"
+    try:
+        resp = httpx.get(url, headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("status")
+    except Exception as exc:
+        logger.warning("Failed to fetch escrow %s status: %s", escrow_id, exc)
+        return None
+
+
+TERMINAL_ESCROW_STATUSES = frozenset({"expired", "refunded"})
+
+
+def is_escrow_terminal(user: User, escrow_id: str) -> bool:
+    """True when the exchange escrow is expired or refunded (not partially_released)."""
     try:
         data = get_escrow(user, escrow_id)
-        return data.get("status") == "expired"
+        return data.get("status") in TERMINAL_ESCROW_STATUSES
     except Exception as exc:
         logger.warning("Failed to check escrow status for %s: %s", escrow_id, exc)
         return False
+
+
+def is_escrow_expired(user: User, escrow_id: str) -> bool:
+    """Backward-compatible alias: expired or refunded count as terminal."""
+    return is_escrow_terminal(user, escrow_id)
 
 
 def recreate_and_release(
@@ -209,7 +262,7 @@ def recreate_and_release(
             raise
 
     mapped = _map_provenance(provenance, content_hash) if provenance else None
-    deliver_url = f"{settings.A2A_EXCHANGE_URL}/v1/exchange/escrow/{new_escrow_id}/deliver"
+    deliver_url = f"{settings.effective_exchange_url}/v1/exchange/escrow/{new_escrow_id}/deliver"
     deliver_payload: dict[str, Any] = {"content": content}
     if mapped:
         deliver_payload["provenance"] = mapped
@@ -231,3 +284,53 @@ def get_directory() -> list[dict[str, Any]]:
 def get_account(account_id: str) -> dict[str, Any]:
     client = _public_client()
     return client.get_account(account_id=account_id)
+
+
+def get_agent_card(account_id: str) -> dict[str, Any] | None:
+    """Fetch the stored Agent Card for an account, or None if not published."""
+    import httpx
+
+    url = f"{settings.effective_exchange_url}/v1/accounts/{account_id}/card"
+    try:
+        resp = httpx.get(url, timeout=10)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch agent card for %s: %s", account_id, exc)
+        return None
+
+
+def list_managed_bots(user: User, developer_id: str | None = None) -> dict[str, Any]:
+    """Return bots managed by this user's exchange account, filtered by developer_id."""
+    import httpx
+    dev_id = developer_id or user.managed_developer_id or ""  # type: ignore[attr-defined]
+    params: dict[str, str | int] = {"limit": 100}
+    if dev_id:
+        params["developer_id"] = dev_id
+    resp = httpx.get(
+        f"{settings.effective_exchange_url}/v1/accounts/managed-bots",
+        params=params,
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def rotate_bot_key(user: User, bot_id: str) -> dict[str, Any]:
+    """Rotate the API key for a managed bot. Returns new ate_ key (once only)."""
+    import httpx
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/rotate-key-managed",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def update_managed_developer_id(user: User, developer_id: str) -> None:
+    """Update the developer_id namespace this user manages (in-memory only — caller must commit)."""
+    user.managed_developer_id = developer_id  # type: ignore[attr-defined]
