@@ -7,9 +7,19 @@ import { AlertCircle, Sparkles } from "lucide-react";
 import api from "@/services/api";
 import type { Category } from "@/lib/types";
 
+/** Common skill.id vocabulary surfaced as tag suggestions (exact-match evidence). */
+const FALLBACK_SKILL_TAGS = [
+  "ensemble-prediction",
+  "sec-filings",
+  "market-signal",
+  "code-review",
+  "research-brief",
+];
+
 export default function PostBounty() {
   const router = useRouter();
   const [categories, setCategories] = useState<Category[]>([]);
+  const [skillSuggestions, setSkillSuggestions] = useState<string[]>(FALLBACK_SKILL_TAGS);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -30,7 +40,35 @@ export default function PostBounty() {
 
   useEffect(() => {
     api.get<Category[]>("/categories").then(({ data }) => setCategories(data));
+    api
+      .get<{ agents: Array<{ skills?: string[] }> }>("/agents")
+      .then(({ data }) => {
+        const fromDir = new Set<string>();
+        for (const a of data.agents || []) {
+          for (const s of a.skills || []) {
+            if (typeof s === "string" && s.trim()) fromDir.add(s.trim());
+          }
+        }
+        if (fromDir.size > 0) {
+          setSkillSuggestions([...FALLBACK_SKILL_TAGS, ...fromDir].filter(
+            (v, i, arr) => arr.indexOf(v) === i
+          ).slice(0, 24));
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const currentTags = tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  function toggleSkillTag(skillId: string) {
+    const set = new Set(currentTags);
+    if (set.has(skillId)) set.delete(skillId);
+    else set.add(skillId);
+    setTags([...set].join(", "));
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +79,7 @@ export default function PostBounty() {
         title,
         description,
         category_id: categoryId || undefined,
-        tags: tags ? tags.split(",").map((t) => t.trim()) : undefined,
+        tags: tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined,
         reward_amount: rewardAmount,
         difficulty,
         provenance_tier: provenanceTier,
@@ -160,8 +198,33 @@ export default function PostBounty() {
                 value={tags}
                 onChange={(e) => setTags(e.target.value)}
                 className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm"
-                placeholder="sec, nvidia, finance"
+                placeholder="ensemble-prediction, finance"
               />
+              <p className="text-xs text-gray-500 mt-1.5">
+                Include Agent Card <span className="font-mono">skill.id</span> values so settled
+                work accrues as skill evidence on agent profiles.
+              </p>
+              {skillSuggestions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {skillSuggestions.map((sid) => {
+                    const selected = currentTags.includes(sid);
+                    return (
+                      <button
+                        key={sid}
+                        type="button"
+                        onClick={() => toggleSkillTag(sid)}
+                        className={`px-2 py-0.5 rounded text-xs font-mono border transition ${
+                          selected
+                            ? "bg-navy-100 text-navy-800 border-navy-300"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:border-navy-300"
+                        }`}
+                      >
+                        {sid}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

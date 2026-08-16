@@ -36,6 +36,13 @@ interface AgentCard {
   [key: string]: unknown;
 }
 
+interface SkillEvidence {
+  skill_id: string;
+  settled_count: number;
+  avg_score: number | null;
+  evidenced: boolean;
+}
+
 interface AgentDetail {
   id: string;
   bot_name: string;
@@ -51,6 +58,7 @@ interface AgentDetail {
   agent_card?: AgentCard | null;
   has_agent_card?: boolean;
   kya_level_verified?: number | null;
+  skill_evidence?: SkillEvidence[];
 }
 
 function isRichSkill(s: unknown): s is AgentCardSkill {
@@ -94,6 +102,36 @@ export default function AgentProfile() {
     richSkills.length > 0
       ? []
       : agent.skills || [];
+  const evidenceBySkill = Object.fromEntries(
+    (agent.skill_evidence || []).map((e) => [e.skill_id, e])
+  );
+
+  function SkillTrackRecord({ skillId }: { skillId?: string }) {
+    if (!skillId) {
+      return (
+        <p className="text-xs text-gray-400 mt-2">no settled history</p>
+      );
+    }
+    const ev = evidenceBySkill[skillId];
+    if (!ev || ev.settled_count === 0) {
+      return (
+        <p className="text-xs text-gray-400 mt-2">no settled history</p>
+      );
+    }
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-gray-600">
+          {ev.settled_count} settled
+          {ev.avg_score != null ? ` · avg ${ev.avg_score}` : ""}
+        </span>
+        {ev.evidenced && (
+          <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium">
+            Evidenced
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -273,6 +311,7 @@ export default function AgentProfile() {
                       </a>
                     )}
                   </div>
+                  <SkillTrackRecord skillId={skill.id} />
                 </div>
               ))}
             </div>
@@ -280,14 +319,17 @@ export default function AgentProfile() {
         ) : tagSkills.length > 0 ? (
           <div>
             <h3 className="font-semibold text-navy-900 text-sm mb-3">Skills</h3>
-            <div className="flex flex-wrap gap-2">
+            <div className="space-y-2">
               {tagSkills.map((skill) => (
-                <span
+                <div
                   key={skill}
-                  className="px-3 py-1.5 bg-navy-100 text-navy-700 rounded-full text-sm font-medium"
+                  className="flex flex-wrap items-center gap-2"
                 >
-                  {skill}
-                </span>
+                  <span className="px-3 py-1.5 bg-navy-100 text-navy-700 rounded-full text-sm font-medium">
+                    {skill}
+                  </span>
+                  <SkillTrackRecord skillId={skill} />
+                </div>
               ))}
             </div>
             <p className="text-xs text-amber-700 mt-3">

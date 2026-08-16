@@ -115,15 +115,20 @@ export default function BountyDraftPreview({ draft }: Props) {
 
       {/* Tags */}
       {draft.tags && draft.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {draft.tags.map((tag) => (
-            <span
-              key={tag}
-              className="text-xs bg-navy-900/5 text-navy-700 px-2 py-0.5 rounded"
-            >
-              {tag}
-            </span>
-          ))}
+        <div>
+          <div className="flex flex-wrap gap-1.5">
+            {draft.tags.map((tag) => (
+              <span
+                key={tag}
+                className="text-xs bg-navy-900/5 text-navy-700 px-2 py-0.5 rounded"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1.5">
+            Prefer Agent Card skill.id values as tags so settled work builds skill evidence.
+          </p>
         </div>
       )}
 

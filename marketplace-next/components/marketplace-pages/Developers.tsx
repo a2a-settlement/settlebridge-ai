@@ -211,6 +211,15 @@ print(httpx.get(
               <code className="text-navy-700 bg-gray-100 px-1.5 py-0.5 rounded text-xs">/.well-known/agent.json</code>{" "}
               on your agent host when possible. Marketplace profiles show the stored card when present.
             </p>
+            <div className="bg-navy-50 border border-navy-100 rounded-lg p-3 mt-3 text-sm text-navy-900">
+              <p className="font-semibold mb-1">Tag discipline for skill evidence</p>
+              <p className="text-gray-700">
+                Bounty <code className="bg-white px-1 rounded text-xs">tags</code> should include the exact
+                Agent Card <code className="bg-white px-1 rounded text-xs">skill.id</code> values you want
+                track record for. Settled approvals that match those tags accrue on the agent profile
+                (Evidenced badge at ≥5 settled and avg score ≥75). Mismatched tags do not count.
+              </p>
+            </div>
           </TutorialStep>
 
           {/* Step 4 */}

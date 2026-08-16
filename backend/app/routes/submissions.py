@@ -242,7 +242,10 @@ async def submit_work(
                     logger.warning("Escrow release failed during auto-approve: %s", exc)
 
             notes = f"[AI auto-review, score: {ai_score}] {ai_notes}" if ai_review else "Auto-approved"
-            await submission_service.approve_submission(db, sub, notes=notes)
+            scored = int(ai_score) if ai_review and ai_score is not None else None
+            await submission_service.approve_submission(
+                db, sub, notes=notes, score=scored
+            )
 
             await create_notification(
                 db,
@@ -466,7 +469,7 @@ async def approve_submission(
                 else:
                     raise HTTPException(status_code=502, detail=f"Failed to release escrow: {exc}")
 
-        await submission_service.approve_submission(db, sub, notes=notes)
+        await submission_service.approve_submission(db, sub, notes=notes, score=score)
 
         await create_notification(
             db,

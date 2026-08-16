@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db
 from app.services import exchange as exchange_svc
+from app.services.skill_evidence import compute_skill_evidence, extract_skill_ids
 
 if TYPE_CHECKING:
     from app.gateway.reputation_cache import ReputationCache
@@ -30,7 +33,11 @@ async def list_agents():
 
 
 @router.get("/{bot_id}")
-async def get_agent(bot_id: str, request: Request):
+async def get_agent(
+    bot_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     try:
         account = exchange_svc.get_account(bot_id)
     except Exception as exc:
@@ -55,5 +62,12 @@ async def get_agent(bot_id: str, request: Request):
     else:
         account["agent_card"] = None
         account["has_agent_card"] = False
+
+    skill_ids = extract_skill_ids(account)
+    try:
+        account["skill_evidence"] = await compute_skill_evidence(db, bot_id, skill_ids)
+    except Exception:
+        logger.exception("Failed to compute skill evidence for %s", bot_id)
+        account["skill_evidence"] = []
 
     return account
