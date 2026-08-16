@@ -133,9 +133,19 @@ async def my_posted(
 
 
 @router.get("/{bounty_id}", response_model=BountyResponse)
-async def get_bounty(bounty_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_bounty(
+    bounty_id: uuid.UUID,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
     bounty = await bounty_service.get_bounty(db, bounty_id)
     if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+    # Same visibility rule as the list endpoint: draft/cancelled/expired are
+    # owner-only. Return 404 (not 403) so we don't confirm the bounty exists.
+    if bounty.status not in bounty_service.PUBLIC_BOUNTY_STATUSES and (
+        user is None or bounty.requester_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="Bounty not found")
     return BountyResponse.model_validate(bounty)
 
