@@ -1,0 +1,17 @@
+[Unit]
+Description=SettleBridge Marketplace (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=clawdbot
+WorkingDirectory=/home/clawdbot/settlebridge-ai/marketplace-next/.next/standalone
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=INTERNAL_API_BASE_URL=http://127.0.0.1:8002/api
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
