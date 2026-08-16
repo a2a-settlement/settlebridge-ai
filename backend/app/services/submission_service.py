@@ -76,10 +76,17 @@ async def get_submission(db: AsyncSession, submission_id: uuid.UUID) -> Submissi
     ).scalar_one_or_none()
 
 
-async def approve_submission(db: AsyncSession, submission: Submission, notes: str | None = None):
+async def approve_submission(
+    db: AsyncSession,
+    submission: Submission,
+    notes: str | None = None,
+    score: int | None = None,
+):
     submission.status = SubmissionStatus.APPROVED
     submission.reviewer_notes = notes
     submission.reviewed_at = datetime.now(timezone.utc)
+    if score is not None:
+        submission.score = score
 
     claim = (await db.execute(select(Claim).where(Claim.id == submission.claim_id))).scalar_one()
     claim.status = ClaimStatus.ACCEPTED
