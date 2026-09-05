@@ -139,6 +139,7 @@ async def record_score(
         diagnostics["details"] = structured.get("details", {})
         diagnostics["task_type"] = run.task_type
     diagnostics["raw"] = structured or {}
+    diagnostics["_submission_id"] = str(submission.id)
 
     prov_hash = _provenance_hash_for(submission)
 

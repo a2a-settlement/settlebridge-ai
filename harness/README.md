@@ -61,22 +61,25 @@ with open("training_trajectory.html", "w") as f:
 
 ## `mutation_callback` contract
 
-The callback is the only integration point between the harness and the agent:
+The callback is the only integration point between the harness and the agent. Signatures are bound once with `inspect.signature` (never by invoking the callback):
 
 ```python
 def mutation_callback(reasoning: str, diagnostics: dict, best_deliverable: dict) -> dict:
     ...
+
+# or MutationResult / MutationContext — see harness.MutationResult
 ```
 
 | Argument | Type | Description |
 |---|---|---|
-| `reasoning` | `str` | Plain-text Mediator explanation of why the deliverable scored as it did |
-| `diagnostics` | `dict` | `{"task_type": str, "actionable_gaps": [str, ...], "details": dict or None}` |
-| `best_deliverable` | `dict` | The deliverable that produced the highest score seen so far in this run |
+| `reasoning` | `str` | Feedback that scored **best_deliverable** (not necessarily the latest) |
+| `diagnostics` | `dict` | Gaps/details that belong to that same best candidate |
+| `best_deliverable` | `dict` | Deepcopy of the highest-scoring submission so far |
+| `rejected` | optional | Feedback for the just-scored loser after a regression |
 
-The return value is used **verbatim** as the `deliverable` field of the next `POST /api/claims/{id}/submit` body. The harness does not inspect or validate it beyond JSON-serialisability.
+Return `MutationResult(deliverable, patched, ops_applied)` or a bare `dict` (treated as `patched=True`). Bare dict callbacks remain supported; unchanged or repeated candidates still halt.
 
-**The harness cannot change the agent's internal configuration.** It can only change what it sends to the API. How the operator uses `actionable_gaps` to produce a better deliverable is entirely their responsibility.
+The next submit body is the returned dict as-is when it already has a `deliverable` key (recon envelope); otherwise it is wrapped as `{"deliverable": ...}`.
 
 ---
 
@@ -87,7 +90,7 @@ By default (`versioning=True`), the harness tracks the best-scoring deliverable 
 - **Keep** — if the new score exceeds the previous best, `best_deliverable` is updated.
 - **Revert** — if the new score is equal to or lower, `best_deliverable` stays unchanged.
 
-In both cases, `mutation_callback` always receives the current iteration's `reasoning` and `diagnostics` (so the agent knows what just happened), but `best_deliverable` always refers to the highest-scoring submission — never a regressed one.
+After a regression, `reasoning` / `diagnostics` stay those of the best candidate. The loser's feedback is passed separately as `rejected`.
 
 ```python
 harness = TrainingHarness(
