@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes import agents, assist, auth, bots, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
+from app.services.review_service import QUALITY_PROMPT_VERSION, REVIEW_MODEL
 from app.services.scheduler import run_scheduler
 
 logger = logging.getLogger(__name__)
@@ -232,6 +233,8 @@ async def public_config():
     return {
         "marketplace_enabled": settings.MARKETPLACE_ENABLED,
         "gateway_enabled": settings.GATEWAY_ENABLED,
+        "review_model": REVIEW_MODEL,
+        "quality_prompt_version": QUALITY_PROMPT_VERSION,
     }
 
 
