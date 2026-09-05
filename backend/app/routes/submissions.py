@@ -114,8 +114,8 @@ async def submit_work(
         provenance=provenance_dict,
     )
 
-    # Fetch prior reviewed submissions for this bounty+claim to give the
-    # reviewer iteration context (scores, issues flagged, improvement credit).
+    # Prior reviews on this claim are audit metadata only. They are not
+    # injected into the quality-score prompt.
     prior_subs_for_review: list[dict] = []
     try:
         prior_subs = await submission_service.list_submissions_for_bounty(db, bounty.id)

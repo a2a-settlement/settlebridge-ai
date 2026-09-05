@@ -13,6 +13,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 REVIEW_MODEL = "claude-haiku-4-5-20251001"
+QUALITY_PROMPT_VERSION = "content-v1"
+_REPORT_HISTORY_KEYS = ("iteration_delta", "prior_iterations")
 
 # claude-haiku-4-5 supports 200K *token* context; 400K chars ≈ 100K tokens.
 # The original 12K-char limit truncated ~50% of a typical recon report, causing
@@ -75,53 +77,45 @@ evidence of fabrication. Apply this distinction strictly:
 Set holdback=true when findings reference recent external events or URLs that \
 require spot-checking. Set efficacy_criteria to the specific URLs or claims \
 to verify and the verification method (e.g. "Fetch URL and confirm content matches \
-claimed article title")."""
+claimed article title").
+
+## Contradictions vs uncertainty
+
+A fabrication or internal-contradiction claim must cite the report field or \
+evidence id and the two conflicting values. "Cannot verify" and post-cutoff \
+live sources are holdback, not fabrication. For certificate expiry, expired \
+means not_after is earlier than scan_timestamp. Do not treat iteration \
+bookkeeping, prior scores, or refinement notes as content-quality defects."""
 
 
-def _build_prior_iterations_section(prior_submissions: list[dict]) -> str:
-    """Render a concise history of prior submissions and their review outcomes."""
-    if not prior_submissions:
-        return ""
+def strip_report_history(content: Any) -> Any:
+    """Omit report-level iteration bookkeeping. Non-dicts are unchanged."""
+    if not isinstance(content, dict):
+        return content
+    if "findings" in content or "iteration_delta" in content or "prior_iterations" in content:
+        return {k: v for k, v in content.items() if k not in _REPORT_HISTORY_KEYS}
+    inner = content.get("content")
+    if isinstance(inner, dict) and (
+        "findings" in inner or "iteration_delta" in inner or "prior_iterations" in inner
+    ):
+        updated = dict(content)
+        updated["content"] = {
+            k: v for k, v in inner.items() if k not in _REPORT_HISTORY_KEYS
+        }
+        return updated
+    return content
 
-    lines = ["\n## Prior Submission History\n"]
-    lines.append(
-        "The agent has made prior attempts on this bounty. "
-        "Award additional credit when the current submission demonstrably addresses "
-        "issues flagged in earlier reviews (documented `iteration_delta`) "
-        "and when scores are trending upward.\n"
-    )
 
-    for i, sub in enumerate(prior_submissions, start=1):
-        review = sub.get("ai_review") or {}
-        score = sub.get("score") or review.get("score")
-        status = sub.get("status", "unknown")
-        notes = review.get("notes", "")
-        issues = review.get("issues", [])
-        holdback = review.get("holdback_percent")
-        submitted_at = sub.get("submitted_at", "")[:10]
-
-        lines.append(f"### Attempt #{i}  (submitted {submitted_at}, status: {status})")
-        if score is not None:
-            lines.append(f"- **Score:** {score}/100")
-        if holdback:
-            lines.append(f"- **Holdback:** {holdback}%")
-        if notes:
-            lines.append(f"- **Reviewer summary:** {notes}")
-        if issues:
-            issues_text = "; ".join(issues[:5])
-            if len(issues) > 5:
-                issues_text += f" … (+{len(issues) - 5} more)"
-            lines.append(f"- **Issues flagged:** {issues_text}")
-        lines.append("")
-
-    lines.append(
-        "**Scoring note:** If the current submission includes an `iteration_delta` "
-        "field documenting what changed relative to prior feedback, and those changes "
-        "address the flagged issues above, apply a bonus of up to +10 points to the "
-        "base score to reward demonstrated self-improvement.\n"
-    )
-
-    return "\n".join(lines)
+def quality_deliverable_text(content: str) -> str:
+    """Quality-score view. Non-JSON submissions are passed through unchanged."""
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    stripped = strip_report_history(parsed)
+    if stripped is parsed:
+        return content
+    return json.dumps(stripped, sort_keys=True, default=str, separators=(",", ":"))
 
 
 def _build_prompt(
@@ -132,7 +126,6 @@ def _build_prompt(
     difficulty: str,
     deliverable_content: str,
     provenance: dict | None,
-    prior_submissions: list[dict] | None = None,
 ) -> str:
     parts = [
         f"## Bounty: {bounty_title}",
@@ -143,11 +136,9 @@ def _build_prompt(
     if acceptance_criteria:
         parts.append(f"\n### Acceptance Criteria\n{json.dumps(acceptance_criteria, indent=2)}")
 
-    if prior_submissions:
-        parts.append(_build_prior_iterations_section(prior_submissions))
-
-    truncated = len(deliverable_content) > _DELIVERABLE_REVIEW_CHAR_LIMIT
-    review_content = deliverable_content[:_DELIVERABLE_REVIEW_CHAR_LIMIT]
+    quality_content = quality_deliverable_text(deliverable_content)
+    truncated = len(quality_content) > _DELIVERABLE_REVIEW_CHAR_LIMIT
+    review_content = quality_content[:_DELIVERABLE_REVIEW_CHAR_LIMIT]
     if truncated:
         review_content += (
             "\n\n[SYSTEM NOTE — DO NOT PENALISE: This deliverable was truncated at "
@@ -191,7 +182,6 @@ async def review_deliverable(
         difficulty=difficulty,
         deliverable_content=deliverable_content,
         provenance=provenance,
-        prior_submissions=prior_submissions,
     )
 
     try:
