@@ -29,8 +29,8 @@ def _report() -> dict:
     }
 
 
-def test_quality_prompt_version_is_content_v2():
-    assert QUALITY_PROMPT_VERSION == "content-v2"
+def test_quality_prompt_version_is_content_v3():
+    assert QUALITY_PROMPT_VERSION == "content-v3"
 
 
 def test_review_system_allows_future_expiry_and_scheduled_events():
@@ -40,6 +40,32 @@ def test_review_system_allows_future_expiry_and_scheduled_events():
     assert "scheduled future events are valid" in REVIEW_SYSTEM
     assert "not_after after scan_timestamp" in REVIEW_SYSTEM
     assert "valid unexpired cert" in REVIEW_SYSTEM
+
+
+def test_review_system_drops_numerical_contradiction_example():
+    assert "14 wildcard" not in REVIEW_SYSTEM
+    assert "only 2 shown" not in REVIEW_SYSTEM
+    assert "wildcard certs" not in REVIEW_SYSTEM
+
+
+def test_review_system_requires_quoted_submitted_values():
+    assert "quote the exact conflicting values" in REVIEW_SYSTEM
+    assert "cited field" in REVIEW_SYSTEM
+    assert "omit the objection" in REVIEW_SYSTEM
+
+
+def test_review_system_assesses_description_requirements():
+    assert "bounty title, description, and" in REVIEW_SYSTEM
+    assert "Description-stated requirements count" in REVIEW_SYSTEM
+
+
+def test_review_system_is_passive_without_automatic_sufficiency():
+    assert "Do not require active probing" in REVIEW_SYSTEM
+    assert "Do not treat any source as automatically sufficient" in REVIEW_SYSTEM
+    assert "automatically sufficient to satisfy" in REVIEW_SYSTEM
+    assert "Shodan" not in REVIEW_SYSTEM
+    assert "InternetDB" not in REVIEW_SYSTEM
+    assert "crt.sh" not in REVIEW_SYSTEM
 
 
 def test_json_history_stripped_at_report_level():
@@ -92,6 +118,7 @@ def test_build_prompt_has_no_prior_bonus_or_history():
     assert "Prior Submission History" not in prompt
     assert "prior_score" not in prompt
     assert "unresolved: HIGH" not in prompt
+    assert "title, description, and acceptance criteria" in prompt
 
 
 def _fake_anthropic_client(payload: dict) -> MagicMock:
@@ -131,7 +158,7 @@ def test_successful_review_records_prompt_version_and_model():
         )
     assert result["score"] == 72
     assert result["model"] == REVIEW_MODEL
-    assert result["quality_prompt_version"] == "content-v2"
+    assert result["quality_prompt_version"] == "content-v3"
     assert result["quality_prompt_version"] == QUALITY_PROMPT_VERSION
     fake.messages.create.assert_awaited_once()
 

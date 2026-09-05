@@ -13,7 +13,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 REVIEW_MODEL = "claude-haiku-4-5-20251001"
-QUALITY_PROMPT_VERSION = "content-v2"
+QUALITY_PROMPT_VERSION = "content-v3"
 _REPORT_HISTORY_KEYS = ("iteration_delta", "prior_iterations")
 
 # claude-haiku-4-5 supports 200K *token* context; 400K chars ≈ 100K tokens.
@@ -51,8 +51,8 @@ evidence of fabrication. Apply this distinction strictly:
   you don't know about.
 - **FABRICATED** (use only when the evidence is demonstrably wrong, not merely unknown): \
   Wrong-domain URLs used as proof for a different target, URLs that point to \
-  obviously unrelated content, internal contradictions (e.g. "14 wildcard certs" \
-  claimed in summary but only 2 shown in findings), timestamps that claim an \
+  obviously unrelated content, internal contradictions whose conflicting values \
+  can be quoted from the cited submitted fields, timestamps that claim an \
   event already occurred when that date is after the report's scan_timestamp \
   (or after today if scan_timestamp is absent), or evidence that directly \
   contradicts other verified facts. Future certificate expiry dates \
@@ -67,6 +67,17 @@ evidence of fabrication. Apply this distinction strictly:
 - 25-49: Poor. Missing major sections or contains confirmed fabrications.
 - 0-24: Unacceptable. Wrong format, fundamentally flawed, or confirmed fabricated \
   evidence across multiple findings.
+
+## Scope
+
+Assess only requirements stated in the bounty title, description, and \
+acceptance criteria. Description-stated requirements count even when \
+acceptance_criteria is absent. Do not invent unstated criteria.
+
+This task is passive reconnaissance when the bounty asks for passive recon. \
+Do not require active probing, live port scans, or other interaction with the \
+target. Do not treat any source as automatically sufficient to satisfy a \
+stated requirement.
 
 ## General checks
 
@@ -85,8 +96,10 @@ claimed article title").
 
 ## Contradictions vs uncertainty
 
-A fabrication or internal-contradiction claim must cite the report field or \
-evidence id and the two conflicting values. "Cannot verify" and post-cutoff \
+A fabrication or internal-contradiction claim must cite the submitted field \
+or evidence id and quote the exact conflicting values as they appear in those \
+fields. If either quoted value is not present in the cited field, omit the \
+objection. "Cannot verify" and post-cutoff \
 live sources are holdback, not fabrication. For certificate expiry, expired \
 means not_after is earlier than scan_timestamp; a not_after in the future \
 relative to scan_timestamp is a valid unexpired cert, not an impossible \
@@ -105,9 +118,7 @@ def strip_report_history(content: Any) -> Any:
         "findings" in inner or "iteration_delta" in inner or "prior_iterations" in inner
     ):
         updated = dict(content)
-        updated["content"] = {
-            k: v for k, v in inner.items() if k not in _REPORT_HISTORY_KEYS
-        }
+        updated["content"] = {k: v for k, v in inner.items() if k not in _REPORT_HISTORY_KEYS}
         return updated
     return content
 
@@ -159,7 +170,11 @@ def _build_prompt(
     if provenance:
         parts.append(f"\n### Provenance\n{json.dumps(provenance, indent=2)}")
 
-    parts.append("\n---\n\nEvaluate this deliverable against the bounty requirements. Respond with JSON only.")
+    parts.append(
+        "\n---\n\nEvaluate this deliverable against the bounty requirements "
+        "stated in the title, description, and acceptance criteria. "
+        "Respond with JSON only."
+    )
 
     return "\n".join(parts)
 
