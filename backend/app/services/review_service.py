@@ -13,7 +13,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 REVIEW_MODEL = "claude-haiku-4-5-20251001"
-QUALITY_PROMPT_VERSION = "content-v1"
+QUALITY_PROMPT_VERSION = "content-v2"
 _REPORT_HISTORY_KEYS = ("iteration_delta", "prior_iterations")
 
 # claude-haiku-4-5 supports 200K *token* context; 400K chars ≈ 100K tokens.
@@ -52,8 +52,12 @@ evidence of fabrication. Apply this distinction strictly:
 - **FABRICATED** (use only when the evidence is demonstrably wrong, not merely unknown): \
   Wrong-domain URLs used as proof for a different target, URLs that point to \
   obviously unrelated content, internal contradictions (e.g. "14 wildcard certs" \
-  claimed in summary but only 2 shown in findings), impossible timestamps (future \
-  dates beyond today), or evidence that directly contradicts other verified facts.
+  claimed in summary but only 2 shown in findings), timestamps that claim an \
+  event already occurred when that date is after the report's scan_timestamp \
+  (or after today if scan_timestamp is absent), or evidence that directly \
+  contradicts other verified facts. Future certificate expiry dates \
+  (not_after after scan_timestamp) and scheduled future events are valid and \
+  are not fabrication.
 
 ## Scoring guide
 
@@ -84,8 +88,10 @@ claimed article title").
 A fabrication or internal-contradiction claim must cite the report field or \
 evidence id and the two conflicting values. "Cannot verify" and post-cutoff \
 live sources are holdback, not fabrication. For certificate expiry, expired \
-means not_after is earlier than scan_timestamp. Do not treat iteration \
-bookkeeping, prior scores, or refinement notes as content-quality defects."""
+means not_after is earlier than scan_timestamp; a not_after in the future \
+relative to scan_timestamp is a valid unexpired cert, not an impossible \
+timestamp. Do not treat iteration bookkeeping, prior scores, or refinement \
+notes as content-quality defects."""
 
 
 def strip_report_history(content: Any) -> Any:
@@ -206,6 +212,7 @@ async def review_deliverable(
 
         review["score"] = max(0, min(100, int(review["score"])))
         review["model"] = REVIEW_MODEL
+        review["quality_prompt_version"] = QUALITY_PROMPT_VERSION
         if prior_submissions:
             review["iteration_number"] = len(prior_submissions) + 1
 

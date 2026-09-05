@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.review_service import (
     QUALITY_PROMPT_VERSION,
+    REVIEW_MODEL,
+    REVIEW_SYSTEM,
     _build_prompt,
     quality_deliverable_text,
+    review_deliverable,
     strip_report_history,
 )
 
@@ -24,8 +29,17 @@ def _report() -> dict:
     }
 
 
-def test_quality_prompt_version_is_content_v1():
-    assert QUALITY_PROMPT_VERSION == "content-v1"
+def test_quality_prompt_version_is_content_v2():
+    assert QUALITY_PROMPT_VERSION == "content-v2"
+
+
+def test_review_system_allows_future_expiry_and_scheduled_events():
+    assert "future dates beyond today" not in REVIEW_SYSTEM
+    assert "scan_timestamp" in REVIEW_SYSTEM
+    assert "already occurred" in REVIEW_SYSTEM
+    assert "scheduled future events are valid" in REVIEW_SYSTEM
+    assert "not_after after scan_timestamp" in REVIEW_SYSTEM
+    assert "valid unexpired cert" in REVIEW_SYSTEM
 
 
 def test_json_history_stripped_at_report_level():
@@ -78,3 +92,62 @@ def test_build_prompt_has_no_prior_bonus_or_history():
     assert "Prior Submission History" not in prompt
     assert "prior_score" not in prompt
     assert "unresolved: HIGH" not in prompt
+
+
+def _fake_anthropic_client(payload: dict) -> MagicMock:
+    class _Block:
+        text = json.dumps(payload)
+
+    class _Response:
+        content = [_Block()]
+
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_Response())
+    return client
+
+
+def test_successful_review_records_prompt_version_and_model():
+    payload = {
+        "score": 72,
+        "recommendation": "partial_approve",
+        "holdback": True,
+        "notes": "Solid structure; holdback for live CT URLs.",
+    }
+    fake = _fake_anthropic_client(payload)
+    with (
+        patch("app.services.review_service.settings.ANTHROPIC_API_KEY", "sk-test"),
+        patch("app.services.review_service.anthropic.AsyncAnthropic", return_value=fake),
+    ):
+        result = asyncio.run(
+            review_deliverable(
+                bounty_title="Recon",
+                bounty_description="Passive recon",
+                acceptance_criteria=None,
+                reward_amount=150,
+                difficulty="medium",
+                deliverable_content=json.dumps(_report()),
+                provenance=None,
+            )
+        )
+    assert result["score"] == 72
+    assert result["model"] == REVIEW_MODEL
+    assert result["quality_prompt_version"] == "content-v2"
+    assert result["quality_prompt_version"] == QUALITY_PROMPT_VERSION
+    fake.messages.create.assert_awaited_once()
+
+
+def test_failed_review_does_not_stamp_version():
+    with patch("app.services.review_service.settings.ANTHROPIC_API_KEY", ""):
+        result = asyncio.run(
+            review_deliverable(
+                bounty_title="Recon",
+                bounty_description="Passive recon",
+                acceptance_criteria=None,
+                reward_amount=150,
+                difficulty="medium",
+                deliverable_content="{}",
+            )
+        )
+    assert result == {}
+    assert "quality_prompt_version" not in result
+    assert "model" not in result
