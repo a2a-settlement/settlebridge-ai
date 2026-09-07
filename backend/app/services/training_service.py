@@ -16,6 +16,7 @@ from app.models.claim import Claim, ClaimStatus
 from app.models.submission import Submission, SubmissionStatus
 from app.models.training_run import TrainingRun, TrainingRunStatus, TrainingTranscript
 from app.models.score_history import ScoreHistory, ScoreMode
+from app.services.score_history_write import score_history_diagnostics
 
 _EMA_LAMBDA = 0.1
 _ITER_STAKE_DEFAULT = 100  # ATE per iteration when budget is not further subdivided
@@ -130,16 +131,13 @@ async def record_score(
     """Write one ScoreHistory row and update run accounting."""
     confidence: float = float(mediator_result.get("confidence", 0.0))
     reasoning: str | None = mediator_result.get("reasoning")
-    structured: dict | None = mediator_result.get("structured_diagnostic")
-
-    # Build diagnostics in the canonical shape the harness expects
-    diagnostics: dict = {}
-    if structured:
-        diagnostics["actionable_gaps"] = structured.get("actionable_gaps", [])
-        diagnostics["details"] = structured.get("details", {})
-        diagnostics["task_type"] = run.task_type
-    diagnostics["raw"] = structured or {}
-    diagnostics["_submission_id"] = str(submission.id)
+    submission_review = submission.ai_review if isinstance(submission.ai_review, dict) else None
+    diagnostics = score_history_diagnostics(
+        mediator_result,
+        submission_id=str(submission.id),
+        task_type=run.task_type,
+        ai_review=submission_review,
+    )
 
     prov_hash = _provenance_hash_for(submission)
 

@@ -195,6 +195,10 @@ The harness stops when **any** of the following is true:
 3. `iterations >= max_iterations` — iteration cap reached
 4. Score polling times out — score did not appear within `poll_timeout` seconds
 
+Once the first scored iteration locks `score_source=score_history`, that
+channel is the only verdict for the rest of the run. A missing score-history
+row times out without falling back to `ai_review`.
+
 **v1 limitation**: the budget ceiling is enforced client-side only. The server does not block a claim when `stake_spent >= stake_budget`. Because training runs are operator-funded (the operator is both requester and provider), overdraw has real ATE cost, which is a natural deterrent. A server-side check will be added in v2.
 
 ---

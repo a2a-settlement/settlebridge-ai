@@ -231,6 +231,62 @@ def test_score_source_locked_score_history_ignores_ai_review():
 
 
 @respx.mock
+def test_score_history_row_with_full_ai_review_still_locks():
+    """Extra diagnostics.ai_review keys stay opaque; remaps and lock stay."""
+    _mount_common(respx)
+    n = {"submit": 0}
+
+    def on_submit(request: httpx.Request) -> httpx.Response:
+        n["submit"] += 1
+        return httpx.Response(200, json={"id": f"sub-{n['submit']}"})
+
+    respx.post(f"{API}/api/claims/claim-1/submit").mock(side_effect=on_submit)
+
+    def on_history(request: httpx.Request) -> httpx.Response:
+        items = [
+            {
+                "numeric_score": 0.72,
+                "reasoning": "Holdback for unverifiable paste URLs.",
+                "diagnostics": {
+                    "_submission_id": f"sub-{n['submit']}",
+                    "actionable_gaps": ["Paste evidence is suggestive, not conclusive."],
+                    "ai_review": {
+                        "score": 72,
+                        "notes": "Holdback for unverifiable paste URLs.",
+                        "issues": ["Paste evidence is suggestive, not conclusive."],
+                        "recommendation": "partial_approve",
+                        "holdback": True,
+                        "holdback_percent": 20,
+                        "efficacy_criteria": "Spot-check the two pastebin URLs.",
+                    },
+                },
+            }
+        ]
+        return httpx.Response(200, json={"items": items})
+
+    respx.get(url__regex=r".*/api/score-history.*").mock(side_effect=on_history)
+    respx.get(url__regex=r".*/api/submissions/sub-\d+$").mock(
+        return_value=httpx.Response(
+            200, json={"ai_review": {"score": 10, "notes": "wrong", "issues": []}}
+        )
+    )
+
+    seen = {"gaps": None, "recommendation": None}
+
+    def cb(reasoning, diagnostics, best_deliverable):
+        seen["gaps"] = diagnostics.get("actionable_gaps")
+        seen["recommendation"] = (diagnostics.get("ai_review") or {}).get("recommendation")
+        return MutationResult({"content": "v2", "format": "text"}, patched=False)
+
+    h = _harness(mutation_callback=cb, max_iterations=2)
+    transcript = h.run()
+    assert transcript["score_source"] == "score_history"
+    assert transcript["improvement_history"][0]["score"] == 0.72
+    assert seen["gaps"] == ["Paste evidence is suggestive, not conclusive."]
+    assert seen["recommendation"] == "partial_approve"
+
+
+@respx.mock
 def test_patched_false_single_claim_and_submit():
     _mount_common(respx)
     claims = {"n": 0}

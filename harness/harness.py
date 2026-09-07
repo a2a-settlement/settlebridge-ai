@@ -384,8 +384,10 @@ class TrainingHarness:
         """Wait for a verdict bound to ``submission_id`` from the locked source.
 
         First scored iteration prefers score-history when both are present and
-        locks ``_score_source`` for the rest of the run. Later iterations poll
-        only that source; a missing verdict times out without using the other.
+        locks ``_score_source`` for the rest of the run. Once locked to
+        ``score_history``, that channel is the only verdict: later iterations
+        poll only that source and a missing row times out without falling
+        back to ``ai_review``.
         """
         deadline = time.monotonic() + self.poll_timeout
         while time.monotonic() < deadline:

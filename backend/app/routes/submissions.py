@@ -32,6 +32,7 @@ from app.services import (
     training_service,
 )
 from app.services.mediator import trigger_training_mediation
+from app.services.score_history_write import mediator_result_from_ai_review
 from app.services.notification_service import create_notification
 from app.utils.helpers import compute_content_hash
 
@@ -290,19 +291,10 @@ async def submit_work(
                         escrow_id, exc,
                     )
                     # Build a synthetic mediator result from the AI review.
+                    # Remaps stay stable; the full object is persisted on the
+                    # score-history write path (diagnostics.ai_review).
                     if ai_review:
-                        raw_score = ai_review.get("score", 0)
-                        issues = ai_review.get("issues", [])
-                        mediator_result = {
-                            "confidence": round(raw_score / 100.0, 4),
-                            "reasoning": ai_review.get("notes", ""),
-                            "structured_diagnostic": {
-                                "actionable_gaps": issues,
-                                "details": {"source": "ai_review", "raw_score": raw_score},
-                            },
-                            "verdict": {},
-                            "_raw": {"source": "ai_review_fallback"},
-                        }
+                        mediator_result = mediator_result_from_ai_review(ai_review)
 
             if mediator_result is not None:
                 try:
