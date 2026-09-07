@@ -11,6 +11,7 @@ from app.services.review_service import (
     REVIEW_MODEL,
     REVIEW_SYSTEM,
     _build_prompt,
+    parse_review_response,
     quality_deliverable_text,
     review_deliverable,
     strip_report_history,
@@ -31,6 +32,15 @@ def _report() -> dict:
 
 def test_quality_prompt_version_is_content_v3():
     assert QUALITY_PROMPT_VERSION == "content-v3"
+    assert REVIEW_MODEL == "claude-haiku-4-5-20251001"
+
+
+def test_parse_review_response_clamps_score():
+    parsed = parse_review_response(
+        '```json\n{"score": 140, "recommendation": "approve", "holdback": false, "notes": "ok"}\n```'
+    )
+    assert parsed["score"] == 100
+    assert parse_review_response("not json") == {}
 
 
 def test_review_system_allows_future_expiry_and_scheduled_events():

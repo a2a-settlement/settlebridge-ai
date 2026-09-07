@@ -179,6 +179,24 @@ def _build_prompt(
     return "\n".join(parts)
 
 
+def parse_review_response(text: str) -> dict[str, Any]:
+    """Parse the model JSON. Empty dict if required keys are missing."""
+    body = (text or "").strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        review = json.loads(body)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(review, dict):
+        return {}
+    required_keys = {"score", "recommendation", "holdback", "notes"}
+    if not required_keys.issubset(review.keys()):
+        return {}
+    review["score"] = max(0, min(100, int(review["score"])))
+    return review
+
+
 async def review_deliverable(
     bounty_title: str,
     bounty_description: str,
@@ -214,18 +232,10 @@ async def review_deliverable(
             messages=[{"role": "user", "content": prompt}],
         )
 
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-        review = json.loads(text)
-
-        required_keys = {"score", "recommendation", "holdback", "notes"}
-        if not required_keys.issubset(review.keys()):
-            logger.warning("AI review missing keys: %s", required_keys - review.keys())
+        review = parse_review_response(response.content[0].text)
+        if not review:
+            logger.warning("AI review missing required keys or was not valid JSON")
             return {}
-
-        review["score"] = max(0, min(100, int(review["score"])))
         review["model"] = REVIEW_MODEL
         review["quality_prompt_version"] = QUALITY_PROMPT_VERSION
         if prior_submissions:
