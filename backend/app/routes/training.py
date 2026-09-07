@@ -64,6 +64,9 @@ class ScoreHistoryRow(BaseModel):
     diagnostics: dict | None = None
     mode: str
     provenance_hash: str | None = None
+    judge_model: str | None = None
+    quality_prompt_version: str | None = None
+    prompt_hash: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -782,5 +785,8 @@ def _score_row_response(r: ScoreHistory) -> ScoreHistoryRow:
         diagnostics=r.diagnostics,
         mode=r.mode.value,
         provenance_hash=r.provenance_hash,
+        judge_model=r.judge_model,
+        quality_prompt_version=r.quality_prompt_version,
+        prompt_hash=r.prompt_hash,
         created_at=r.created_at,
     )

@@ -31,6 +31,7 @@ from app.services import (
     submission_service,
     training_service,
 )
+from app.services.compliance import check_compliance, is_compliant_for_approval
 from app.services.mediator import trigger_training_mediation
 from app.services.score_history_write import mediator_result_from_ai_review
 from app.services.notification_service import create_notification
@@ -115,6 +116,12 @@ async def submit_work(
         provenance=provenance_dict,
     )
 
+    # Deterministic JSON Schema check. Never raises — the harness must be
+    # able to submit failing work and receive the gaps as training signal.
+    compliance = check_compliance(body.deliverable.model_dump(), bounty.acceptance_criteria)
+    sub.compliance = compliance
+    await db.flush()
+
     # Prior reviews on this claim are audit metadata only. They are not
     # injected into the quality-score prompt.
     prior_subs_for_review: list[dict] = []
@@ -164,8 +171,10 @@ async def submit_work(
         reference_id=sub.id,
     )
 
-    # Auto-approval: use AI review to decide score, holdback, or rejection
-    if bounty.auto_approve:
+    # Auto-approval: use AI review to decide score, holdback, or rejection.
+    # A failed compliance check blocks auto-approve (leave PENDING_REVIEW)
+    # so the training loop can still consume the gaps.
+    if bounty.auto_approve and is_compliant_for_approval(compliance):
         rec = ai_review.get("recommendation", "approve")
         ai_score = ai_review.get("score", 100)
         ai_holdback = ai_review.get("holdback", False)

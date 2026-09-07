@@ -1,0 +1,11 @@
+{
+  "quality_prompt_version": "content-v3",
+  "review_model": "claude-haiku-4-5-20251001",
+  "metric": "brier",
+  "frozen_set": "backend/eval/fixtures",
+  "brier": 0.8464,
+  "brier_n": 1,
+  "brier_note": "Measured on the production incomplete fixture (observed_judge_score 92, label 0). Recompute with eval.calibration once more observed scores exist. Lower Brier is better.",
+  "naive_brier": null,
+  "rule": "QUALITY_PROMPT_VERSION advances only if the challenger's Brier is strictly lower than both this champion Brier and the naive always-predict-base-rate baseline on the identical frozen set."
+}

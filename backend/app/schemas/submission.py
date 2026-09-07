@@ -69,6 +69,7 @@ class SubmissionResponse(BaseModel):
     efficacy_score: int | None = None
     efficacy_reviewed_at: datetime | None = None
     ai_review: dict | None = None
+    compliance: dict | None = None
     public_share: bool = False
     share_token: uuid.UUID | None = None
 

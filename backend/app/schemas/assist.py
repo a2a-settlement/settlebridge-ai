@@ -48,6 +48,8 @@ class SettlementStructure(BaseModel):
 
 
 class AcceptanceCriteriaAssist(BaseModel):
+    """Assist-drafted criteria. ``custom_checks`` are JSON Schema documents."""
+
     description: str = ""
     output_format: str = ""
     required_sources: list[str] | None = None

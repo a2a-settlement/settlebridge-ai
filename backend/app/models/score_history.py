@@ -39,6 +39,9 @@ class ScoreHistory(Base):
         default=ScoreMode.TRAINING,
     )
     provenance_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    quality_prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

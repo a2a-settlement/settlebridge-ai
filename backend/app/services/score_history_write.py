@@ -37,15 +37,26 @@ def score_history_diagnostics(
     submission_id: str,
     task_type: str | None = None,
     ai_review: dict[str, Any] | None = None,
+    compliance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the diagnostics blob persisted on a score-history row."""
     structured = mediator_result.get("structured_diagnostic") or {}
     diagnostics: dict[str, Any] = {}
+    gaps: list[Any] = list((structured or {}).get("actionable_gaps") or [])
     if structured:
-        diagnostics["actionable_gaps"] = structured.get("actionable_gaps", [])
         diagnostics["details"] = structured.get("details", {})
         if task_type is not None:
             diagnostics["task_type"] = task_type
+
+    if isinstance(compliance, dict) and compliance:
+        diagnostics["compliance"] = dict(compliance)
+        for failure in compliance.get("failures") or []:
+            if failure not in gaps:
+                gaps.append(failure)
+
+    if structured or (isinstance(compliance, dict) and compliance):
+        diagnostics["actionable_gaps"] = gaps
+
     diagnostics["raw"] = structured or {}
     diagnostics["_submission_id"] = str(submission_id)
 

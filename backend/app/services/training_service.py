@@ -12,11 +12,13 @@ from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bounty import Bounty
-from app.models.claim import Claim, ClaimStatus
+from app.models.claim import Claim
 from app.models.submission import Submission, SubmissionStatus
 from app.models.training_run import TrainingRun, TrainingRunStatus, TrainingTranscript
 from app.models.score_history import ScoreHistory, ScoreMode
+from app.services.review_service import QUALITY_PROMPT_VERSION, REVIEW_MODEL, prompt_hash
 from app.services.score_history_write import score_history_diagnostics
+from app.services.training_gates import apply_completion_resolution
 
 _EMA_LAMBDA = 0.1
 _ITER_STAKE_DEFAULT = 100  # ATE per iteration when budget is not further subdivided
@@ -137,9 +139,11 @@ async def record_score(
         submission_id=str(submission.id),
         task_type=run.task_type,
         ai_review=submission_review,
+        compliance=submission.compliance if isinstance(submission.compliance, dict) else None,
     )
 
     prov_hash = _provenance_hash_for(submission)
+    review_meta = submission_review or {}
 
     row = ScoreHistory(
         agent_user_id=run.agent_user_id,
@@ -151,6 +155,9 @@ async def record_score(
         diagnostics=diagnostics,
         mode=ScoreMode.TRAINING,
         provenance_hash=prov_hash,
+        judge_model=review_meta.get("model") or REVIEW_MODEL,
+        quality_prompt_version=review_meta.get("quality_prompt_version") or QUALITY_PROMPT_VERSION,
+        prompt_hash=review_meta.get("prompt_hash") or prompt_hash(),
     )
     db.add(row)
 
@@ -269,11 +276,17 @@ async def complete_run(
     if not run.public_title:
         run.public_title = (run.bounty_snapshot or {}).get("title") or "Training Run"
 
-    # Settle any submissions that were AI-reviewed but never formally resolved.
-    # This happens when multiple concurrent agents claim the same iteration bounty
-    # (the training path resets bounty to OPEN after each submit, allowing races).
-    # Pick the highest-scoring submission as APPROVED; settle the rest by their
-    # AI recommendation so the public record is always accurate after run completion.
+    # Settle pending submissions only when the requester opted into auto-approve.
+    # Winner must also pass recommendation, score_threshold, and compliance.
+    # Tie-break is submitted_at ASC so an earlier equal score matches the
+    # harness client's strict `>` (first kept iteration wins ties).
+    from app.models.bounty import BountyStatus
+    parent_bounty = (
+        await db.execute(select(Bounty).where(Bounty.id == run.bounty_id))
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    auto_approve = bool(parent_bounty.auto_approve) if parent_bounty is not None else False
+
     pending_q = (
         select(Submission)
         .join(Claim, Claim.id == Submission.claim_id)
@@ -282,43 +295,28 @@ async def complete_run(
         .where(Submission.ai_review.isnot(None))
         .order_by(
             func.cast(Submission.ai_review["score"].as_string(), Integer).desc(),
-            Submission.submitted_at.desc(),
+            Submission.submitted_at.asc(),
         )
     )
     pending = list((await db.execute(pending_q)).scalars().all())
 
-    now = datetime.now(timezone.utc)
-    for i, sub in enumerate(pending):
-        claim = (await db.execute(select(Claim).where(Claim.id == sub.claim_id))).scalar_one()
-        rec = (sub.ai_review or {}).get("recommendation", "reject")
-        sub.reviewed_at = now
-
-        if i == 0:
-            # Best-scoring submission — mark as approved
-            sub.status = SubmissionStatus.APPROVED
-            sub.reviewer_notes = "[Auto-resolved at run completion — highest scoring submission]"
-            claim.status = ClaimStatus.ACCEPTED
-            claim.resolved_at = now
-        elif rec == "partial_approve":
-            sub.status = SubmissionStatus.PARTIALLY_APPROVED
-            sub.reviewer_notes = "[Auto-resolved at run completion]"
-            claim.status = ClaimStatus.ACCEPTED
-            claim.resolved_at = now
-        else:
-            sub.status = SubmissionStatus.REJECTED
-            sub.reviewer_notes = "[Auto-resolved at run completion — lower scoring submission]"
-            claim.status = ClaimStatus.REJECTED
-            claim.resolved_at = now
+    if auto_approve:
+        for i, sub in enumerate(pending):
+            claim = (await db.execute(select(Claim).where(Claim.id == sub.claim_id))).scalar_one()
+            apply_completion_resolution(
+                sub,
+                claim,
+                is_winner=(i == 0),
+                auto_approve=True,
+                score_threshold=run.score_threshold,
+                now=now,
+            )
 
     # Seal the parent bounty as COMPLETED.
     # The training submission path intentionally resets the bounty to OPEN after
     # each iteration so the harness can re-claim.  This means the bounty is always
     # left in OPEN state when the run finishes — seal it here so the public
     # bounty detail page shows submissions and the bounty is no longer claimable.
-    from app.models.bounty import BountyStatus
-    parent_bounty = (
-        await db.execute(select(Bounty).where(Bounty.id == run.bounty_id))
-    ).scalar_one_or_none()
     if parent_bounty is not None and parent_bounty.status != BountyStatus.COMPLETED:
         parent_bounty.status = BountyStatus.COMPLETED
         parent_bounty.completed_at = now
