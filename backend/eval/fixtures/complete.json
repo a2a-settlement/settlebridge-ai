@@ -1,0 +1,48 @@
+{
+  "id": "complete",
+  "notes": "All six required keys and p50 present. Code label is compliant.",
+  "acceptance_criteria": {
+    "description": "JSON with six required keys and p10/p25/p50/p75/p90 bands",
+    "output_format": "json",
+    "custom_checks": [
+      {
+        "type": "object",
+        "required": [
+          "ticker",
+          "forecast_horizon_days",
+          "last_close",
+          "forecast_bands",
+          "model_weights",
+          "generated_by"
+        ],
+        "properties": {
+          "ticker": { "type": "string" },
+          "forecast_horizon_days": { "type": "integer" },
+          "last_close": { "type": "number" },
+          "model_weights": { "type": "object" },
+          "generated_by": { "type": "string" },
+          "forecast_bands": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["p10", "p25", "p50", "p75", "p90"],
+              "properties": {
+                "p10": { "type": "number" },
+                "p25": { "type": "number" },
+                "p50": { "type": "number" },
+                "p75": { "type": "number" },
+                "p90": { "type": "number" }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "deliverable": {
+    "content": "{\"ticker\":\"NVDA\",\"forecast_horizon_days\":22,\"last_close\":180.5,\"forecast_bands\":[{\"p10\":170.0,\"p25\":175.0,\"p50\":181.0,\"p75\":190.0,\"p90\":200.0}],\"model_weights\":{\"ensemble_a\":0.5,\"ensemble_b\":0.5},\"generated_by\":\"alphasignal-ensemble-v1\"}",
+    "content_type": "application/json"
+  },
+  "label": { "compliant": true }
+}

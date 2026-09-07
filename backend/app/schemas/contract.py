@@ -11,6 +11,13 @@ from app.models.snapshot import SnapshotStatus
 
 
 class AcceptanceCriteria(BaseModel):
+    """Contract acceptance criteria.
+
+    ``custom_checks`` is a list of JSON Schema (draft 2020-12) documents
+    executed by ``app.services.compliance.check_compliance`` against the
+    parsed JSON of the snapshot deliverable. Absence of checks is not a pass.
+    """
+
     description: str = ""
     output_format: str = ""
     required_sources: list[str] | None = None

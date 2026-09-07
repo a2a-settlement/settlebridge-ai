@@ -62,6 +62,10 @@ class BudgetExhaustedError(HarnessError):
     """Raised when the stake budget would be exceeded before the next iteration."""
 
 
+class JudgeDriftError(HarnessError):
+    """Raised when the judge model or prompt version changes mid-run."""
+
+
 @dataclass(frozen=True)
 class MutationResult:
     deliverable: dict
@@ -264,6 +268,8 @@ class TrainingHarness:
         self._improvement_history: list[dict] = []
         self._seen_identities: set[str] = set()
         self._score_source: str | None = None
+        self._locked_judge_model: str | None = None
+        self._locked_prompt_version: str | None = None
         self._last_submission_id: str = ""
 
     def _headers(self) -> dict[str, str]:
@@ -369,16 +375,43 @@ class TrainingHarness:
             return None
         rec = ai.get("recommendation", "")
         numeric = float(ai_score) / 100.0
+        gaps = list(ai.get("issues") or [])
+        compliance = sub.get("compliance") if isinstance(sub.get("compliance"), dict) else {}
+        for failure in (compliance or {}).get("failures") or []:
+            if failure not in gaps:
+                gaps.append(failure)
         return {
             "numeric_score": numeric,
             "reasoning": ai.get("notes", ""),
+            "judge_model": ai.get("model"),
+            "quality_prompt_version": ai.get("quality_prompt_version"),
             "diagnostics": {
-                "actionable_gaps": ai.get("issues", []),
+                "actionable_gaps": gaps,
                 "recommendation": rec,
                 "holdback_percent": ai.get("holdback_percent", 0),
                 "_submission_id": str(submission_id),
+                "compliance": compliance or {},
             },
         }
+
+    def _bind_judge(self, row: dict) -> None:
+        """Lock judge identity on first score; abort if it drifts mid-run."""
+        diag = row.get("diagnostics") or {}
+        review = diag.get("ai_review") if isinstance(diag.get("ai_review"), dict) else {}
+        model = row.get("judge_model") or review.get("model")
+        version = row.get("quality_prompt_version") or review.get("quality_prompt_version")
+        if model is None and version is None:
+            return
+        if self._locked_judge_model is None and self._locked_prompt_version is None:
+            self._locked_judge_model = model
+            self._locked_prompt_version = version
+            return
+        if model != self._locked_judge_model or version != self._locked_prompt_version:
+            raise JudgeDriftError(
+                "Judge drifted mid-run: "
+                f"locked model={self._locked_judge_model!r} version={self._locked_prompt_version!r}, "
+                f"got model={model!r} version={version!r}"
+            )
 
     def _poll_for_score(self, submission_id: str) -> dict | None:
         """Wait for a verdict bound to ``submission_id`` from the locked source.
@@ -399,6 +432,7 @@ class TrainingHarness:
                     if self._score_source == "score_history":
                         out = dict(row)
                         out["score_source"] = "score_history"
+                        self._bind_judge(out)
                         return out
             if self._score_source in (None, "ai_review"):
                 # Prefer score-history on the first bind: if it appeared in
@@ -410,6 +444,7 @@ class TrainingHarness:
                     if self._score_source == "ai_review":
                         out = dict(row)
                         out["score_source"] = "ai_review"
+                        self._bind_judge(out)
                         return out
             time.sleep(self.poll_interval)
         return None
@@ -473,6 +508,8 @@ class TrainingHarness:
         self._improvement_history = []
         self._seen_identities = set()
         self._score_source = None
+        self._locked_judge_model = None
+        self._locked_prompt_version = None
         self._last_submission_id = ""
         self._stake_spent = 0
 

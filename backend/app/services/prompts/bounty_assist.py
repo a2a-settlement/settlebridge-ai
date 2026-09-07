@@ -49,7 +49,7 @@ Wrap the structured draft in XML tags like this at the END of your response:
     "output_format": "json|csv|markdown|code|text",
     "required_sources": ["list of required source types"] or null,
     "provenance_tier": "tier1_self_declared|tier2_signed|tier3_verifiable",
-    "custom_checks": null
+    "custom_checks": [{"type":"object","required":["field"],"properties":{"field":{"type":"array","minItems":1}}}] or null
   } or null,
   "reward_suggestion": integer_in_ate_tokens or null,
   "difficulty": "trivial|easy|medium|hard|expert" or null,

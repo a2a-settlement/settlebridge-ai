@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
@@ -13,6 +14,9 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 REVIEW_MODEL = "claude-haiku-4-5-20251001"
+# Frozen champion. Advance only after the challenger beats both this
+# champion and the naive baseline on backend/eval fixtures (see
+# backend/eval/promotion.py and backend/eval/champion.json).
 QUALITY_PROMPT_VERSION = "content-v3"
 _REPORT_HISTORY_KEYS = ("iteration_delta", "prior_iterations")
 
@@ -105,6 +109,11 @@ means not_after is earlier than scan_timestamp; a not_after in the future \
 relative to scan_timestamp is a valid unexpired cert, not an impossible \
 timestamp. Do not treat iteration bookkeeping, prior scores, or refinement \
 notes as content-quality defects."""
+
+
+def prompt_hash() -> str:
+    """SHA-256 of REVIEW_SYSTEM so a silent prompt edit is detectable."""
+    return hashlib.sha256(REVIEW_SYSTEM.encode("utf-8")).hexdigest()
 
 
 def strip_report_history(content: Any) -> Any:
@@ -238,6 +247,7 @@ async def review_deliverable(
             return {}
         review["model"] = REVIEW_MODEL
         review["quality_prompt_version"] = QUALITY_PROMPT_VERSION
+        review["prompt_hash"] = prompt_hash()
         if prior_submissions:
             review["iteration_number"] = len(prior_submissions) + 1
 

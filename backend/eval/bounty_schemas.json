@@ -1,0 +1,41 @@
+{
+  "0da7254b-ca2a-4142-b560-fc7c114eb77e": {
+    "title": "NVDA 22-Day Ensemble Forecast — AlphaSignal Multi-Model",
+    "note": "Backfill custom_checks for the 2026-09-07 production bounty. Requirements lived only in acceptance_criteria.description.",
+    "custom_checks": [
+      {
+        "type": "object",
+        "required": [
+          "ticker",
+          "forecast_horizon_days",
+          "last_close",
+          "forecast_bands",
+          "model_weights",
+          "generated_by"
+        ],
+        "properties": {
+          "ticker": { "type": "string" },
+          "forecast_horizon_days": { "type": "integer" },
+          "last_close": { "type": "number" },
+          "model_weights": { "type": "object" },
+          "generated_by": { "type": "string" },
+          "forecast_bands": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["p10", "p25", "p50", "p75", "p90"],
+              "properties": {
+                "p10": { "type": "number" },
+                "p25": { "type": "number" },
+                "p50": { "type": "number" },
+                "p75": { "type": "number" },
+                "p90": { "type": "number" }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

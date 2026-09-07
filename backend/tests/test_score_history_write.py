@@ -65,6 +65,27 @@ def test_written_diagnostics_use_structured_ai_review_when_submission_lacks_it()
     assert diagnostics["actionable_gaps"] == _AI_REVIEW["issues"]
 
 
+def test_compliance_failures_union_into_gaps_when_llm_reports_none():
+    result = mediator_result_from_ai_review(
+        {**_AI_REVIEW, "issues": [], "score": 92, "recommendation": "approve"}
+    )
+    compliance = {
+        "checked": True,
+        "compliant": False,
+        "failures": ["missing required key: generated_by", "forecast_bands[0]: missing required key: p50"],
+    }
+    diagnostics = score_history_diagnostics(
+        result,
+        submission_id="sub-nvda",
+        task_type="forecast",
+        ai_review={**_AI_REVIEW, "issues": []},
+        compliance=compliance,
+    )
+    assert "missing required key: generated_by" in diagnostics["actionable_gaps"]
+    assert any("p50" in g for g in diagnostics["actionable_gaps"])
+    assert diagnostics["compliance"]["compliant"] is False
+
+
 def test_written_diagnostics_without_ai_review_keep_legacy_shape():
     mediator_result = {
         "confidence": 0.5,

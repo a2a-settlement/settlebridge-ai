@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from harness import (
+    JudgeDriftError,
     MutationContext,
     MutationResult,
     RejectedFeedback,
@@ -752,3 +753,44 @@ def test_on_submitted_raise_stops_without_second_claim():
     assert claims["n"] == 1
     assert transcript["last_submission_id"] == "sub-1"
     assert len(transcript["improvement_history"]) == 1
+
+
+@respx.mock
+def test_judge_drift_aborts_run():
+    _mount_common(respx)
+    n = {"submit": 0}
+
+    def on_submit(request: httpx.Request) -> httpx.Response:
+        n["submit"] += 1
+        return httpx.Response(200, json={"id": f"sub-{n['submit']}"})
+
+    respx.post(f"{API}/api/claims/claim-1/submit").mock(side_effect=on_submit)
+
+    def on_history(request: httpx.Request) -> httpx.Response:
+        version = "content-v3" if n["submit"] == 1 else "content-v2"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "numeric_score": 0.80,
+                        "reasoning": "ok",
+                        "judge_model": "claude-haiku-4-5-20251001",
+                        "quality_prompt_version": version,
+                        "diagnostics": {
+                            "_submission_id": f"sub-{n['submit']}",
+                            "actionable_gaps": [],
+                        },
+                    }
+                ]
+            },
+        )
+
+    respx.get(url__regex=r".*/api/score-history.*").mock(side_effect=on_history)
+
+    def cb(reasoning, diagnostics, best_deliverable):
+        return {"content": "v2", "format": "text"}
+
+    h = _harness(mutation_callback=cb, max_iterations=3)
+    with pytest.raises(JudgeDriftError, match="Judge drifted mid-run"):
+        h.run()

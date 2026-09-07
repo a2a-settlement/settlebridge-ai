@@ -97,7 +97,16 @@ async def seed():
                         "required_sources": ["SEC EDGAR"],
                         "provenance_tier": "tier2_signed",
                         "custom_checks": [
-                            {"field": "risk_factors", "type": "array", "min_length": 5}
+                            {
+                                "type": "object",
+                                "required": ["risk_factors"],
+                                "properties": {
+                                    "risk_factors": {
+                                        "type": "array",
+                                        "minItems": 5,
+                                    }
+                                },
+                            }
                         ],
                     },
                 },

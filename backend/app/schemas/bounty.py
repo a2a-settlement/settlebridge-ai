@@ -9,6 +9,19 @@ from app.models.bounty import BountyStatus, Difficulty, ProvenanceTier
 
 
 class AcceptanceCriteria(BaseModel):
+    """Bounty acceptance criteria.
+
+    ``custom_checks`` is a list of JSON Schema (draft 2020-12) documents.
+    Each schema is validated against the parsed JSON of the deliverable
+    ``content`` by ``app.services.compliance.check_compliance``. Example::
+
+        [{"type": "object", "required": ["risk_factors"],
+          "properties": {"risk_factors": {"type": "array", "minItems": 5}}}]
+
+    Absence of ``custom_checks`` means compliance was not checked — it is
+    not a pass.
+    """
+
     description: str = ""
     output_format: str = ""
     required_sources: list[str] | None = None
