@@ -134,20 +134,26 @@ async def create_training_run(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    return TrainingRunResponse(
-        run_id=run.id,
-        status=run.status.value,
-        bounty_id=run.bounty_id,
-        max_iterations=run.max_iterations,
-        stake_budget=run.stake_budget,
-        stake_spent=run.stake_spent,
-        score_threshold=run.score_threshold,
-        task_type=run.task_type,
-        iterations_completed=run.iterations_completed,
-        created_at=run.created_at,
-        public=run.public,
-        public_title=run.public_title,
-    )
+    return _run_response(run)
+
+
+@router.get(
+    "/training/runs/{run_id}",
+    response_model=TrainingRunResponse,
+    tags=["training"],
+)
+async def get_training_run(
+    run_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Owner-only run status. Harness uses this to refresh stake_spent mid-loop."""
+    run = await training_service.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if run.agent_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not your training run")
+    return _run_response(run)
 
 
 @router.post(
@@ -753,6 +759,23 @@ def _build_training_card_html(card: dict) -> str:
   </div>
 </body>
 </html>"""
+
+
+def _run_response(run: TrainingRun) -> TrainingRunResponse:
+    return TrainingRunResponse(
+        run_id=run.id,
+        status=run.status.value,
+        bounty_id=run.bounty_id,
+        max_iterations=run.max_iterations,
+        stake_budget=run.stake_budget,
+        stake_spent=run.stake_spent,
+        score_threshold=run.score_threshold,
+        task_type=run.task_type,
+        iterations_completed=run.iterations_completed,
+        created_at=run.created_at,
+        public=run.public,
+        public_title=run.public_title,
+    )
 
 
 def _transcript_response(t: TrainingTranscript) -> TranscriptResponse:

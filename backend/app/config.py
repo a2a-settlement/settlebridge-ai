@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_HOURS: int = 24
 
     ANTHROPIC_API_KEY: str = ""
-    ASSIST_MODEL: str = "claude-opus-4-0-20250514"
+    ASSIST_MODEL: str = "claude-sonnet-4-5-20250929"
     ASSIST_MAX_TURNS: int = 10
     ASSIST_MAX_TOKENS: int = 4096
 
