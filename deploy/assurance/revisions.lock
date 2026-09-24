@@ -1,0 +1,33 @@
+# Single compatibility manifest for the private experiment profile.
+# Docker build args are generated from this file. Do not put SHAs in Dockerfiles.
+# These pins are the last published revisions. A deployable check fails while a
+# required path is absent from that revision. Build the images from the
+# checkouts that contain the implementation, then commit and move these pins.
+source: context
+revisions:
+  a2a-settlement: "97192cc"
+  a2a-settlement-auth: "03f7463"
+  settlement-conformance: "4408fbf"
+  settlebridge-ai: "d1bbf4a"
+  otel-agent-provenance: "95da56f"
+  a2a-settlement-mediator: "8944196"
+images:
+  exchange: ""
+  gateway: ""
+  policy: ""
+  runner: ""
+  board: ""
+  observer: ""
+required_paths:
+  a2a-settlement:
+    - exchange/assurance_ledger.py
+    - exchange/routes/assurance.py
+    - exchange/routes/settlement.py
+    - exchange/identity/crypto.py
+    - shim/proxy.py
+  settlebridge-ai:
+    - assurance/pyproject.toml
+    - assurance/assurance/scenarios/analytical-task-v1.yaml
+    - backend/pyproject.toml
+    - backend/alembic.ini
+    - backend/migrations/env.py
