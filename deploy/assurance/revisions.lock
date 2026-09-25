@@ -12,12 +12,12 @@ revisions:
   otel-agent-provenance: "b2fa1c5868e9e089e17f4b9ef641688311b1a697"
   a2a-settlement-mediator: "8944196"
 images:
-  exchange: ""
-  gateway: ""
-  policy: ""
-  runner: ""
-  board: ""
-  observer: ""
+  exchange: "sha256:fdc31785d02323ac8c0797c1a128849692ab55b39f598ae374b72ac60ce3a9d2"
+  gateway: "sha256:6a6d73fe08c0375453eb4a0cfd34383aa4c315014e56d191d14ff0f144b31d4c"
+  policy: "sha256:788dc82f18b89fbfab2af4a755964259c059b19c738366403c742ff02b904d05"
+  runner: "sha256:1f272d1f3cf8b348d02e1fd5093bcbcc299344c42ae351189954e126b4664a0d"
+  board: "sha256:1276da350c94a6e3a7e27d2416691ae4dcdfe5cd3471cd79b8d779c70c014b6b"
+  observer: "sha256:2654da18ac9c8266e8c545e6ce04556332d63290ffbce9590cabe892890a2c2d"
 required_paths:
   a2a-settlement:
     - exchange/assurance_ledger.py
