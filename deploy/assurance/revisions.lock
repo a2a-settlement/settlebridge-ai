@@ -8,7 +8,7 @@ revisions:
   a2a-settlement: "620e29e574c5e4e8c8fd6191bb81e5926af01fe9"
   a2a-settlement-auth: "2c691504e19ed42fa316fe983bd4a7fe813682ba"
   settlement-conformance: "31deae47d0fc85c15df926eca485befad137fcd5"
-  settlebridge-ai: "b3a0a162cadbd69d41e5de1abaaee42f9f0aded3"
+  settlebridge-ai: "20931dc8180339f52cd82c6a7422f9b44b214c2b"
   otel-agent-provenance: "b2fa1c5868e9e089e17f4b9ef641688311b1a697"
   a2a-settlement-mediator: "8944196"
 images:
