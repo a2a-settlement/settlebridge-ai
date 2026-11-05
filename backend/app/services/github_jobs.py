@@ -19,6 +19,7 @@ from app.database import async_session
 from app.models.github import GitHubJob, JobStatus
 from app.services.github_bounty_service import handle_job
 from app.services.github_errors import PermanentJobError
+from app.services.github_leases import expire_stale_leases
 
 logger = logging.getLogger(__name__)
 
@@ -157,4 +158,9 @@ async def run_github_job_loop() -> None:
             await run_due_jobs()
         except Exception:
             logger.exception("GitHub job worker iteration failed")
+        try:
+            async with async_session() as db:
+                await expire_stale_leases(db)
+        except Exception:
+            logger.exception("GitHub lease expiry sweep failed")
         await asyncio.sleep(settings.GITHUB_JOB_POLL_INTERVAL_S)
