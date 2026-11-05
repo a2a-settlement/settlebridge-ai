@@ -7,5 +7,6 @@
   "brier_n": 1,
   "brier_note": "Measured on the production incomplete fixture (observed_judge_score 92, label 0). Recompute with eval.calibration once more observed scores exist. Lower Brier is better.",
   "naive_brier": null,
+  "challenger_2026_11_05": "claude-haiku-5-5 was not promoted. Six reviews per fixture through the production prompt (eval_scores_2026_11_05 in each fixture): Brier over all three fixtures 0.0585 for claude-haiku-5-5 against 0.0357 for this champion, naive 0.2222.",
   "rule": "QUALITY_PROMPT_VERSION advances only if the challenger's Brier is strictly lower than both this champion Brier and the naive always-predict-base-rate baseline on the identical frozen set."
 }

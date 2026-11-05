@@ -60,3 +60,17 @@ def test_frozen_champion_is_content_v3():
     assert champion["quality_prompt_version"] == QUALITY_PROMPT_VERSION
     assert champion["review_model"] == REVIEW_MODEL
     assert QUALITY_PROMPT_VERSION == "content-v3"
+
+
+def test_recorded_challenger_run_did_not_beat_the_champion():
+    rows: dict[str, list[dict]] = {}
+    for item in labeled_fixtures():
+        for model, scores in item["eval_scores_2026_11_05"].items():
+            rows.setdefault(model, []).extend(
+                {"score": float(s), "compliant": bool(item["label_compliant"])} for s in scores
+            )
+    champion = evaluate_rows(rows[REVIEW_MODEL])
+    challenger = evaluate_rows(rows["claude-haiku-5-5"])
+    assert round(champion["brier"], 4) == 0.0357
+    assert round(challenger["brier"], 4) == 0.0585
+    assert not may_promote(challenger["brier"], champion["brier"], challenger["naive_brier"])

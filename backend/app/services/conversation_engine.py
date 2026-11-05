@@ -17,6 +17,7 @@ from typing import Literal
 import anthropic
 
 from app.config import settings
+from app.services.llm_text import response_text
 from app.services.prompts.bounty_assist import SYSTEM_PROMPT as BOUNTY_SYSTEM_PROMPT
 from app.services.prompts.gateway_assist import SYSTEM_PROMPT as GATEWAY_SYSTEM_PROMPT
 
@@ -164,5 +165,5 @@ async def get_response(
         messages=messages,
     )
 
-    raw = response.content[0].text
+    raw = response_text(response)
     return parse_response(raw, mode=mode)
