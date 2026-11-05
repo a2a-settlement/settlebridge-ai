@@ -234,7 +234,10 @@ def test_paid_and_cancelled():
     assert "Payment completed" in paid
     assert "escrow-9" in paid
     assert "5000 ATE" in paid
-    assert "Clearing fee: 500 ATE" in paid
+    assert "Exchange fee: 500 ATE (paid by the funder)" in paid
+    assert "fee" not in render_paid(
+        bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=5000, fee_ate=None
+    ).lower()
     cancelled = render_cancelled(bounty_id=BOUNTY, reason="issue closed")
     assert cancelled.splitlines()[0] == bounty_marker(BOUNTY)
     assert "cancelled" in cancelled.lower()
