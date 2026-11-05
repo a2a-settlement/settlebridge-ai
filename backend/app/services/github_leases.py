@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import and_, func, literal, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
@@ -264,9 +264,17 @@ def _work_window_open(lease, now: datetime) -> bool:
 
 
 def _renewable(lease, now: datetime) -> bool:
+    """Work leases can be extended only while both deadlines are still ahead.
+
+    ``work_expires_at`` may equal ``now`` (the sweeper uses a strict less-than).
+    ``hard_expires_at`` must be strictly later: renewing at the cap cannot move it.
+    """
     if _text(lease.status) != LeaseStatus.WORK.value:
         return False
-    return _aware(now) < _aware(lease.hard_expires_at)
+    now = _aware(now)
+    if _aware(lease.work_expires_at) < now:
+        return False
+    return now < _aware(lease.hard_expires_at)
 
 
 def _assessment_view(raw) -> dict | None:
@@ -278,17 +286,48 @@ def _assessment_view(raw) -> dict | None:
     return {"outcome": raw.get("outcome"), "findings": findings}
 
 
+def _positive_int(raw: object) -> int | None:
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def _pr_author_id(pull: dict) -> int | None:
     user = pull.get("user")
     if not isinstance(user, dict):
         return None
-    raw = user.get("id")
-    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+    return _positive_int(user.get("id"))
+
+
+def _pr_opened_at(pull: dict) -> datetime | None:
+    raw = pull.get("created_at")
+    if not isinstance(raw, str):
         return None
+    text_value = raw.strip()
+    if text_value.endswith("Z"):
+        text_value = text_value[:-1] + "+00:00"
     try:
-        return int(raw)
-    except (TypeError, ValueError):
+        parsed = datetime.fromisoformat(text_value)
+    except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _pr_predates_lease(pull: dict, lease) -> bool:
+    """Fail closed: a missing or unparseable PR timestamp is treated as too early."""
+    opened = _pr_opened_at(pull) if isinstance(pull, dict) else None
+    created = getattr(lease, "created_at", None)
+    if opened is None or not isinstance(created, datetime):
+        return True
+    return opened < _aware(created)
 
 
 def _stale_leases_stmt(now: datetime):
@@ -455,6 +494,30 @@ async def fetch_lease(db: AsyncSession, lease_id: uuid.UUID):
     return await db.get(GitHubLease, lease_id)
 
 
+def _lease_for_update_stmt(lease_id: uuid.UUID):
+    # populate_existing: the holder check may already have loaded this row.
+    # READ COMMITTED shows a concurrent sweep only if that copy is refreshed.
+    return (
+        select(GitHubLease)
+        .where(GitHubLease.id == lease_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+async def lock_lease(db: AsyncSession, lease_id: uuid.UUID):
+    result = await db.execute(_lease_for_update_stmt(lease_id))
+    return result.scalar_one_or_none()
+
+
+async def lock_agent_for_claim(db: AsyncSession, agent_id: str) -> None:
+    """Hold a transaction advisory lock so this agent's cap check and insert stay atomic."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:agent_id, 0))"),
+        {"agent_id": agent_id},
+    )
+
+
 async def fetch_repo_link(db: AsyncSession, repo_full_name: str):
     stmt = select(GitHubRepoLink).where(
         func.lower(GitHubRepoLink.repo_full_name) == repo_full_name.casefold()
@@ -540,6 +603,10 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     identity = await fetch_identity_for_user(db, user.id)
     if identity is None:
         return _err(409, "no_github_identity")
+    github_user_id = _positive_int(getattr(identity, "github_user_id", None))
+    if github_user_id is None:
+        return _err(409, "no_github_identity")
+    await lock_agent_for_claim(db, claims.agent_id)
     active = await count_active_leases(db, claims.agent_id)
     if active >= settings.LEASE_MAX_ACTIVE_PER_AGENT:
         return _err(409, "lease_limit")
@@ -558,11 +625,13 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         binding_id=binding.id,
         agent_id=claims.agent_id,
         user_id=user.id,
+        github_user_id=github_user_id,
         spec_id=binding.current_spec_id,
         token_hash=hash_lease_token(token),
         status=LeaseStatus.WORK.value,
         work_expires_at=now + timedelta(minutes=settings.LEASE_WORK_MINUTES),
         hard_expires_at=now + timedelta(minutes=settings.LEASE_HARD_CAP_MINUTES),
+        created_at=now,
     )
     db.add(lease)
     try:
@@ -587,21 +656,31 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     )
 
 
+async def _locked_lease(db, lease):
+    locked = await lock_lease(db, lease.id)
+    if locked is None:
+        await db.rollback()
+    return locked
+
+
 async def renew_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None) -> APIResult:
     lease, error = await _holder_lease(db, lease_id, claims, lease_token)
     if error is not None:
         return error
     now = _now()
-    if not _renewable(lease, now):
+    locked = await _locked_lease(db, lease)
+    if locked is None or not _renewable(locked, now):
+        if locked is not None:
+            await db.rollback()
         return _err(409, "lease_not_active")
-    lease.work_expires_at = renewed_window(now, lease.hard_expires_at)
+    locked.work_expires_at = renewed_window(now, locked.hard_expires_at)
     await db.commit()
     return APIResult(
         200,
         {
-            "lease_id": str(lease.id),
-            "work_expires_at": _iso(lease.work_expires_at),
-            "hard_expires_at": _iso(lease.hard_expires_at),
+            "lease_id": str(locked.id),
+            "work_expires_at": _iso(locked.work_expires_at),
+            "hard_expires_at": _iso(locked.hard_expires_at),
         },
     )
 
@@ -610,15 +689,20 @@ async def release_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None
     lease, error = await _holder_lease(db, lease_id, claims, lease_token)
     if error is not None:
         return error
-    status = _text(lease.status)
+    locked = await _locked_lease(db, lease)
+    if locked is None:
+        return _err(409, "lease_not_active")
+    status = _text(locked.status)
     if status == LeaseStatus.SUBMITTED.value:
+        await db.rollback()
         return _err(409, "lease_submitted")
     if status != LeaseStatus.WORK.value:
+        await db.rollback()
         return _err(409, "lease_not_active")
-    lease.status = LeaseStatus.RELEASED.value
-    lease.release_reason = "agent_released"
+    locked.status = LeaseStatus.RELEASED.value
+    locked.release_reason = "agent_released"
     await db.commit()
-    return APIResult(200, {"lease_id": str(lease.id), "status": "released"})
+    return APIResult(200, {"lease_id": str(locked.id), "status": "released"})
 
 
 async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None, body) -> APIResult:
@@ -660,26 +744,28 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     referenced = github_bounty_service.parse_closing_reference(body_text, binding.repo_full_name)
     if referenced != binding.issue_number:
         return _err(422, "pr_not_referencing_issue")
-    identity = await fetch_identity_for_user(db, lease.user_id)
-    author = _pr_author_id(pull) if isinstance(pull, dict) else None
-    expected = None
-    if identity is not None:
-        try:
-            expected = int(identity.github_user_id)
-        except (TypeError, ValueError):
-            expected = None
+    if _pr_predates_lease(pull, lease):
+        return _err(422, "pr_predates_lease")
+    author = _pr_author_id(pull)
+    expected = _positive_int(getattr(lease, "github_user_id", None))
     if author is None or expected is None or author != expected:
         return _err(422, "pr_author_mismatch")
     other = await fetch_other_pr_binding(db, binding.repo_full_name, pr_number, binding.id)
     if other is not None:
         return _err(409, "pr_already_bound")
+    now = _now()
+    locked = await _locked_lease(db, lease)
+    if locked is None or not _work_window_open(locked, now):
+        if locked is not None:
+            await db.rollback()
+        return _err(409, "lease_not_active")
     trace = body.get("otel_trace_id")
-    lease.status = LeaseStatus.SUBMITTED.value
-    lease.pr_number = pr_number
-    lease.otel_trace_id = None if trace is None else trace[:64]
-    lease.hold_expires_at = now + timedelta(hours=settings.LEASE_SUBMITTED_HOLD_HOURS)
+    locked.status = LeaseStatus.SUBMITTED.value
+    locked.pr_number = pr_number
+    locked.otel_trace_id = None if trace is None else trace[:64]
+    locked.hold_expires_at = now + timedelta(hours=settings.LEASE_SUBMITTED_HOLD_HOURS)
     binding.pr_number = pr_number
-    binding.lease_holder_agent_id = lease.agent_id
+    binding.lease_holder_agent_id = locked.agent_id
     _clear_evaluation(binding)
     head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
     head_sha = head.get("sha")
@@ -687,14 +773,18 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
         # CI may have finished before submit, when the check_suite webhook found no
         # lease. The handler re-reads checks and the diff from GitHub for this head.
         db.add(_evaluation_job(binding.repo_full_name, link.installation_id, pr_number, head_sha))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        return _err(409, "pr_already_bound")
     return APIResult(
         200,
         {
-            "lease_id": str(lease.id),
+            "lease_id": str(locked.id),
             "status": "submitted",
             "pr_number": pr_number,
-            "hold_expires_at": _iso(lease.hold_expires_at),
+            "hold_expires_at": _iso(locked.hold_expires_at),
         },
     )
 
@@ -724,10 +814,7 @@ async def bounty_status(db: AsyncSession, bounty_id: uuid.UUID) -> APIResult:
     lease = await fetch_active_lease_for_binding(db, binding.id)
     settlement_body = None
     if settlement is not None:
-        settlement_body = {
-            "state": _text(settlement.state),
-            "escrow_id": settlement.escrow_id,
-        }
+        settlement_body = {"state": _text(settlement.state)}
     lease_body = None
     if lease is not None:
         lease_body = {
@@ -784,18 +871,35 @@ async def heartbeat(db, claims, body) -> APIResult:
         return parsed
     now = _now()
     leases = await fetch_agent_work_leases(db, claims.agent_id)
+    locked_rows = []
+    for lease in leases:
+        locked = await lock_lease(db, lease.id)
+        if locked is not None:
+            locked_rows.append(locked)
     released: list[str] = []
     extended: list[str] = []
-    for lease in leases:
-        if _text(lease.status) != LeaseStatus.WORK.value:
+    lapsed: list[str] = []
+    preempt = parsed["status"] == "BUSY_PREEMPTED"
+    pending: list = []
+    for locked in locked_rows:
+        if _text(locked.status) != LeaseStatus.WORK.value:
             continue
-        if parsed["status"] == "BUSY_PREEMPTED":
-            lease.status = LeaseStatus.RELEASED.value
-            lease.release_reason = "preempted"
-            released.append(str(lease.id))
+        if preempt:
+            pending.append(locked)
+            continue
+        # A lapsed lease is left for the expiry sweep; it must not be revived.
+        if not _renewable(locked, now):
+            lapsed.append(str(locked.id))
+            continue
+        pending.append(locked)
+    for locked in pending:
+        if preempt:
+            locked.status = LeaseStatus.RELEASED.value
+            locked.release_reason = "preempted"
+            released.append(str(locked.id))
         else:
-            lease.work_expires_at = renewed_window(now, lease.hard_expires_at)
-            extended.append(str(lease.id))
+            locked.work_expires_at = renewed_window(now, locked.hard_expires_at)
+            extended.append(str(locked.id))
     await db.commit()
     record = {
         "status": parsed["status"],
@@ -812,6 +916,7 @@ async def heartbeat(db, claims, body) -> APIResult:
             "ttl_s": int(settings.WORKER_HEARTBEAT_TTL_S),
             "released_leases": released,
             "extended_leases": extended,
+            "lapsed_leases": lapsed,
             "presence": presence,
         },
     )

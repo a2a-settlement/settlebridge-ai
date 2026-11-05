@@ -5,6 +5,8 @@ present, because effective trust already includes delegation decay. When
 ``effective_trust`` is absent, ``trust.reputation`` is used. An invalid
 ``effective_trust`` is rejected and is not replaced by ``reputation``.
 ``raw`` is the verified claims-namespace object.
+``scopes`` unions the top-level ``scope`` string with a ``scp`` list.
+A missing or unusable scope claim is an empty set.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ _BEARER_PREFIX = "Bearer "
 _HMAC_PREFIX = "HS"
 _KYA_MIN = 0
 _KYA_MAX = 5
+FINANCIAL_SCOPE = "mcp:tool:financial"
 
 
 class TrustTokenError(Exception):
@@ -33,6 +36,7 @@ class AgentClaims:
     org_id: str
     kya_level: int
     reputation: float
+    scopes: frozenset[str] = field(default_factory=frozenset)
     raw: dict = field(default_factory=dict)
 
 
@@ -192,8 +196,23 @@ def _agent_claims(payload: dict) -> AgentClaims:
         org_id=org_id,
         kya_level=kya_level,
         reputation=_unit_interval(reputation_value),
+        scopes=_token_scopes(payload),
         raw=dict(claims),
     )
+
+
+def _token_scopes(payload: dict) -> frozenset[str]:
+    """Space-separated ``scope``, plus each string in a ``scp`` list."""
+    found: set[str] = set()
+    scope = payload.get("scope")
+    if isinstance(scope, str):
+        found.update(part for part in scope.split() if part)
+    scp = payload.get("scp")
+    if isinstance(scp, list):
+        for item in scp:
+            if isinstance(item, str) and item.strip():
+                found.add(item.strip())
+    return frozenset(found)
 
 
 def _unit_interval(value: object) -> float:

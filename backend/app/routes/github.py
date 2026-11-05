@@ -49,6 +49,40 @@ def _is_clear_comment(data: object) -> bool:
     return body.strip().startswith(_CLEAR_PREFIX)
 
 
+def _declared_content_length(request: Request) -> int | None:
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+async def _read_limited_body(request: Request) -> bytes:
+    """Read the webhook body, rejecting anything over the configured cap before HMAC."""
+    limit = int(settings.GITHUB_WEBHOOK_MAX_BODY_BYTES)
+    declared = _declared_content_length(request)
+    if declared is not None and declared > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Webhook body too large",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Webhook body too large",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def job_kind_for(event: str, action: str | None, data: object) -> JobKind | None:
     """Map a verified webhook to a job kind. None means record-only."""
     if event in ("installation", "installation_repositories"):
@@ -79,7 +113,7 @@ async def github_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
-    body = await request.body()
+    body = await _read_limited_body(request)
     signature = request.headers.get("X-Hub-Signature-256")
     if not verify_webhook_signature(settings.GITHUB_WEBHOOK_SECRET, body, signature):
         raise HTTPException(

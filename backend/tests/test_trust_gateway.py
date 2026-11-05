@@ -378,6 +378,43 @@ def test_trust_denial_when_both_requirements_fail(monkeypatch: pytest.MonkeyPatc
     }
 
 
+def test_scope_string_and_scp_list_are_unioned(monkeypatch: pytest.MonkeyPatch):
+    _configure(monkeypatch, key=HMAC_SECRET, algorithms="HS256")
+    payload = _payload()
+    payload["scope"] = "  mcp:read   mcp:tool:financial "
+    payload["scp"] = ["settlement:transact", "mcp:tool:financial", "  mcp:read  ", "", 1, None]
+    claims = verify_gateway_token(_sign(payload, HMAC_SECRET, "HS256"))
+    assert claims.scopes == frozenset(
+        {"mcp:read", "mcp:tool:financial", "settlement:transact"}
+    )
+
+
+def test_missing_scope_is_empty(monkeypatch: pytest.MonkeyPatch):
+    _configure(monkeypatch, key=HMAC_SECRET, algorithms="HS256")
+    payload = _payload()
+    del payload["scope"]
+    claims = verify_gateway_token(_sign(payload, HMAC_SECRET, "HS256"))
+    assert claims.scopes == frozenset()
+
+
+def test_scp_list_is_accepted_without_scope_string(monkeypatch: pytest.MonkeyPatch):
+    _configure(monkeypatch, key=HMAC_SECRET, algorithms="HS256")
+    payload = _payload()
+    del payload["scope"]
+    payload["scp"] = ["mcp:tool:financial"]
+    claims = verify_gateway_token(_sign(payload, HMAC_SECRET, "HS256"))
+    assert claims.scopes == frozenset({"mcp:tool:financial"})
+
+
+def test_non_string_scope_and_scp_are_ignored(monkeypatch: pytest.MonkeyPatch):
+    _configure(monkeypatch, key=HMAC_SECRET, algorithms="HS256")
+    payload = _payload()
+    payload["scope"] = ["mcp:tool:financial"]
+    payload["scp"] = "mcp:tool:financial"
+    claims = verify_gateway_token(_sign(payload, HMAC_SECRET, "HS256"))
+    assert claims.scopes == frozenset()
+
+
 def test_bearer_token_parses_credential():
     assert bearer_token("Bearer abc.def.ghi") == "abc.def.ghi"
 

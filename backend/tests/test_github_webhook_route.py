@@ -322,3 +322,89 @@ def test_event_action_mapping(event, payload, kind):
         assert jobs[0].payload["event"] == event
         assert jobs[0].payload["action"] == payload.get("action")
         assert jobs[0].payload["data"] == payload
+
+
+def test_content_length_over_limit_is_413_before_signature(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_WEBHOOK_MAX_BODY_BYTES", 64)
+    session = FakeSession()
+    body = b'{"zen":"hi"}'
+    headers = {
+        "X-GitHub-Event": "ping",
+        "X-GitHub-Delivery": "deliv-length",
+        "X-Hub-Signature-256": "sha256=" + "ab" * 32,
+        "Content-Type": "application/json",
+    }
+    with _client(session) as client:
+        request = client.build_request(
+            "POST", "/api/v1/github/webhook", content=body, headers=headers
+        )
+        request.headers["content-length"] = "1000000"
+        response = client.send(request)
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Webhook body too large"
+    assert session.added == []
+    assert session.commits == 0
+
+
+def test_streamed_body_over_limit_is_413_before_signature(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_WEBHOOK_MAX_BODY_BYTES", 16)
+    session = FakeSession()
+
+    def chunks():
+        yield b"x" * 10
+        yield b"y" * 10
+
+    headers = {
+        "X-GitHub-Event": "ping",
+        "X-GitHub-Delivery": "deliv-stream",
+        "X-Hub-Signature-256": "sha256=" + "cd" * 32,
+        "Content-Type": "application/json",
+    }
+    with _client(session) as client:
+        response = client.post("/api/v1/github/webhook", content=chunks(), headers=headers)
+    assert response.status_code == 413
+    assert session.added == []
+    assert session.commits == 0
+
+
+def test_under_limit_content_length_still_caps_the_stream(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_WEBHOOK_MAX_BODY_BYTES", 24)
+    session = FakeSession()
+    body = b"z" * 40
+    headers = {
+        "X-GitHub-Event": "ping",
+        "X-GitHub-Delivery": "deliv-lie",
+        "X-Hub-Signature-256": _sign(body),
+        "Content-Type": "application/json",
+    }
+    with _client(session) as client:
+        request = client.build_request(
+            "POST", "/api/v1/github/webhook", content=body, headers=headers
+        )
+        request.headers["content-length"] = "8"
+        response = client.send(request)
+    assert response.status_code == 413
+    assert session.added == []
+    assert session.commits == 0
+
+
+def test_chunked_body_under_limit_is_reassembled_for_hmac(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_WEBHOOK_MAX_BODY_BYTES", 1024)
+    session = FakeSession()
+    body = b'{"zen":"keep it logically awesome"}'
+
+    def chunks():
+        yield body[:5]
+        yield body[5:]
+
+    headers = {
+        "X-GitHub-Event": "ping",
+        "X-GitHub-Delivery": "deliv-chunk-ok",
+        "X-Hub-Signature-256": _sign(body),
+        "Content-Type": "application/json",
+    }
+    with _client(session) as client:
+        response = client.post("/api/v1/github/webhook", content=chunks(), headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "pong"}
+    assert session.added == []

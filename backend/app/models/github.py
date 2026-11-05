@@ -116,6 +116,7 @@ class GitHubLease(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
+    github_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     spec_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("github_acceptance_specs.id"), nullable=False
     )
@@ -173,7 +174,22 @@ class GitHubRepoLink(Base):
 
 class GitHubBountyBinding(Base):
     __tablename__ = "github_bounty_bindings"
-    __table_args__ = (UniqueConstraint("repo_full_name", "issue_number"),)
+    __table_args__ = (
+        UniqueConstraint("repo_full_name", "issue_number"),
+        Index(
+            "uq_github_bounty_bindings_lower_repo_issue",
+            func.lower(text("repo_full_name")),
+            text("issue_number"),
+            unique=True,
+        ),
+        Index(
+            "uq_github_bounty_bindings_lower_repo_pr",
+            func.lower(text("repo_full_name")),
+            text("pr_number"),
+            unique=True,
+            postgresql_where=text("pr_number IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     bounty_id: Mapped[uuid.UUID] = mapped_column(
