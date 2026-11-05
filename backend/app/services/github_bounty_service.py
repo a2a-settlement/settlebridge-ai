@@ -1170,6 +1170,27 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
     )
 
 
+async def _link_repos(db: AsyncSession, installation_id: int, full_names: list[str]) -> None:
+    """Create a disabled link per repo, or move an existing link to this installation."""
+    for full_name in full_names:
+        link = await get_repo_link(db, full_name)
+        if link is None:
+            db.add(
+                GitHubRepoLink(
+                    id=uuid.uuid4(),
+                    installation_id=installation_id,
+                    repo_full_name=full_name,
+                    funder_user_id=None,
+                    enabled=False,
+                    default_policy={},
+                    required_checks=[],
+                )
+            )
+        elif link.installation_id != installation_id:
+            link.installation_id = installation_id
+    await _flush(db)
+
+
 async def handle_installation(db: AsyncSession, job: GitHubJob) -> None:
     event, action, data = _webhook_parts(job)
     installation_id = _installation_id(data)
@@ -1188,6 +1209,9 @@ async def handle_installation(db: AsyncSession, job: GitHubJob) -> None:
             existing.account_login = login
             existing.removed_at = None
         await _flush(db)
+        # A new installation lists its repositories here; GitHub sends no
+        # installation_repositories event for them.
+        await _link_repos(db, installation_id, _repo_names(data.get("repositories")))
         return
     if event == "installation" and action == "deleted":
         existing = await get_installation(db, installation_id)
@@ -1198,20 +1222,7 @@ async def handle_installation(db: AsyncSession, job: GitHubJob) -> None:
         await _flush(db)
         return
     if event == "installation_repositories" and action == "added":
-        for full_name in _repo_names(data.get("repositories_added")):
-            if await get_repo_link(db, full_name) is None:
-                db.add(
-                    GitHubRepoLink(
-                        id=uuid.uuid4(),
-                        installation_id=installation_id,
-                        repo_full_name=full_name,
-                        funder_user_id=None,
-                        enabled=False,
-                        default_policy={},
-                        required_checks=[],
-                    )
-                )
-        await _flush(db)
+        await _link_repos(db, installation_id, _repo_names(data.get("repositories_added")))
         return
     if event == "installation_repositories" and action == "removed":
         for full_name in _repo_names(data.get("repositories_removed")):

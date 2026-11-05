@@ -142,21 +142,25 @@ async def github_webhook(
 
     action = _action_of(data)
     kind = job_kind_for(event, action, data)
-    db.add(GitHubWebhookDelivery(delivery_id=delivery_id, event=event, action=action))
-    if kind is not None:
-        db.add(
-            GitHubJob(
-                delivery_id=delivery_id,
-                kind=kind.value,
-                payload={"event": event, "action": action, "data": data},
-                status=JobStatus.PENDING.value,
-            )
-        )
-
     try:
+        db.add(GitHubWebhookDelivery(delivery_id=delivery_id, event=event, action=action))
+        # The job's foreign key needs the delivery row first, and no ORM
+        # relationship tells the session to order the two inserts.
+        await db.flush()
+        if kind is not None:
+            db.add(
+                GitHubJob(
+                    delivery_id=delivery_id,
+                    kind=kind.value,
+                    payload={"event": event, "action": action, "data": data},
+                    status=JobStatus.PENDING.value,
+                )
+            )
         await db.commit()
     except IntegrityError:
         await db.rollback()
+        if await db.get(GitHubWebhookDelivery, delivery_id) is None:
+            raise
         logger.info("Duplicate GitHub delivery %s", delivery_id)
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "duplicate"})
 
