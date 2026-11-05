@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes import agents, assist, auth, bots, bounties, categories, claims, contact, contracts, notifications, stats, submissions, training
 from app.routes import gateway as gateway_routes
+from app.routes import github as github_routes
+from app.services.github_jobs import run_github_job_loop
 from app.services.review_service import QUALITY_PROMPT_VERSION, REVIEW_MODEL
 from app.services.scheduler import run_scheduler
 
@@ -18,6 +20,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(run_scheduler())
+    github_job_task: asyncio.Task | None = None
+    if settings.MARKETPLACE_ENABLED:
+        github_job_task = asyncio.create_task(run_github_job_loop())
 
     gateway_tasks: list[asyncio.Task] = []
     if settings.GATEWAY_ENABLED:
@@ -28,7 +33,12 @@ async def lifespan(app: FastAPI):
     for t in gateway_tasks:
         t.cancel()
     task.cancel()
-    for t in [task, *gateway_tasks]:
+    if github_job_task is not None:
+        github_job_task.cancel()
+    background: list[asyncio.Task] = [task, *gateway_tasks]
+    if github_job_task is not None:
+        background.append(github_job_task)
+    for t in background:
         try:
             await t
         except asyncio.CancelledError:
@@ -222,6 +232,7 @@ if settings.MARKETPLACE_ENABLED:
     app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
     app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
     app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
+    app.include_router(github_routes.router, prefix="/api/v1/github", tags=["github"])
 
 
 app.include_router(submissions.public_router, prefix="/api", tags=["public"])
