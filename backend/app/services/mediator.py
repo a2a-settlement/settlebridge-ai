@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -109,16 +110,27 @@ async def get_audit(escrow_id: str) -> dict[str, Any] | None:
         return resp.json()
 
 
+def _timestamp() -> int:
+    """Unix seconds for one verify_patch call. A retry is a new call, so it signs again."""
+    return int(time.time())
+
+
 async def verify_patch(payload: dict[str, Any]) -> dict[str, Any]:
     """POST a canonical JSON body to the mediator verify-patch endpoint.
 
-    The body is serialized once and the HMAC is taken over those exact bytes.
+    The body is serialized once. The HMAC is SHA-256 over ``f"{timestamp}."``
+    plus those exact bytes, keyed with the webhook secret.
     """
     secret = settings.MEDIATOR_WEBHOOK_SECRET
     if not secret:
         raise ValueError("MEDIATOR_WEBHOOK_SECRET not configured")
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    timestamp = _timestamp()
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp}.".encode("ascii") + body,
+        hashlib.sha256,
+    ).hexdigest()
     url = f"{settings.MEDIATOR_URL.rstrip('/')}/api/v1/verify-patch"
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
@@ -126,6 +138,7 @@ async def verify_patch(payload: dict[str, Any]) -> dict[str, Any]:
             content=body,
             headers={
                 "Content-Type": "application/json",
+                "X-A2ASE-Timestamp": str(timestamp),
                 "X-A2ASE-Signature": f"sha256={signature}",
             },
         )

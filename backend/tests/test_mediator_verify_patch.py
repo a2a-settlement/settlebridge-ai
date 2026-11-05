@@ -32,6 +32,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, handler, timeouts: list[object]) -
 def test_verify_patch_signs_exact_body(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mediator.settings, "MEDIATOR_WEBHOOK_SECRET", "topsecret")
     monkeypatch.setattr(mediator.settings, "MEDIATOR_URL", "https://mediator.example")
+    monkeypatch.setattr(mediator, "_timestamp", lambda: 1_700_000_000)
     payload = {"b": "café", "a": {"d": 1, "c": 2}}
     captured: dict[str, httpx.Request] = {}
     timeouts: list[object] = []
@@ -47,11 +48,43 @@ def test_verify_patch_signs_exact_body(monkeypatch: pytest.MonkeyPatch):
     expected_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     assert request.content == expected_body
     assert expected_body == b'{"a":{"c":2,"d":1},"b":"caf\\u00e9"}'
-    digest = hmac.new(b"topsecret", request.content, hashlib.sha256).hexdigest()
+    timestamp = request.headers["X-A2ASE-Timestamp"]
+    assert timestamp.isdigit()
+    assert timestamp == "1700000000"
+    signed = f"{timestamp}.".encode("ascii") + request.content
+    digest = hmac.new(b"topsecret", signed, hashlib.sha256).hexdigest()
+    body_only = hmac.new(b"topsecret", request.content, hashlib.sha256).hexdigest()
+    assert digest != body_only
     assert request.headers["X-A2ASE-Signature"] == f"sha256={digest}"
+    assert request.headers["X-A2ASE-Signature"] != f"sha256={body_only}"
     assert request.headers["Content-Type"] == "application/json"
     assert str(request.url) == "https://mediator.example/api/v1/verify-patch"
     assert timeouts == [120]
+
+
+def test_verify_patch_signs_a_fresh_timestamp_per_call(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(mediator.settings, "MEDIATOR_WEBHOOK_SECRET", "topsecret")
+    monkeypatch.setattr(mediator.settings, "MEDIATOR_URL", "https://mediator.example")
+    stamps = iter([111, 222])
+    monkeypatch.setattr(mediator, "_timestamp", lambda: next(stamps))
+    seen: list[tuple[str, str]] = []
+    timeouts: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.headers["X-A2ASE-Timestamp"], request.headers["X-A2ASE-Signature"])
+        )
+        return httpx.Response(200, json={"ok": True})
+
+    _install(monkeypatch, handler, timeouts)
+    asyncio.run(mediator.verify_patch({"a": 1}))
+    asyncio.run(mediator.verify_patch({"a": 1}))
+    assert [item[0] for item in seen] == ["111", "222"]
+    assert seen[0][1] != seen[1][1]
+    for timestamp, signature in seen:
+        signed = f"{timestamp}.".encode("ascii") + b'{"a":1}'
+        digest = hmac.new(b"topsecret", signed, hashlib.sha256).hexdigest()
+        assert signature == f"sha256={digest}"
 
 
 def test_verify_patch_empty_secret_raises(monkeypatch: pytest.MonkeyPatch):
