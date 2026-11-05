@@ -1,0 +1,33 @@
+# Single compatibility manifest for the private experiment profile.
+# Docker build args are generated from this file. Do not put SHAs in Dockerfiles.
+# These pins are the last published revisions. A deployable check fails while a
+# required path is absent from that revision. Build the images from the
+# checkouts that contain the implementation, then commit and move these pins.
+source: context
+revisions:
+  a2a-settlement: "620e29e574c5e4e8c8fd6191bb81e5926af01fe9"
+  a2a-settlement-auth: "2c691504e19ed42fa316fe983bd4a7fe813682ba"
+  settlement-conformance: "31deae47d0fc85c15df926eca485befad137fcd5"
+  settlebridge-ai: "d1646ec87d8bc4f8501ee661a5ea1f3ef4f7d064"
+  otel-agent-provenance: "b2fa1c5868e9e089e17f4b9ef641688311b1a697"
+  a2a-settlement-mediator: "8944196"
+images:
+  exchange: "sha256:fdc31785d02323ac8c0797c1a128849692ab55b39f598ae374b72ac60ce3a9d2"
+  gateway: "sha256:6a6d73fe08c0375453eb4a0cfd34383aa4c315014e56d191d14ff0f144b31d4c"
+  policy: "sha256:788dc82f18b89fbfab2af4a755964259c059b19c738366403c742ff02b904d05"
+  runner: "sha256:1f272d1f3cf8b348d02e1fd5093bcbcc299344c42ae351189954e126b4664a0d"
+  board: "sha256:1276da350c94a6e3a7e27d2416691ae4dcdfe5cd3471cd79b8d779c70c014b6b"
+  observer: "sha256:2654da18ac9c8266e8c545e6ce04556332d63290ffbce9590cabe892890a2c2d"
+required_paths:
+  a2a-settlement:
+    - exchange/assurance_ledger.py
+    - exchange/routes/assurance.py
+    - exchange/routes/settlement.py
+    - exchange/identity/crypto.py
+    - shim/proxy.py
+  settlebridge-ai:
+    - assurance/pyproject.toml
+    - assurance/assurance/scenarios/analytical-task-v1.yaml
+    - backend/pyproject.toml
+    - backend/alembic.ini
+    - backend/migrations/env.py

@@ -1,0 +1,26 @@
+# Context is the settlebridge-ai checkout. The settlement checkout is the
+# additional build context named "settlement", taken from revisions.lock.
+FROM python:3.11-slim
+WORKDIR /src
+COPY backend /src/backend
+COPY --from=settlement . /src/settlement
+RUN pip install --no-cache-dir /src/settlement \
+    && pip install --no-cache-dir /src/settlement/sdk \
+    && pip install --no-cache-dir /src/backend \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'set -eu' \
+      'if [ -f /run/secrets/pg_password ]; then' \
+      '  pw=$(cat /run/secrets/pg_password)' \
+      '  export DATABASE_URL="postgresql+asyncpg://assurance:${pw}@db:5432/assurance"' \
+      'fi' \
+      'test -f /src/backend/alembic.ini' \
+      'test -d /src/backend/migrations/versions' \
+      'python -c "import app.main"' \
+      'cd /src/backend' \
+      'alembic upgrade head' \
+      'exec uvicorn app.main:app --host 0.0.0.0 --port 8000' \
+      > /usr/local/bin/policy-entrypoint.sh \
+    && chmod +x /usr/local/bin/policy-entrypoint.sh
+EXPOSE 8000
+CMD ["policy-entrypoint.sh"]

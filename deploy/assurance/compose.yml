@@ -1,0 +1,228 @@
+# Private experiment profile.
+# Build contexts and image tags come from the env file written by
+# `assurance pins export`. Dockerfiles do not embed revision SHAs.
+# No published database ports, no bind mounts of the workstation tree, no --reload.
+
+networks:
+  data:
+    internal: true
+  exchange_net:
+    internal: true
+  gateway_net:
+    internal: true
+  observation:
+    internal: true
+  workers:
+    internal: true
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: assurance
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_DB: assurance
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assurance"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    secrets:
+      - pg_password
+    networks:
+      - data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - data
+
+  exchange:
+    build:
+      context: ${SETTLEMENT_CONTEXT:?set SETTLEMENT_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.exchange
+    environment:
+      A2A_EXCHANGE_HOST: 0.0.0.0
+      A2A_EXCHANGE_PORT: "8000"
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+    secrets:
+      - pg_password
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data
+      - exchange_net
+
+  policy:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.policy
+      additional_contexts:
+        settlement: ${SETTLEMENT_CONTEXT:?set SETTLEMENT_CONTEXT from assurance pins export}
+    environment:
+      REDIS_URL: redis://redis:6379
+      GATEWAY_EXCHANGE_URL: http://exchange:8000
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+    secrets:
+      - pg_password
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      exchange:
+        condition: service_started
+    networks:
+      - data
+      - exchange_net
+
+  gateway:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.gateway
+    environment:
+      EXCHANGE_URL: http://exchange:8000
+      OBSERVER_URL: http://observer:8000
+      REQUESTER_API_KEY_FILE: /run/secrets/requester_api_key
+      COLLECTOR_TOKEN_FILE: /run/secrets/collector_token
+      OPERATOR_TOKEN_FILE: /run/secrets/operator_token
+      ACTOR_TOKENS_FILE: /run/secrets/actor_tokens
+      ASSURANCE_ESCROW_ID_FILE: /run/secrets/escrow_id
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+    secrets:
+      - requester_api_key
+      - collector_token
+      - operator_token
+      - actor_tokens
+      - escrow_id
+    depends_on:
+      - exchange
+      - observer
+    networks:
+      - exchange_net
+      - gateway_net
+      - observation
+
+  board:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.board
+    environment:
+      ASSURANCE_CHANNEL: ${ASSURANCE_CHANNEL:-off}
+      OBSERVER_URL: http://observer:8000
+      COLLECTOR_TOKEN_FILE: /run/secrets/collector_token
+      OPERATOR_TOKEN_FILE: /run/secrets/operator_token
+      ACTOR_TOKENS_FILE: /run/secrets/actor_tokens
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+    secrets:
+      - collector_token
+      - operator_token
+      - actor_tokens
+    depends_on:
+      - observer
+    networks:
+      - gateway_net
+      - observation
+
+  observer:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.observer
+    environment:
+      EXCHANGE_URL: http://exchange:8000
+      OBSERVER_API_KEY_FILE: /run/secrets/observer_api_key
+      COLLECTOR_TOKEN_FILE: /run/secrets/collector_token
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+    secrets:
+      - observer_api_key
+      - collector_token
+    volumes:
+      - evidence:/evidence
+    depends_on:
+      - exchange
+    networks:
+      - exchange_net
+      - observation
+
+  runner:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.runner
+    environment:
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+      EXCHANGE_URL: http://exchange:8000
+      GATEWAY_URL: http://gateway:8000
+      BOARD_URL: http://board:8000
+      OBSERVER_URL: http://observer:8000
+      OBSERVER_API_KEY_FILE: /run/secrets/observer_api_key
+      ACTOR_TOKEN_FILE: /run/secrets/actor_token
+      ASSURANCE_ESCROW_ID_FILE: /run/secrets/escrow_id
+      COLLECTOR_TOKEN_FILE: /run/secrets/collector_token
+      OPERATOR_TOKEN_FILE: /run/secrets/operator_token
+      ASSURANCE_RUN_ID: ${ASSURANCE_RUN_ID:-}
+    secrets:
+      - observer_api_key
+      - actor_token
+      - escrow_id
+      - collector_token
+      - operator_token
+    volumes:
+      - evidence:/evidence
+    depends_on:
+      - gateway
+      - observer
+      - board
+    networks:
+      - gateway_net
+      - observation
+      - exchange_net
+
+  worker:
+    build:
+      context: ${SETTLEBRIDGE_CONTEXT:?set SETTLEBRIDGE_CONTEXT from assurance pins export}
+      dockerfile: ${COMPOSE_DIR:?}/Dockerfile.runner
+    environment:
+      ASSURANCE_ENV_LABEL: ${ASSURANCE_ENV_LABEL:?set an experiment label}
+      GATEWAY_URL: http://gateway:8000
+      BOARD_URL: http://board:8000
+    entrypoint: ["python", "-m", "assurance.worker"]
+    networks:
+      - workers
+      - gateway_net
+    depends_on:
+      - gateway
+      - board
+
+secrets:
+  pg_password:
+    file: ${PG_PASSWORD_FILE:?set PG_PASSWORD_FILE outside git}
+  requester_api_key:
+    file: ${REQUESTER_API_KEY_FILE:?set REQUESTER_API_KEY_FILE outside git}
+  observer_api_key:
+    file: ${OBSERVER_API_KEY_FILE:?set OBSERVER_API_KEY_FILE outside git}
+  actor_token:
+    file: ${ACTOR_TOKEN_FILE:?set ACTOR_TOKEN_FILE outside git}
+  escrow_id:
+    file: ${ESCROW_ID_FILE:?set ESCROW_ID_FILE outside git}
+  operator_token:
+    file: ${OPERATOR_TOKEN_FILE:?set OPERATOR_TOKEN_FILE outside git}
+  collector_token:
+    file: ${COLLECTOR_TOKEN_FILE:?set COLLECTOR_TOKEN_FILE outside git}
+  actor_tokens:
+    file: ${ACTOR_TOKENS_FILE:?set ACTOR_TOKENS_FILE outside git}
+
+volumes:
+  pgdata:
+  redisdata:
+  evidence:

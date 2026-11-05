@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /src
+COPY assurance /src/assurance
+RUN pip install --no-cache-dir /src/assurance
+EXPOSE 8000
+VOLUME ["/evidence"]
+CMD ["assurance", "serve-observer", "--host", "0.0.0.0", "--port", "8000", "--evidence", "/evidence"]

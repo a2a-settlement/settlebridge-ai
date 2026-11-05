@@ -1,0 +1,8 @@
+# Worker-facing payment gateway. It holds the requester secret and forwards
+# only POST /exchange/release. Context is the settlebridge-ai checkout.
+FROM python:3.11-slim
+WORKDIR /src
+COPY assurance /src/assurance
+RUN pip install --no-cache-dir /src/assurance
+EXPOSE 8000
+CMD ["assurance", "serve-gateway", "--host", "0.0.0.0", "--port", "8000"]

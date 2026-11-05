@@ -103,9 +103,7 @@ class PolicyEngine:
 
     async def reload_from_db(self) -> None:
         async with async_session() as session:
-            result = await session.execute(
-                select(TrustPolicy).where(TrustPolicy.active.is_(True))
-            )
+            result = await session.execute(select(TrustPolicy).where(TrustPolicy.active.is_(True)))
             rows = result.scalars().all()
 
         merged: list[ParsedPolicy] = []
@@ -206,7 +204,10 @@ class PolicyEngine:
                 return "No attestation freshness data available"
 
         elif f == "max_identity_age_days":
-            if req.attestation_freshness and req.attestation_freshness.identity_verified_days_ago is not None:
+            if (
+                req.attestation_freshness
+                and req.attestation_freshness.identity_verified_days_ago is not None
+            ):
                 if req.attestation_freshness.identity_verified_days_ago > v:
                     return (
                         f"Identity verified {req.attestation_freshness.identity_verified_days_ago}d ago "
@@ -215,9 +216,38 @@ class PolicyEngine:
 
         return None
 
-    def evaluate(self, req: GatewayRequest) -> PolicyDecision:
+    def apply_escrow_read(self, req: GatewayRequest, escrow: dict) -> GatewayRequest:
+        """Fill required inputs from the exchange escrow read, not from the actor."""
+        amount = escrow.get("amount")
+        if amount is not None:
+            req.escrow_amount = float(amount)
+        if req.reputation_score is None and escrow.get("reputation_score") is not None:
+            req.reputation_score = float(escrow["reputation_score"])
+        if "counterparty_allowed" in escrow:
+            req.metadata["counterparty_allowed"] = bool(escrow["counterparty_allowed"])
+        return req
+
+    def evaluate(self, req: GatewayRequest, *, required: bool = False) -> PolicyDecision:
         if not self._policies:
+            if required:
+                return PolicyDecision(
+                    action=Action.BLOCK,
+                    reasons=["Required policy profile has no policies configured"],
+                )
             return PolicyDecision(action=Action.APPROVE, reasons=["No policies configured"])
+        if required:
+            missing = []
+            if req.escrow_amount <= 0:
+                missing.append("escrow_amount")
+            if req.reputation_score is None:
+                missing.append("reputation_score")
+            if "counterparty_allowed" not in req.metadata:
+                missing.append("counterparty")
+            if missing:
+                return PolicyDecision(
+                    action=Action.BLOCK,
+                    reasons=[f"Required policy inputs missing: {', '.join(missing)}"],
+                )
 
         all_reasons: list[str] = []
         matched_names: list[str] = []

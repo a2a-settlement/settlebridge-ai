@@ -1,0 +1,8 @@
+# Context is the settlebridge-ai checkout.
+FROM python:3.11-slim
+WORKDIR /src
+COPY assurance /src/assurance
+COPY deploy/assurance/revisions.lock /src/revisions.lock
+RUN pip install --no-cache-dir /src/assurance
+WORKDIR /evidence
+CMD ["assurance", "preflight", "--lock", "/src/revisions.lock", "--dry-run"]

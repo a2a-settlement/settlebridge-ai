@@ -1,0 +1,472 @@
+"""Idempotent, resumable settlement of accepted GitHub bounties."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import NoReturn
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.models.bounty import Bounty, BountyStatus
+from app.models.github import (
+    AcceptanceSpec,
+    BindingState,
+    FunderLedgerEntry,
+    GitHubBountyBinding,
+    GitHubLease,
+    GitHubRepoLink,
+    GitHubSettlement,
+    LeaseStatus,
+    LedgerStatus,
+    SettlementState,
+)
+from app.models.user import User
+from app.services import exchange, github_app, github_comments
+from app.services.github_errors import PermanentJobError, RetryableJobError
+
+logger = logging.getLogger(__name__)
+
+# Exchange 409 detail: "An active escrow already exists for this task_id (escrow_id=<id>)".
+_DUPLICATE_ESCROW_ID = re.compile(r"escrow_id=([a-fA-F0-9-]+)")
+_FAILURE_STATUSES = frozenset({"refunded", "expired", "disputed"})
+_SECRET_RE = re.compile(
+    r"ate_[A-Za-z0-9_\-]+|Bearer\s+\S+|api[_-]?key[=:]\s*\S+",
+    re.IGNORECASE,
+)
+_ERROR_LIMIT = 500
+_MAX_TRANSITIONS = 6
+
+
+@dataclass
+class SettlementContext:
+    settlement: GitHubSettlement
+    binding: GitHubBountyBinding
+    spec: AcceptanceSpec
+    bounty: Bounty
+    funder: User
+    repo_link: GitHubRepoLink | None
+    ledger: FunderLedgerEntry | None
+    provider: User | None
+    lease: GitHubLease | None
+
+
+def next_action(state: str, escrow_status: str | None, delivered: bool | None) -> str:
+    """Return the next transition: create, deliver, release, finalize, fail, or noop.
+
+    ``failed`` and ``released`` are decided from local state. ``refunded``,
+    ``expired``, and ``disputed`` fail only once an escrow exists. ``pending``
+    ignores the exchange view. Delivery does not change status (it stays
+    ``held``); ``delivered`` is that separate fact.
+    """
+    status = escrow_status.lower() if isinstance(escrow_status, str) and escrow_status else None
+    if state == SettlementState.FAILED.value:
+        return "noop"
+    if state == SettlementState.RELEASED.value:
+        return "finalize"
+    if state in (SettlementState.ESCROW_CREATED.value, SettlementState.DELIVERED.value):
+        if status in _FAILURE_STATUSES:
+            return "fail"
+    if state == SettlementState.PENDING.value:
+        return "create"
+    if state == SettlementState.ESCROW_CREATED.value:
+        if status == "released" or delivered:
+            return "release"
+        return "deliver"
+    if state == SettlementState.DELIVERED.value:
+        return "release"
+    return "noop"
+
+
+def escrow_already_delivered(escrow: dict | None) -> bool:
+    """True when get_escrow shows a delivery. Status stays ``held`` until release."""
+    if not escrow:
+        return False
+    if escrow.get("delivered_at"):
+        return True
+    if escrow.get("delivered_content"):
+        return True
+    return bool(escrow.get("delivered_artifact_sha256"))
+
+
+def delivery_content(
+    binding: GitHubBountyBinding,
+    settlement: GitHubSettlement,
+    spec: AcceptanceSpec,
+) -> str:
+    payload: dict[str, object] = {
+        "head_sha": settlement.head_sha,
+        "repo": binding.repo_full_name,
+        "spec_hash": spec.content_hash,
+    }
+    if binding.pr_number is not None:
+        payload["pr_number"] = binding.pr_number
+    digest = _assessment_diff_sha256(binding.last_assessment)
+    if digest:
+        payload["assessment_diff_sha256"] = digest
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+async def load_settlement_graph(
+    db: AsyncSession, settlement_id: uuid.UUID
+) -> SettlementContext:
+    settlement = await _scalar(
+        db,
+        select(GitHubSettlement)
+        .where(GitHubSettlement.id == settlement_id)
+        .with_for_update(),
+    )
+    if settlement is None:
+        raise PermanentJobError(f"settlement {settlement_id} not found")
+
+    binding = await _scalar(
+        db, select(GitHubBountyBinding).where(GitHubBountyBinding.id == settlement.binding_id)
+    )
+    spec = await _scalar(db, select(AcceptanceSpec).where(AcceptanceSpec.id == settlement.spec_id))
+    if binding is None or spec is None:
+        await _fail_permanent(db, settlement, "binding or acceptance spec missing")
+
+    bounty = await _scalar(db, select(Bounty).where(Bounty.id == binding.bounty_id))
+    funder = None
+    if bounty is not None:
+        funder = await _scalar(db, select(User).where(User.id == bounty.requester_id))
+    if bounty is None or funder is None:
+        await _fail_permanent(db, settlement, "bounty or funder missing")
+
+    repo_link = await _scalar(
+        db, select(GitHubRepoLink).where(GitHubRepoLink.repo_full_name == binding.repo_full_name)
+    )
+    ledger = await _scalar(
+        db, select(FunderLedgerEntry).where(FunderLedgerEntry.binding_id == binding.id)
+    )
+    # Pay the lease holder. exchange_bot_id is not unique, so the user comes from
+    # the settled lease's user_id. solver_agent_id stays the exchange provider id.
+    lease = await _scalar(
+        db,
+        select(GitHubLease)
+        .where(
+            GitHubLease.binding_id == settlement.binding_id,
+            GitHubLease.status == LeaseStatus.SETTLED.value,
+        )
+        .order_by(GitHubLease.updated_at.desc(), GitHubLease.created_at.desc())
+        .limit(1),
+    )
+    provider = None
+    if lease is not None:
+        provider = await _scalar(db, select(User).where(User.id == lease.user_id))
+    return SettlementContext(
+        settlement=settlement,
+        binding=binding,
+        spec=spec,
+        bounty=bounty,
+        funder=funder,
+        repo_link=repo_link,
+        ledger=ledger,
+        provider=provider,
+        lease=lease,
+    )
+
+
+async def advance_settlement(db: AsyncSession, settlement_id: uuid.UUID) -> GitHubSettlement:
+    try:
+        ctx = await load_settlement_graph(db, settlement_id)
+    except PermanentJobError:
+        raise
+    except Exception as exc:
+        raise RetryableJobError(_safe_error(exc)) from exc
+
+    try:
+        return await _advance(db, ctx)
+    except (PermanentJobError, RetryableJobError):
+        raise
+    except Exception as exc:
+        if _missing_exchange_account(exc):
+            await _fail_permanent(db, ctx.settlement, str(exc))
+        await _fail_retryable(db, ctx.settlement, exc)
+
+
+async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement:
+    settlement = ctx.settlement
+    state = _state_value(settlement)
+    if state == SettlementState.FAILED.value:
+        return settlement
+    if state == SettlementState.RELEASED.value:
+        await _finalize(db, ctx)
+        return settlement
+    if (
+        not settings.GITHUB_SETTLEMENT_ENABLED
+        or not settlement.solver_agent_id
+        or ctx.lease is None
+    ):
+        return settlement
+
+    for _ in range(_MAX_TRANSITIONS):
+        state = _state_value(settlement)
+        if state == SettlementState.FAILED.value:
+            return settlement
+        if state == SettlementState.RELEASED.value:
+            await _finalize(db, ctx)
+            return settlement
+
+        escrow_status: str | None = None
+        delivered: bool | None = None
+        if state in (SettlementState.ESCROW_CREATED.value, SettlementState.DELIVERED.value):
+            if not settlement.escrow_id:
+                await _fail_permanent(db, settlement, "escrow id missing")
+            escrow = await _read_escrow(ctx)
+            escrow_status = _status_of(escrow)
+            delivered = escrow_already_delivered(escrow)
+
+        action = next_action(state, escrow_status, delivered)
+        if action == "create":
+            await _step_create(db, ctx)
+            continue
+        if action == "deliver":
+            await _step_deliver(db, ctx)
+            continue
+        if action == "release" and state == SettlementState.ESCROW_CREATED.value:
+            # Deliver step is already satisfied. Record it before release so a
+            # crash cannot call deliver (which has no idempotency key).
+            await _mark(db, settlement, SettlementState.DELIVERED.value)
+            continue
+        if action == "release":
+            await _step_release(db, ctx, escrow_status)
+            continue
+        if action == "finalize":
+            await _finalize(db, ctx)
+            return settlement
+        if action == "fail":
+            await _fail_permanent(
+                db, settlement, f"escrow {settlement.escrow_id} is {escrow_status}"
+            )
+        return settlement
+    raise RuntimeError("settlement exceeded transition budget")
+
+
+async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
+    settlement = ctx.settlement
+    # Deliver needs the solver's key; failing after create would strand funds in escrow.
+    if ctx.provider is None or not getattr(ctx.provider, "exchange_api_key", None):
+        raise ValueError("Solver has not linked an exchange account")
+    idempotency_key = f"{settlement.idempotency_prefix}:create"
+    task_id = f"gh:{settlement.binding_id}:{settlement.spec_id}"
+    try:
+        result = await asyncio.to_thread(
+            exchange.create_escrow,
+            ctx.funder,
+            provider_id=settlement.solver_agent_id,
+            amount=ctx.spec.amount_ate,
+            task_id=task_id,
+            ttl_minutes=settings.ESCROW_TTL_MINUTES,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        if _missing_exchange_account(exc):
+            raise
+        recovered = _duplicate_escrow_id(exc)
+        if recovered is None:
+            raise
+        logger.info("recovered duplicate escrow %s for settlement %s", recovered, settlement.id)
+        result = {"escrow_id": recovered}
+
+    escrow_id = _extract_escrow_id(result)
+    if not escrow_id:
+        raise RuntimeError("create_escrow returned no escrow id")
+    settlement.escrow_id = escrow_id
+    await _mark(db, settlement, SettlementState.ESCROW_CREATED.value)
+
+
+async def _step_deliver(db: AsyncSession, ctx: SettlementContext) -> None:
+    provider = ctx.provider
+    # Only the provider may deliver. recreate_and_release posts /deliver with the
+    # provider API key; the requester is rejected with 403.
+    if provider is None or not getattr(provider, "exchange_api_key", None):
+        raise ValueError("Solver has not linked an exchange account")
+    content = delivery_content(ctx.binding, ctx.settlement, ctx.spec)
+    await asyncio.to_thread(exchange.deliver, provider, ctx.settlement.escrow_id, content)
+    await _mark(db, ctx.settlement, SettlementState.DELIVERED.value)
+
+
+async def _step_release(
+    db: AsyncSession, ctx: SettlementContext, escrow_status: str | None
+) -> None:
+    if (escrow_status or "").lower() != "released":
+        await asyncio.to_thread(
+            exchange.release_escrow,
+            ctx.funder,
+            ctx.settlement.escrow_id,
+            idempotency_key=f"{ctx.settlement.idempotency_prefix}:release",
+        )
+    await _mark(db, ctx.settlement, SettlementState.RELEASED.value)
+
+
+async def _finalize(db: AsyncSession, ctx: SettlementContext) -> None:
+    ctx.binding.state = BindingState.PAID.value
+    if ctx.ledger is None:
+        logger.warning("no funder ledger for binding %s", ctx.binding.id)
+    else:
+        ctx.ledger.status = LedgerStatus.SETTLED.value
+    ctx.bounty.status = BountyStatus.COMPLETED
+    ctx.bounty.escrow_id = ctx.settlement.escrow_id
+    if ctx.bounty.completed_at is None:
+        ctx.bounty.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await _post_paid_comment(db, ctx)
+
+
+async def _post_paid_comment(db: AsyncSession, ctx: SettlementContext) -> None:
+    """Comment is best-effort. Paid rows are already committed."""
+    if ctx.repo_link is None or not ctx.settlement.escrow_id:
+        logger.error(
+            "skipping paid comment for settlement %s (repo link or escrow id missing)",
+            ctx.settlement.id,
+        )
+        return
+    fee_ate = ctx.spec.amount_ate * ctx.spec.fee_bps // 10000
+    try:
+        marker = github_comments.bounty_marker(ctx.binding.bounty_id)
+        body = github_comments.render_paid(
+            bounty_id=ctx.binding.bounty_id,
+            escrow_id=ctx.settlement.escrow_id,
+            amount_ate=ctx.spec.amount_ate,
+            fee_ate=fee_ate,
+        )
+        comment_id = await github_app.upsert_sticky_comment(
+            ctx.repo_link.installation_id,
+            ctx.binding.repo_full_name,
+            ctx.binding.issue_number,
+            marker,
+            body,
+            comment_id=ctx.binding.comment_id,
+        )
+    except Exception:
+        logger.exception("paid comment failed for settlement %s", ctx.settlement.id)
+        return
+    if isinstance(comment_id, int) and ctx.binding.comment_id != comment_id:
+        ctx.binding.comment_id = comment_id
+        try:
+            await db.commit()
+        except Exception:
+            logger.exception("failed to store paid comment id for settlement %s", ctx.settlement.id)
+
+
+async def _read_escrow(ctx: SettlementContext) -> dict:
+    escrow = await asyncio.to_thread(exchange.get_escrow, ctx.funder, ctx.settlement.escrow_id)
+    if not isinstance(escrow, dict):
+        raise RuntimeError("escrow lookup returned no payload")
+    return escrow
+
+
+async def _mark(db: AsyncSession, settlement: GitHubSettlement, state: str) -> None:
+    previous = _state_value(settlement)
+    settlement.state = state
+    settlement.last_error = None
+    await db.commit()
+    logger.info("settlement %s %s -> %s", settlement.id, previous, state)
+
+
+async def _fail_permanent(db: AsyncSession, settlement: GitHubSettlement, message: str) -> NoReturn:
+    safe = _safe_error(message)
+    settlement.state = SettlementState.FAILED.value
+    settlement.last_error = safe
+    try:
+        await db.commit()
+    except Exception:
+        logger.exception("could not persist failed settlement %s", settlement.id)
+    raise PermanentJobError(safe)
+
+
+async def _fail_retryable(
+    db: AsyncSession, settlement: GitHubSettlement, exc: BaseException
+) -> NoReturn:
+    safe = _safe_error(exc)
+    settlement.attempts = int(settlement.attempts or 0) + 1
+    settlement.last_error = safe
+    try:
+        await db.commit()
+    except Exception:
+        logger.exception("could not persist retryable settlement error for %s", settlement.id)
+    raise RetryableJobError(safe) from exc
+
+
+async def _scalar(db: AsyncSession, stmt: object) -> object:
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+def _state_value(settlement: GitHubSettlement) -> str:
+    state = settlement.state
+    if isinstance(state, SettlementState):
+        return state.value
+    return str(state)
+
+
+def _status_of(escrow: dict) -> str | None:
+    status = escrow.get("status")
+    if status is None or status == "":
+        return None
+    return str(status)
+
+
+def _extract_escrow_id(result: object) -> str:
+    if not isinstance(result, dict):
+        return ""
+    raw = result.get("escrow_id") or result.get("id") or ""
+    return str(raw).strip()
+
+
+def _assessment_diff_sha256(assessment: object) -> str | None:
+    if not isinstance(assessment, dict):
+        return None
+    for key in ("assessment_diff_sha256", "diff_sha256"):
+        value = assessment.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _missing_exchange_account(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and "exchange account" in str(exc).lower()
+
+
+def _duplicate_escrow_id(exc: BaseException) -> str | None:
+    text = _error_text(exc)
+    match = _DUPLICATE_ESCROW_ID.search(text)
+    if match is None:
+        return None
+    lowered = text.lower()
+    if (
+        "409" in text
+        or "already exists" in lowered
+        or "duplicate" in lowered
+        or "idempoten" in lowered
+    ):
+        return match.group(1)
+    return None
+
+
+def _error_text(exc: BaseException) -> str:
+    parts = [str(exc)]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            body = response.text
+        except Exception:
+            body = None
+        if isinstance(body, str) and body:
+            parts.append(body)
+    return "\n".join(parts)
+
+
+def _safe_error(exc: BaseException | str) -> str:
+    text = _SECRET_RE.sub("[redacted]", str(exc))
+    text = " ".join(text.split())
+    if len(text) > _ERROR_LIMIT:
+        return text[: _ERROR_LIMIT - 3] + "..."
+    return text

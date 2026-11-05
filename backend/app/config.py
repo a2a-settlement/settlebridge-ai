@@ -46,6 +46,42 @@ class Settings(BaseSettings):
     # Default TTL for escrows created by SettleBridge (minutes). 1440 = 24 hours.
     ESCROW_TTL_MINUTES: int = 1440
 
+    # GitHub App bounty bridge
+    GITHUB_APP_ID: str = ""
+    GITHUB_APP_PRIVATE_KEY: str = ""
+    GITHUB_WEBHOOK_SECRET: str = ""
+    # GitHub drops webhook deliveries larger than 25 MiB.
+    GITHUB_WEBHOOK_MAX_BODY_BYTES: int = 26_214_400
+    GITHUB_API_URL: str = "https://api.github.com"
+    GITHUB_SETTLEMENT_ENABLED: bool = False
+    GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
+    GITHUB_DEFAULT_KYA_LEVEL: int = 1
+    GITHUB_ATE_PER_USD: int = 100
+    GITHUB_CLEARING_FEE_BPS: int = 1000
+    GITHUB_JOB_MAX_ATTEMPTS: int = 8
+    GITHUB_JOB_POLL_INTERVAL_S: int = 5
+    MARKET_URL: str = "https://market.settlebridge.ai"
+
+    # GitHub user OAuth (identity verification through the GitHub App)
+    GITHUB_OAUTH_CLIENT_ID: str = ""
+    GITHUB_OAUTH_CLIENT_SECRET: str = ""
+    GITHUB_OAUTH_URL: str = "https://github.com"
+
+    # mcp-trust-gateway JWT verification. TRUST_GATEWAY_KEY is the HMAC secret or PEM public key.
+    TRUST_GATEWAY_ISSUER: str = ""
+    TRUST_GATEWAY_AUDIENCE: str = "https://gateway.a2a-settlement.org"
+    TRUST_GATEWAY_KEY: str = ""
+    TRUST_GATEWAY_ALGORITHMS: str = "RS256"
+
+    # Bounty leases
+    LEASE_WORK_MINUTES: int = 15
+    LEASE_HARD_CAP_MINUTES: int = 120
+    LEASE_SUBMITTED_HOLD_HOURS: int = 72
+    LEASE_MAX_ACTIVE_PER_AGENT: int = 2
+    LEASE_COOLDOWN_EXPIRIES: int = 3
+    LEASE_COOLDOWN_MINUTES: int = 60
+    WORKER_HEARTBEAT_TTL_S: int = 90
+
     @property
     def effective_exchange_url(self) -> str:
         return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL

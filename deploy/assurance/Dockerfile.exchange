@@ -1,0 +1,21 @@
+# Context is the a2a-settlement checkout. No default SHA and no git clone.
+FROM python:3.11-slim
+WORKDIR /src
+COPY . /src/settlement
+RUN pip install --no-cache-dir "/src/settlement[exchange]" \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'set -eu' \
+      'if [ -f /run/secrets/pg_password ]; then' \
+      '  pw=$(cat /run/secrets/pg_password)' \
+      '  export A2A_EXCHANGE_DATABASE_URL="postgresql+psycopg://assurance:${pw}@db:5432/assurance"' \
+      'fi' \
+      'export A2A_EXCHANGE_HOST="${A2A_EXCHANGE_HOST:-0.0.0.0}"' \
+      'export A2A_EXCHANGE_PORT="${A2A_EXCHANGE_PORT:-8000}"' \
+      'exec a2a-exchange' \
+      > /usr/local/bin/exchange-entrypoint.sh \
+    && chmod +x /usr/local/bin/exchange-entrypoint.sh
+ENV A2A_EXCHANGE_HOST=0.0.0.0
+ENV A2A_EXCHANGE_PORT=8000
+EXPOSE 8000
+CMD ["exchange-entrypoint.sh"]

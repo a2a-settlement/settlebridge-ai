@@ -38,9 +38,11 @@ class GatewayProxy(ShimProxy):
         reputation_cache: ReputationCache,
         audit_logger: AuditLogger,
         health_monitor: HealthMonitor,
+        policy_required: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self._policy_required = policy_required
         self._policy_engine = policy_engine
         self._rep_cache = reputation_cache
         self._audit_logger = audit_logger
@@ -71,32 +73,49 @@ class GatewayProxy(ShimProxy):
                 )
                 span.set_attribute("gateway.attestation_valid", att_freshness.attestation_valid)
 
-            # Step 2: Policy check
+            # Step 2: Policy check. A required profile fills amount and
+            # counterparty from the escrow read when the caller supplies it.
             gw_req = GatewayRequest(
                 source_agent=source,
                 target_agent=target,
                 escrow_id=request.escrow_id,
+                escrow_amount=float(getattr(request, "escrow_amount", 0) or 0),
                 reputation_score=rep_score,
                 attestation_freshness=att_freshness,
+                metadata={
+                    "counterparty_allowed": request.counterparty_allowed,
+                }
+                if getattr(request, "counterparty_allowed", None) is not None
+                else {},
             )
-            decision = self._policy_engine.evaluate(gw_req)
+            escrow_view = getattr(request, "escrow_view", None)
+            if self._policy_required and isinstance(escrow_view, dict):
+                self._policy_engine.apply_escrow_read(gw_req, escrow_view)
+            decision = self._policy_engine.evaluate(gw_req, required=self._policy_required)
             span.set_attribute("gateway.policy_decision", decision.action.value)
 
             if decision.action == Action.BLOCK:
                 latency_ms = int((time.monotonic() - start) * 1000)
                 self._health_monitor.record_request(source, latency_ms, is_error=True)
                 await self._write_audit(
-                    source, target, PolicyDecisionType.BLOCK,
-                    request.escrow_id, latency_ms, 403,
+                    source,
+                    target,
+                    PolicyDecisionType.BLOCK,
+                    request.escrow_id,
+                    latency_ms,
+                    403,
                     {"reasons": decision.reasons},
                 )
                 import json
+
                 return ProxyResponse(
                     status_code=403,
-                    body=json.dumps({
-                        "error": "Request blocked by trust policy",
-                        "reasons": decision.reasons,
-                    }),
+                    body=json.dumps(
+                        {
+                            "error": "Request blocked by trust policy",
+                            "reasons": decision.reasons,
+                        }
+                    ),
                 )
 
             # Step 3: Delegate to parent pipeline (escrow gate -> inject -> forward)
@@ -114,8 +133,12 @@ class GatewayProxy(ShimProxy):
                 else PolicyDecisionType.APPROVE
             )
             await self._write_audit(
-                source, target, db_decision,
-                request.escrow_id, latency_ms, response.status_code,
+                source,
+                target,
+                db_decision,
+                request.escrow_id,
+                latency_ms,
+                response.status_code,
                 {"reasons": decision.reasons} if decision.reasons else None,
             )
 

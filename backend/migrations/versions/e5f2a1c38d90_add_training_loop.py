@@ -23,6 +23,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # e9f2a4b76c1d is the revision that creates this training schema.
+    # This branch records the same tables. Running both on an empty
+    # database creates trainingrunstatus twice and Alembic stops.
+    return
+
     # ------------------------------------------------------------------
     # 1. Create PostgreSQL enum types
     # ------------------------------------------------------------------

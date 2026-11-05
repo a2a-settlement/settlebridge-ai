@@ -30,11 +30,38 @@ alertconditiontype_enum = postgresql.ENUM(
 
 
 def upgrade() -> None:
-    # Add principal_id to gateway_agents (nullable — populated by principal_sync service)
-    op.add_column(
-        "gateway_agents",
-        sa.Column("principal_id", postgresql.UUID(as_uuid=True), nullable=True),
-    )
+    # gateway_agents is a model table with no earlier migration. A fresh
+    # database has nothing to alter. Create it, including principal_id.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("gateway_agents"):
+        op.create_table(
+            "gateway_agents",
+            sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+            sa.Column("exchange_account_id", sa.String(36), nullable=False),
+            sa.Column("bot_name", sa.String(255), nullable=False),
+            sa.Column("description", sa.Text(), nullable=True),
+            sa.Column("skills", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+            sa.Column("exchange_claim_id", sa.String(36), nullable=True),
+            sa.Column("verified", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column(
+                "claimed_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.text("now()"),
+                nullable=False,
+            ),
+            sa.Column("status", sa.String(20), nullable=False, server_default="active"),
+            sa.Column("principal_id", postgresql.UUID(as_uuid=True), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("exchange_account_id"),
+        )
+    else:
+        columns = {col["name"] for col in inspector.get_columns("gateway_agents")}
+        if "principal_id" not in columns:
+            op.add_column(
+                "gateway_agents",
+                sa.Column("principal_id", postgresql.UUID(as_uuid=True), nullable=True),
+            )
 
     # Add diversity metrics to reputation_snapshots
     op.add_column(
