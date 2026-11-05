@@ -53,6 +53,7 @@ from app.services.github_bounty_service import (
     ParsedLabels,
     build_spec_content,
     effective_requirements,
+    escrow_cost,
     evaluate_required_checks,
     extract_test_command,
     handle_job,
@@ -62,6 +63,7 @@ from app.services.github_bounty_service import (
     parse_bounty_labels,
     parse_closing_reference,
     spec_content_hash,
+    sum_advertised_cost,
     usd_to_ate,
 )
 from app.services.github_errors import PermanentJobError, RetryableJobError
@@ -323,6 +325,21 @@ def test_ledger_allows_stops_at_the_checked_balance():
     assert ledger_allows(0, 1, 0) is False
 
 
+@pytest.mark.parametrize(
+    ("amount", "cost"), [(0, 0), (1, 2), (400, 401), (500, 502), (2500, 2507), (10_000, 10_025)]
+)
+def test_escrow_cost_adds_the_exchange_fee_rounded_up(amount, cost):
+    assert escrow_cost(amount) == cost
+
+
+def test_advertised_cost_charges_the_fee_on_each_row():
+    rows = [SimpleNamespace(amount_ate=1), SimpleNamespace(amount_ate=1)]
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = rows
+    db = SimpleNamespace(execute=AsyncMock(return_value=result))
+    assert asyncio.run(sum_advertised_cost(db, uuid.uuid4())) == 4
+
+
 # --- required checks --------------------------------------------------------
 
 
@@ -572,7 +589,7 @@ def test_issue_labeled_advertises_within_checked_balance(monkeypatch):
         "app.services.github_bounty_service.lock_user", AsyncMock(return_value=user)
     )
     monkeypatch.setattr(
-        "app.services.github_bounty_service.sum_advertised_amount", AsyncMock(return_value=0)
+        "app.services.github_bounty_service.sum_advertised_cost", AsyncMock(return_value=0)
     )
     monkeypatch.setattr(
         exchange, "get_balance_dashboard", MagicMock(return_value={"available": 1_000_000})
@@ -712,7 +729,7 @@ def test_spec_edit_inserts_a_new_version_and_rejects_overcommit(monkeypatch):
         "app.services.github_bounty_service.get_ledger_entry", AsyncMock(return_value=ledger)
     )
     monkeypatch.setattr(
-        "app.services.github_bounty_service.sum_advertised_amount", AsyncMock(return_value=2500)
+        "app.services.github_bounty_service.sum_advertised_cost", AsyncMock(return_value=2500)
     )
     monkeypatch.setattr(
         "app.services.github_bounty_service.get_bounty", AsyncMock(return_value=bounty)
@@ -806,7 +823,7 @@ def _prepare_terms(
         "app.services.github_bounty_service.get_ledger_entry", AsyncMock(return_value=ledger)
     )
     summed = AsyncMock(return_value=ledger_amount)
-    monkeypatch.setattr("app.services.github_bounty_service.sum_advertised_amount", summed)
+    monkeypatch.setattr("app.services.github_bounty_service.sum_advertised_cost", summed)
     monkeypatch.setattr(
         "app.services.github_bounty_service.get_bounty", AsyncMock(return_value=bounty)
     )
@@ -946,6 +963,31 @@ def test_unchanged_terms_release_the_lease_floor_only_when_unleased(monkeypatch)
     assert released.locked == []
 
 
+def test_balance_equal_to_the_bounty_cannot_cover_the_exchange_fee(monkeypatch):
+    renders, _upsert = _patch_comments(monkeypatch)
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    db = _db()
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_binding_by_issue", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_enabled_funded_repo_link",
+        AsyncMock(return_value=_link(user.id)),
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.lock_user", AsyncMock(return_value=user)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.sum_advertised_cost", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        exchange, "get_balance_dashboard", MagicMock(return_value={"available": 2500})
+    )
+    _run(db, _job(JobKind.ISSUE_LABELED, _issue_data([{"name": "bounty: $25"}])))
+    assert db.add.call_count == 0
+    assert renders["render_not_advertised"].call_args.kwargs["reason"] == REASON_INSUFFICIENT
+
+
 def test_insufficient_new_bounty_does_not_insert_rows(monkeypatch):
     renders, upsert = _patch_comments(monkeypatch)
     user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
@@ -961,7 +1003,7 @@ def test_insufficient_new_bounty_does_not_insert_rows(monkeypatch):
         "app.services.github_bounty_service.lock_user", AsyncMock(return_value=user)
     )
     monkeypatch.setattr(
-        "app.services.github_bounty_service.sum_advertised_amount", AsyncMock(return_value=100)
+        "app.services.github_bounty_service.sum_advertised_cost", AsyncMock(return_value=100)
     )
     monkeypatch.setattr(
         exchange, "get_balance_dashboard", MagicMock(return_value={"available": 100})
