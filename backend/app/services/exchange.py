@@ -117,6 +117,7 @@ def create_escrow(
     task_id: str = "",
     required_attestation_level: str | None = None,
     ttl_minutes: int | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     client = _user_client(user)
     att_level = _TIER_MAP.get(
@@ -128,6 +129,7 @@ def create_escrow(
         task_id=task_id,
         required_attestation_level=att_level,
         ttl_minutes=ttl_minutes,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -165,9 +167,11 @@ def partial_release(
     )
 
 
-def release_escrow(user: User, escrow_id: str) -> dict[str, Any]:
+def release_escrow(
+    user: User, escrow_id: str, idempotency_key: str | None = None
+) -> dict[str, Any]:
     client = _user_client(user)
-    return client.release_escrow(escrow_id=escrow_id)
+    return client.release_escrow(escrow_id=escrow_id, idempotency_key=idempotency_key)
 
 
 def refund_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, Any]:

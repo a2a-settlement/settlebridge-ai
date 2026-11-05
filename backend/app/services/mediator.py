@@ -104,3 +104,7 @@ async def get_audit(escrow_id: str) -> dict[str, Any] | None:
             return None
         resp.raise_for_status()
         return resp.json()
+
+
+async def verify_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    raise NotImplementedError

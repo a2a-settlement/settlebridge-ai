@@ -46,6 +46,20 @@ class Settings(BaseSettings):
     # Default TTL for escrows created by SettleBridge (minutes). 1440 = 24 hours.
     ESCROW_TTL_MINUTES: int = 1440
 
+    # GitHub App bounty bridge
+    GITHUB_APP_ID: str = ""
+    GITHUB_APP_PRIVATE_KEY: str = ""
+    GITHUB_WEBHOOK_SECRET: str = ""
+    GITHUB_API_URL: str = "https://api.github.com"
+    GITHUB_SETTLEMENT_ENABLED: bool = False
+    GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
+    GITHUB_DEFAULT_KYA_LEVEL: int = 1
+    GITHUB_ATE_PER_USD: int = 100
+    GITHUB_CLEARING_FEE_BPS: int = 1000
+    GITHUB_JOB_MAX_ATTEMPTS: int = 8
+    GITHUB_JOB_POLL_INTERVAL_S: int = 5
+    MARKET_URL: str = "https://market.settlebridge.ai"
+
     @property
     def effective_exchange_url(self) -> str:
         return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL
