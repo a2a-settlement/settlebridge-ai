@@ -329,7 +329,7 @@ async def _post_paid_comment(db: AsyncSession, ctx: SettlementContext) -> None:
             ctx.settlement.id,
         )
         return
-    fee_ate = ctx.spec.amount_ate * ctx.spec.fee_bps // 10000
+    fee_ate = await _escrow_fee(ctx)
     try:
         marker = github_comments.bounty_marker(ctx.binding.bounty_id)
         body = github_comments.render_paid(
@@ -355,6 +355,16 @@ async def _post_paid_comment(db: AsyncSession, ctx: SettlementContext) -> None:
             await db.commit()
         except Exception:
             logger.exception("failed to store paid comment id for settlement %s", ctx.settlement.id)
+
+
+async def _escrow_fee(ctx: SettlementContext) -> int | None:
+    """The fee the exchange actually charged, or None when it can't be read."""
+    try:
+        fee = (await _read_escrow(ctx)).get("fee_amount")
+        return None if fee is None else int(fee)
+    except Exception:
+        logger.warning("could not read escrow fee for settlement %s", ctx.settlement.id)
+        return None
 
 
 async def _read_escrow(ctx: SettlementContext) -> dict:

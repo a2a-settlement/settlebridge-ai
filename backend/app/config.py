@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     GITHUB_DEFAULT_KYA_LEVEL: int = 1
     GITHUB_ATE_PER_USD: int = 100
-    GITHUB_CLEARING_FEE_BPS: int = 1000
+    GITHUB_CLEARING_FEE_BPS: int = 0
     GITHUB_JOB_MAX_ATTEMPTS: int = 8
     GITHUB_JOB_POLL_INTERVAL_S: int = 5
     MARKET_URL: str = "https://market.settlebridge.ai"

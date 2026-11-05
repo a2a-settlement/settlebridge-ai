@@ -346,7 +346,7 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
         events.append("get")
         assert args[0] is world.funder
         assert args[1] == "esc-1"
-        return {"status": "held"}
+        return {"status": "held", "fee_amount": 7}
 
     world.create.side_effect = _create
     world.deliver.side_effect = _deliver
@@ -356,7 +356,7 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
     result = _run(world)
 
     assert result is world.settlement
-    assert events == ["create", "get", "deliver", "get", "release"]
+    assert events == ["create", "get", "deliver", "get", "release", "get"]
     assert [row[0] for row in world.commits[:4]] == [
         "escrow_created",
         "delivered",
@@ -378,12 +378,23 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
     assert world.bounty.completed_at is not None
     assert world.bounty.completed_at.tzinfo is not None
     world.render_paid.assert_called_once_with(
-        bounty_id=_BOUNTY_ID, escrow_id="esc-1", amount_ate=2500, fee_ate=250
+        bounty_id=_BOUNTY_ID, escrow_id="esc-1", amount_ate=2500, fee_ate=7
     )
     world.marker.assert_called_once_with(_BOUNTY_ID)
     world.comment.assert_awaited_once_with(
         99, "octo/hello", 12, "marker-1", "paid-body", comment_id=None
     )
+
+
+def test_paid_comment_omits_fee_when_escrow_lookup_fails(monkeypatch):
+    world = _world(monkeypatch)
+    world.get_escrow.side_effect = [{"status": "held"}, {"status": "held"}, RuntimeError("down")]
+    _run(world)
+    assert world.binding.state == "paid"
+    world.render_paid.assert_called_once_with(
+        bounty_id=_BOUNTY_ID, escrow_id="esc-1", amount_ate=2500, fee_ate=None
+    )
+    world.comment.assert_awaited_once()
 
 
 def test_create_accepts_id_field(monkeypatch):
@@ -457,7 +468,8 @@ def test_resume_when_exchange_already_released_skips_release(monkeypatch):
     assert world.create.call_count == 0
     assert world.deliver.call_count == 0
     assert world.release.call_count == 0
-    assert world.get_escrow.call_count == 1
+    # The second read fetches the fee for the paid comment.
+    assert world.get_escrow.call_count == 2
     assert world.settlement.state == "released"
     assert world.binding.state == "paid"
     assert world.ledger.status == "settled"

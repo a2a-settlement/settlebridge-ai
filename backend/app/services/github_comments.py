@@ -185,19 +185,19 @@ def render_accepted_payment_pending(
 
 
 def render_paid(
-    *, bounty_id: uuid.UUID | str, escrow_id: str, amount_ate: int, fee_ate: int
+    *, bounty_id: uuid.UUID | str, escrow_id: str, amount_ate: int, fee_ate: int | None
 ) -> str:
-    return "\n".join(
-        [
-            bounty_marker(bounty_id),
-            "",
-            "### Payment completed",
-            "",
-            f"Escrow: {escrow_id}",
-            f"Amount: {amount_ate} ATE",
-            f"Clearing fee: {fee_ate} ATE",
-        ]
-    )
+    lines = [
+        bounty_marker(bounty_id),
+        "",
+        "### Payment completed",
+        "",
+        f"Escrow: {escrow_id}",
+        f"Amount: {amount_ate} ATE",
+    ]
+    if fee_ate is not None:
+        lines.append(f"Exchange fee: {fee_ate} ATE (paid by the funder)")
+    return "\n".join(lines)
 
 
 def render_cancelled(*, bounty_id: uuid.UUID | str, reason: str) -> str:
