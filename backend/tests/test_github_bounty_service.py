@@ -52,6 +52,7 @@ from app.services.github_bounty_service import (
     ChecksResult,
     ParsedLabels,
     build_spec_content,
+    default_required_ema,
     effective_requirements,
     escrow_cost,
     evaluate_required_checks,
@@ -323,6 +324,31 @@ def test_ledger_allows_stops_at_the_checked_balance():
     assert ledger_allows(100, 51, 150) is False
     assert ledger_allows(80, 25, 100) is False
     assert ledger_allows(0, 1, 0) is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "repo", "expected"),
+    [
+        ("", "acme/widget", 0.75),
+        ("acme/widget=0.5", "acme/widget", 0.5),
+        (" Acme/Widget = 0.5 ", "acme/widget", 0.5),
+        ("other/repo=0.1, acme/widget=0.6", "acme/widget", 0.6),
+        ("other/repo=0.1", "acme/widget", 0.75),
+        ("acme/widget=low", "acme/widget", 0.75),
+        ("acme/widget=1.5", "acme/widget", 0.75),
+        ("acme/widget", "acme/widget", 0.75),
+    ],
+)
+def test_default_required_ema_uses_the_repo_override(monkeypatch, overrides, repo, expected):
+    monkeypatch.setattr(settings, "GITHUB_DEFAULT_REQUIRED_EMA", 0.75)
+    monkeypatch.setattr(settings, "GITHUB_REPO_REQUIRED_EMA", overrides)
+    assert default_required_ema(repo) == expected
+
+
+def test_repo_override_does_not_lower_the_security_floor():
+    parsed = parse_bounty_labels(["bounty: $5", "tier: security"])
+    _kya, ema = effective_requirements(parsed, (1, 0.1))
+    assert ema >= 0.85
 
 
 @pytest.mark.parametrize(
