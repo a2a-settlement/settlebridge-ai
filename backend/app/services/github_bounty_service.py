@@ -73,11 +73,6 @@ REASON_NOT_AWAITING_MERGE = "binding is not awaiting merge"
 REASON_VIOLATION = "violation findings are present"
 REASON_SOLVER_UNATTRIBUTED = "solver not attributed (leases arrive in a later phase)"
 REASON_SETTLEMENT_DISABLED = "settlement disabled"
-UNCONFIGURED_SUMMARY = (
-    "Required checks are not configured on the frozen acceptance spec, "
-    "so this pull request cannot be accepted."
-)
-
 _WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 _SETTLED_STATES = frozenset(
     {BindingState.SETTLEMENT_PENDING.value, BindingState.PAID.value}
@@ -1247,7 +1242,6 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
                 head_sha=head_sha,
                 spec_version=spec.version,
                 findings=[],
-                reviewer_summary=UNCONFIGURED_SUMMARY,
             )
             await _flush(db)
             continue

@@ -20,6 +20,10 @@ _HEADLINES = {
     "NEEDS_REVIEW": "Needs review",
     "REJECTED_TOO_LARGE": "Rejected — patch is too large",
     "REJECTED_CHECKS": "Rejected — required checks failed",
+    "UNCONFIGURED": (
+        "Not evaluated — the acceptance spec has no required checks, "
+        "so this pull request cannot be accepted"
+    ),
 }
 _FINDING_CAP = 50
 _EVIDENCE_LIMIT = 200
