@@ -8,8 +8,10 @@ from app.models.github import (
     AcceptanceSpec,
     FunderLedgerEntry,
     GitHubBountyBinding,
+    GitHubIdentity,
     GitHubInstallation,
     GitHubJob,
+    GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
     GitHubWebhookDelivery,
@@ -28,6 +30,7 @@ __all__ = [
     "GatewayAgent",
     "GitHubInstallation", "GitHubRepoLink", "GitHubBountyBinding", "AcceptanceSpec",
     "FunderLedgerEntry", "GitHubWebhookDelivery", "GitHubJob", "GitHubSettlement",
+    "GitHubIdentity", "GitHubLease",
     "ScoreHistory", "ScoreMode",
     "TrainingRun", "TrainingRunStatus", "TrainingTranscript",
 ]

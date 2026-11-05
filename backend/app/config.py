@@ -60,6 +60,26 @@ class Settings(BaseSettings):
     GITHUB_JOB_POLL_INTERVAL_S: int = 5
     MARKET_URL: str = "https://market.settlebridge.ai"
 
+    # GitHub user OAuth (identity verification through the GitHub App)
+    GITHUB_OAUTH_CLIENT_ID: str = ""
+    GITHUB_OAUTH_CLIENT_SECRET: str = ""
+    GITHUB_OAUTH_URL: str = "https://github.com"
+
+    # mcp-trust-gateway JWT verification. TRUST_GATEWAY_KEY is the HMAC secret or PEM public key.
+    TRUST_GATEWAY_ISSUER: str = ""
+    TRUST_GATEWAY_AUDIENCE: str = "https://gateway.a2a-settlement.org"
+    TRUST_GATEWAY_KEY: str = ""
+    TRUST_GATEWAY_ALGORITHMS: str = "RS256"
+
+    # Bounty leases
+    LEASE_WORK_MINUTES: int = 15
+    LEASE_HARD_CAP_MINUTES: int = 120
+    LEASE_SUBMITTED_HOLD_HOURS: int = 72
+    LEASE_MAX_ACTIVE_PER_AGENT: int = 2
+    LEASE_COOLDOWN_EXPIRIES: int = 3
+    LEASE_COOLDOWN_MINUTES: int = 60
+    WORKER_HEARTBEAT_TTL_S: int = 90
+
     @property
     def effective_exchange_url(self) -> str:
         return self.GATEWAY_EXCHANGE_URL or self.A2A_EXCHANGE_URL

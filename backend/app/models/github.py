@@ -11,11 +11,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -65,6 +67,72 @@ class SettlementState(str, enum.Enum):
     DELIVERED = "delivered"
     RELEASED = "released"
     FAILED = "failed"
+
+
+class LeaseStatus(str, enum.Enum):
+    WORK = "work"
+    SUBMITTED = "submitted"
+    RELEASED = "released"
+    EXPIRED = "expired"
+    SETTLED = "settled"
+
+
+ACTIVE_LEASE_STATUSES = (LeaseStatus.WORK.value, LeaseStatus.SUBMITTED.value)
+
+
+class GitHubIdentity(Base):
+    """A GitHub account verified through the GitHub App's user OAuth flow."""
+
+    __tablename__ = "github_identities"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False
+    )
+    github_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    login: Mapped[str] = mapped_column(String(255), nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GitHubLease(Base):
+    """Lease of record for payout attribution. ``spec_id`` pins the acceptance terms."""
+
+    __tablename__ = "github_leases"
+    __table_args__ = (
+        Index(
+            "uq_github_leases_active_binding",
+            "binding_id",
+            unique=True,
+            postgresql_where=text("status IN ('work', 'submitted')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    binding_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("github_bounty_bindings.id"), nullable=False, index=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    spec_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("github_acceptance_specs.id"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=LeaseStatus.WORK.value
+    )
+    work_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hard_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hold_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    otel_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class GitHubInstallation(Base):
