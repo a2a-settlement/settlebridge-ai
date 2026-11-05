@@ -12,7 +12,7 @@ sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -37,6 +37,8 @@ from app.services import exchange, github_app, github_bounty_service as bounty_s
 from app.services import github_comments, github_settlement, mediator
 from app.services.github_bounty_service import (
     BALANCE_NOTICE,
+    REASON_CHECKS_NOT_PASSING,
+    REASON_HOLD_EXPIRED,
     REASON_INCREASE_REJECTED,
     REASON_INSUFFICIENT,
     REASON_MERGED_SHA_MISMATCH,
@@ -480,6 +482,31 @@ def test_merge_acceptance_decision():
     assert merge_acceptance_decision(
         bare, HEAD, _submitted_lease(bare, pr_number=9)
     ) == (False, REASON_NO_LEASE_SUBMISSION)
+    fresh = _awaiting()
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=None)
+    )[0] is True
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=future)
+    )[0] is True
+    naive_future = datetime(2099, 1, 1)
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=naive_future)
+    )[0] is True
+    expired = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=expired)
+    ) == (False, REASON_HOLD_EXPIRED)
+    naive_past = datetime(2020, 1, 1)
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=naive_past)
+    ) == (False, REASON_HOLD_EXPIRED)
+    eastern = timezone(timedelta(hours=-5))
+    aware_past = datetime.now(eastern) - timedelta(minutes=5)
+    assert merge_acceptance_decision(
+        fresh, HEAD, _submitted_lease(fresh, hold_expires_at=aware_past)
+    ) == (False, REASON_HOLD_EXPIRED)
 
 
 @pytest.mark.parametrize(
@@ -631,6 +658,12 @@ def test_issue_labeled_identical_hash_does_not_create_a_version(monkeypatch):
         "app.services.github_bounty_service.get_acceptance_spec", AsyncMock(return_value=spec)
     )
     monkeypatch.setattr(
+        "app.services.github_bounty_service.get_active_lease", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_ledger_entry", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
         "app.services.github_bounty_service.lock_user",
         AsyncMock(side_effect=AssertionError("balance lock on identical spec")),
     )
@@ -709,6 +742,207 @@ def test_spec_edit_inserts_a_new_version_and_rejects_overcommit(monkeypatch):
     assert ledger.amount_ate == 3000
     assert bounty.reward_amount == 3000
     assert not any(isinstance(row, FunderLedgerEntry) for row in _added(db))
+
+
+def _prepare_terms(
+    monkeypatch,
+    *,
+    ledger_amount,
+    spec_amount,
+    lease_status,
+    link_funder_id=None,
+    balance=100_000,
+    content_hash="stale-hash",
+):
+    renders, _upsert = _patch_comments(monkeypatch)
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-original")
+    link = _link(user.id if link_funder_id is None else link_funder_id)
+    binding = _binding()
+    current = _spec(binding.id, version=1, content_hash=content_hash, amount_ate=spec_amount)
+    binding.current_spec_id = current.id
+    ledger = SimpleNamespace(
+        amount_ate=ledger_amount,
+        status=LedgerStatus.ADVERTISED.value,
+        funder_user_id=user.id,
+    )
+    bounty = SimpleNamespace(
+        reward_amount=ledger_amount,
+        min_reputation=0.75,
+        status=BountyStatus.OPEN,
+        requester_id=user.id,
+    )
+    active = None
+    if lease_status is not None:
+        active = SimpleNamespace(spec_id=current.id, status=lease_status, pr_number=4)
+    locked = []
+    events = []
+    available = {"value": balance}
+
+    async def _lock(_db, user_id):
+        events.append("lock")
+        locked.append(user_id)
+        if user_id != user.id:
+            raise AssertionError("locked a funder other than the ledger funder")
+        return user
+
+    def _dashboard(account_id):
+        events.append(("balance", account_id))
+        return {"available": available["value"]}
+
+    db = _db()
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_binding_by_issue", AsyncMock(return_value=binding)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_enabled_funded_repo_link",
+        AsyncMock(return_value=link),
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_acceptance_spec", AsyncMock(return_value=current)
+    )
+    monkeypatch.setattr("app.services.github_bounty_service.lock_user", _lock)
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_ledger_entry", AsyncMock(return_value=ledger)
+    )
+    summed = AsyncMock(return_value=ledger_amount)
+    monkeypatch.setattr("app.services.github_bounty_service.sum_advertised_amount", summed)
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_bounty", AsyncMock(return_value=bounty)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_active_lease", AsyncMock(return_value=active)
+    )
+    dashboard = MagicMock(side_effect=_dashboard)
+    monkeypatch.setattr(exchange, "get_balance_dashboard", dashboard)
+    return SimpleNamespace(
+        db=db,
+        user=user,
+        link=link,
+        binding=binding,
+        current=current,
+        ledger=ledger,
+        bounty=bounty,
+        locked=locked,
+        events=events,
+        available=available,
+        summed=summed,
+        dashboard=dashboard,
+        renders=renders,
+    )
+
+
+@pytest.mark.parametrize("lease_status", ["work", "submitted"])
+def test_label_decrease_with_active_lease_keeps_pinned_amount(monkeypatch, lease_status):
+    world = _prepare_terms(
+        monkeypatch, ledger_amount=2500, spec_amount=2500, lease_status=lease_status
+    )
+    _run(world.db, _job(JobKind.ISSUE_LABELED, _issue_data([{"name": "bounty: $10"}])))
+    label_amount = usd_to_ate(Decimal("10"))
+    specs = [row for row in _added(world.db) if isinstance(row, AcceptanceSpec)]
+    assert len(specs) == 1
+    assert specs[0].amount_ate == label_amount
+    assert world.ledger.amount_ate == 2500
+    assert world.bounty.reward_amount == 2500
+    assert world.current.amount_ate == 2500
+    world.dashboard.assert_not_called()
+
+
+def test_label_decrease_without_a_lease_lowers_the_ledger(monkeypatch):
+    world = _prepare_terms(monkeypatch, ledger_amount=2500, spec_amount=2500, lease_status=None)
+    _run(world.db, _job(JobKind.ISSUE_LABELED, _issue_data([{"name": "bounty: $10"}])))
+    label_amount = usd_to_ate(Decimal("10"))
+    specs = [row for row in _added(world.db) if isinstance(row, AcceptanceSpec)]
+    assert len(specs) == 1
+    assert specs[0].amount_ate == label_amount
+    assert world.ledger.amount_ate == label_amount
+    assert world.bounty.reward_amount == label_amount
+    world.dashboard.assert_not_called()
+
+
+def test_lease_floor_increase_is_balance_checked_under_the_funder_lock(monkeypatch):
+    world = _prepare_terms(
+        monkeypatch, ledger_amount=1000, spec_amount=2500, lease_status="submitted", balance=2000
+    )
+    job = _job(JobKind.ISSUE_LABELED, _issue_data([{"name": "bounty: $10"}]))
+    _run(world.db, job)
+    assert world.ledger.amount_ate == 1000
+    assert world.bounty.reward_amount == 1000
+    assert not any(isinstance(row, AcceptanceSpec) for row in _added(world.db))
+    assert world.renders["render_not_advertised"].call_args.kwargs["reason"] == (
+        REASON_INCREASE_REJECTED
+    )
+    assert world.events[:2] == ["lock", ("balance", "bot-original")]
+    assert world.summed.await_args.args[1] == world.user.id
+
+    world.available["value"] = 100_000
+    _run(world.db, job)
+    label_amount = usd_to_ate(Decimal("10"))
+    specs = [row for row in _added(world.db) if isinstance(row, AcceptanceSpec)]
+    assert len(specs) == 1
+    assert specs[0].amount_ate == label_amount
+    assert world.ledger.amount_ate == 2500
+    assert world.bounty.reward_amount == 2500
+    assert world.locked == [world.user.id, world.user.id]
+
+
+def test_terms_update_locks_the_ledger_funder_not_the_repo_link(monkeypatch):
+    replacement = uuid.uuid4()
+    world = _prepare_terms(
+        monkeypatch,
+        ledger_amount=2500,
+        spec_amount=2500,
+        lease_status=None,
+        link_funder_id=replacement,
+    )
+    assert world.link.funder_user_id == replacement
+    _run(world.db, _job(JobKind.ISSUE_LABELED, _issue_data([{"name": "bounty: $30"}])))
+    assert world.locked == [world.user.id]
+    assert world.events[:2] == ["lock", ("balance", "bot-original")]
+    assert world.summed.await_args.args[1] == world.user.id
+    assert world.ledger.funder_user_id == world.user.id
+    assert world.bounty.requester_id == world.user.id
+    assert world.ledger.amount_ate == 3000
+    world.dashboard.assert_called_once_with("bot-original")
+
+
+def test_unchanged_terms_release_the_lease_floor_only_when_unleased(monkeypatch):
+    content = build_spec_content(
+        test_command="pytest -q",
+        required_checks=[{"name": "ci", "app_id": 7}],
+        policy={"deny_paths": ["secrets/"]},
+        payment_trigger="merge_with_checks",
+        amount_ate=usd_to_ate(Decimal("10")),
+        fee_bps=settings.GITHUB_CLEARING_FEE_BPS,
+        required_kya=1,
+        required_ema=settings.GITHUB_DEFAULT_REQUIRED_EMA,
+    )
+    content_hash = spec_content_hash(content)
+    held = _prepare_terms(
+        monkeypatch,
+        ledger_amount=2500,
+        spec_amount=1000,
+        lease_status="submitted",
+        content_hash=content_hash,
+    )
+    job = _job(JobKind.ISSUE_CHANGED, _issue_data([{"name": "bounty: $10"}]), action="edited")
+    _run(held.db, job)
+    assert held.ledger.amount_ate == 2500
+    assert held.bounty.reward_amount == 2500
+    assert held.db.add.call_count == 0
+    assert held.locked == []
+
+    released = _prepare_terms(
+        monkeypatch,
+        ledger_amount=2500,
+        spec_amount=1000,
+        lease_status=None,
+        content_hash=content_hash,
+    )
+    _run(released.db, job)
+    assert released.ledger.amount_ate == 1000
+    assert released.bounty.reward_amount == 1000
+    assert released.db.add.call_count == 0
+    assert released.locked == []
 
 
 def test_insufficient_new_bounty_does_not_insert_rows(monkeypatch):
@@ -984,7 +1218,88 @@ def test_checks_passed_sends_github_diff_and_frozen_spec_to_mediator(monkeypatch
 
     _run(_db(), _checks_job())
     assert verify.await_count == 1
-    assert github_app.get_pull_request.await_count == 1
+    assert compare.await_count == 1
+    # A passing rerun re-reads checks and does not call the mediator again.
+    assert github_app.get_pull_request.await_count == 2
+    assert github_app.list_check_runs.await_count == 2
+    assert binding.state == BindingState.AWAITING_MERGE.value
+
+
+def test_stored_evaluation_state_keeps_a_review_clear():
+    cleared = SimpleNamespace(
+        review_cleared_by="maintainer",
+        last_assessment={"outcome": "NEEDS_REVIEW", "findings": [{"severity": "review"}]},
+    )
+    assert bounty_svc._state_for_stored_evaluation(cleared) == BindingState.AWAITING_MERGE.value
+    cleared.last_assessment = {
+        "outcome": "NEEDS_REVIEW",
+        "findings": [{"severity": "violation", "rule": "secrets"}],
+    }
+    assert bounty_svc._state_for_stored_evaluation(cleared) == BindingState.NEEDS_REVIEW.value
+    cleared.review_cleared_by = None
+    cleared.last_assessment = {"outcome": "ACCEPTABLE", "findings": []}
+    assert bounty_svc._state_for_stored_evaluation(cleared) == BindingState.AWAITING_MERGE.value
+    cleared.last_assessment = {"outcome": "NEEDS_REVIEW", "findings": []}
+    assert bounty_svc._state_for_stored_evaluation(cleared) == BindingState.NEEDS_REVIEW.value
+
+
+@pytest.mark.parametrize(
+    ("state", "outcome", "runs", "comment_kwargs"),
+    [
+        (
+            BindingState.AWAITING_MERGE.value,
+            "ACCEPTABLE",
+            [_run_check(conclusion="failure")],
+            {"outcome": "REJECTED_CHECKS", "failed_checks": ["ci"]},
+        ),
+        (
+            BindingState.NEEDS_REVIEW.value,
+            "NEEDS_REVIEW",
+            [_run_check(status="in_progress", conclusion=None)],
+            {"outcome": "NOT_ACCEPTED", "reviewer_summary": REASON_CHECKS_NOT_PASSING},
+        ),
+        (
+            BindingState.AWAITING_MERGE.value,
+            "ACCEPTABLE",
+            [],
+            {"outcome": "NOT_ACCEPTED", "reviewer_summary": REASON_CHECKS_NOT_PASSING},
+        ),
+    ],
+)
+def test_check_rerun_reverts_merge_gate_without_calling_mediator(
+    monkeypatch, state, outcome, runs, comment_kwargs
+):
+    binding = _binding(
+        state=state,
+        evaluated_head_sha=HEAD,
+        lease_holder_agent_id="agent-7",
+        last_assessment={
+            "outcome": outcome,
+            "findings": [],
+            "reviewer_opinion": {"summary": "looks fine"},
+        },
+    )
+    spec = _spec(binding.id)
+    binding.current_spec_id = spec.id
+    binding.evaluated_spec_id = spec.id
+    _compare, verify = _prepare_checks(monkeypatch, binding, spec, runs)
+    _run(_db(), _checks_job())
+    verify.assert_not_called()
+    github_app.compare_diff.assert_not_called()
+    assert binding.state == BindingState.ADVERTISED.value
+    assert binding.evaluated_head_sha == HEAD
+    assert binding.evaluated_spec_id == spec.id
+    assert binding.last_assessment["outcome"] == outcome
+    comment = github_comments.render_evaluation.call_args.kwargs
+    for key, value in comment_kwargs.items():
+        assert comment[key] == value
+
+    github_app.list_check_runs.return_value = [_run_check()]
+    _run(_db(), _checks_job())
+    verify.assert_not_called()
+    assert binding.state == state
+    assert binding.evaluated_head_sha == HEAD
+    assert binding.last_assessment["outcome"] == outcome
 
 
 def test_checks_without_submitted_lease_are_not_evaluated(monkeypatch):
@@ -1071,7 +1386,7 @@ def _merged_pr(head, merged=True):
     }
 
 
-def _prepare_close(monkeypatch, binding, spec=None, settlement=None, lease=None):
+def _prepare_close(monkeypatch, binding, spec=None, settlement=None, lease=None, runs=None):
     renders, _upsert = _patch_comments(monkeypatch)
     monkeypatch.setattr(
         "app.services.github_bounty_service.get_binding_by_pull_request",
@@ -1088,6 +1403,9 @@ def _prepare_close(monkeypatch, binding, spec=None, settlement=None, lease=None)
         "app.services.github_bounty_service.get_settlement_for_binding",
         AsyncMock(return_value=settlement),
     )
+    if runs is None:
+        runs = [_run_check()]
+    monkeypatch.setattr(github_app, "list_check_runs", AsyncMock(return_value=runs))
     return renders
 
 
@@ -1143,7 +1461,8 @@ def test_merged_at_evaluated_sha_enqueues_settlement(monkeypatch):
         lease_holder_agent_id="binding-agent",
     )
     lease = _close_lease(spec_id, agent_id="lease-agent")
-    renders = _prepare_close(monkeypatch, binding, lease=lease)
+    spec = _spec(binding.id, id=spec_id)
+    renders = _prepare_close(monkeypatch, binding, spec=spec, lease=lease)
     db = _db()
     job = _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed")
     _run(db, job)
@@ -1163,6 +1482,7 @@ def test_merged_at_evaluated_sha_enqueues_settlement(monkeypatch):
     assert lease.status == "settled"
     reason = renders["render_accepted_payment_pending"].call_args.kwargs["reason"]
     assert reason is None
+    github_app.list_check_runs.assert_awaited_once_with(42, REPO, HEAD)
     adds = db.add.call_count
     monkeypatch.setattr(
         "app.services.github_bounty_service.get_settlement_for_binding",
@@ -1170,6 +1490,7 @@ def test_merged_at_evaluated_sha_enqueues_settlement(monkeypatch):
     )
     _run(db, job)
     assert db.add.call_count == adds
+    assert github_app.list_check_runs.await_count == 1
 
 
 def test_merged_without_lease_is_not_payable(monkeypatch):
@@ -1206,13 +1527,158 @@ def test_merged_when_settlement_disabled_still_enqueues(monkeypatch):
         lease_holder_agent_id="agent-9",
     )
     lease = _close_lease(spec_id, agent_id="agent-9")
-    renders = _prepare_close(monkeypatch, binding, lease=lease)
+    renders = _prepare_close(
+        monkeypatch, binding, spec=_spec(binding.id, id=spec_id), lease=lease
+    )
     db = _db()
     _run(db, _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed"))
     assert any(isinstance(row, GitHubJob) for row in _added(db))
     assert lease.status == "settled"
     reason = renders["render_accepted_payment_pending"].call_args.kwargs["reason"]
     assert reason == REASON_SETTLEMENT_DISABLED
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [_run_check(conclusion="failure")],
+        [_run_check(status="in_progress", conclusion=None)],
+        [_run_check(head_sha="ffff111222")],
+        [_run_check(app_id=99)],
+        [],
+    ],
+)
+def test_merged_without_passing_head_checks_does_not_settle(monkeypatch, runs):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    spec_id = uuid.uuid4()
+    binding = _binding(
+        state=BindingState.AWAITING_MERGE.value,
+        evaluated_head_sha=HEAD,
+        current_spec_id=spec_id,
+        evaluated_spec_id=spec_id,
+        last_assessment={"outcome": "ACCEPTABLE", "findings": []},
+    )
+    lease = _close_lease(spec_id)
+    renders = _prepare_close(
+        monkeypatch, binding, spec=_spec(binding.id, id=spec_id), lease=lease, runs=runs
+    )
+    db = _db()
+    job = _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed")
+    job.attempts = settings.GITHUB_JOB_MAX_ATTEMPTS
+    _run(db, job)
+    assert not any(isinstance(row, (GitHubSettlement, GitHubJob)) for row in _added(db))
+    assert binding.state == BindingState.AWAITING_MERGE.value
+    assert lease.status == "submitted"
+    kwargs = renders["render_evaluation"].call_args.kwargs
+    assert kwargs["outcome"] == "NOT_ACCEPTED"
+    assert kwargs["head_sha"] == HEAD
+    assert kwargs["reviewer_summary"] == REASON_CHECKS_NOT_PASSING
+    github_app.list_check_runs.assert_awaited_once_with(42, REPO, HEAD)
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [_run_check(status="in_progress", conclusion=None)],
+        [_run_check(head_sha="ffff111222")],
+        [],
+    ],
+)
+def test_merged_with_incomplete_head_checks_retries(monkeypatch, runs):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    spec_id = uuid.uuid4()
+    binding = _binding(
+        state=BindingState.AWAITING_MERGE.value,
+        evaluated_head_sha=HEAD,
+        current_spec_id=spec_id,
+        evaluated_spec_id=spec_id,
+        last_assessment={"outcome": "ACCEPTABLE", "findings": []},
+    )
+    lease = _close_lease(spec_id)
+    renders = _prepare_close(
+        monkeypatch, binding, spec=_spec(binding.id, id=spec_id), lease=lease, runs=runs
+    )
+    db = _db()
+    job = _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed")
+    job.attempts = 1
+    with pytest.raises(RetryableJobError):
+        _run(db, job)
+    assert not any(isinstance(row, (GitHubSettlement, GitHubJob)) for row in _added(db))
+    assert lease.status == "submitted"
+    renders["render_evaluation"].assert_not_called()
+
+
+def test_merged_with_unconfigured_checks_does_not_settle(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    spec_id = uuid.uuid4()
+    binding = _binding(
+        state=BindingState.AWAITING_MERGE.value,
+        evaluated_head_sha=HEAD,
+        evaluated_spec_id=spec_id,
+        current_spec_id=spec_id,
+        last_assessment={"findings": []},
+    )
+    lease = _close_lease(spec_id)
+    renders = _prepare_close(
+        monkeypatch,
+        binding,
+        spec=_spec(binding.id, id=spec_id, required_checks=[]),
+        lease=lease,
+        runs=[_run_check()],
+    )
+    db = _db()
+    _run(db, _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed"))
+    assert db.add.call_count == 0
+    assert binding.state == BindingState.AWAITING_MERGE.value
+    assert lease.status == "submitted"
+    assert renders["render_evaluation"].call_args.kwargs["reviewer_summary"] == (
+        REASON_CHECKS_NOT_PASSING
+    )
+
+
+def test_merged_check_lookup_unavailable_is_retryable(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    spec_id = uuid.uuid4()
+    binding = _binding(
+        state=BindingState.AWAITING_MERGE.value,
+        evaluated_head_sha=HEAD,
+        evaluated_spec_id=spec_id,
+        current_spec_id=spec_id,
+        last_assessment={"findings": []},
+    )
+    lease = _close_lease(spec_id)
+    _prepare_close(monkeypatch, binding, spec=_spec(binding.id, id=spec_id), lease=lease)
+    github_app.list_check_runs.side_effect = github_app.GitHubAPIError("unavailable", 503)
+    db = _db()
+    job = _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed")
+    with pytest.raises(RetryableJobError):
+        _run(db, job)
+    assert db.add.call_count == 0
+    assert binding.state == BindingState.AWAITING_MERGE.value
+    assert lease.status == "submitted"
+
+
+def test_merged_after_hold_expired_does_not_settle(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    spec_id = uuid.uuid4()
+    binding = _binding(
+        state=BindingState.AWAITING_MERGE.value,
+        evaluated_head_sha=HEAD,
+        evaluated_spec_id=spec_id,
+        current_spec_id=spec_id,
+        last_assessment={"findings": []},
+    )
+    lease = _close_lease(
+        spec_id, hold_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)
+    )
+    renders = _prepare_close(monkeypatch, binding, spec=_spec(binding.id, id=spec_id), lease=lease)
+    db = _db()
+    _run(db, _job(JobKind.PR_CLOSED, _merged_pr(HEAD), event="pull_request", action="closed"))
+    assert db.add.call_count == 0
+    assert binding.state == BindingState.AWAITING_MERGE.value
+    assert lease.status == "submitted"
+    assert renders["render_evaluation"].call_args.kwargs["reviewer_summary"] == REASON_HOLD_EXPIRED
+    github_app.list_check_runs.assert_not_called()
 
 
 def test_stale_spec_merge_does_not_settle(monkeypatch):

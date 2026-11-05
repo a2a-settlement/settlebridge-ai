@@ -75,6 +75,10 @@ REASON_STALE_SPEC = (
 REASON_NOT_AWAITING_MERGE = "binding is not awaiting merge"
 REASON_VIOLATION = "violation findings are present"
 REASON_NO_LEASE_SUBMISSION = "no lease-bound submission"
+REASON_HOLD_EXPIRED = "submitted hold has expired"
+REASON_CHECKS_NOT_PASSING = (
+    "required checks are not passing on the pull request's head commit"
+)
 REASON_SETTLEMENT_DISABLED = "settlement disabled"
 _WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 _SETTLED_STATES = frozenset(
@@ -334,6 +338,19 @@ def _has_violation(assessment: object) -> bool:
     )
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _hold_expired(hold_expires_at: object) -> bool:
+    """True when a hold is set and strictly before now. Naive datetimes are UTC."""
+    if not isinstance(hold_expires_at, datetime):
+        return False
+    return _as_utc(hold_expires_at) < _as_utc(datetime.now(timezone.utc))
+
+
 def merge_acceptance_decision(binding, merged_head_sha: str, lease) -> tuple[bool, str]:
     """Accept a merge only for the submitted lease's pinned spec.
 
@@ -346,6 +363,8 @@ def merge_acceptance_decision(binding, merged_head_sha: str, lease) -> tuple[boo
         or lease.pr_number != binding.pr_number
     ):
         return False, REASON_NO_LEASE_SUBMISSION
+    if _hold_expired(getattr(lease, "hold_expires_at", None)):
+        return False, REASON_HOLD_EXPIRED
     if _enum_value(binding.state) != BindingState.AWAITING_MERGE.value:
         return False, REASON_NOT_AWAITING_MERGE
     evaluated = binding.evaluated_head_sha
@@ -945,6 +964,39 @@ async def _create_advertised_bounty(
     await _flush(db)
 
 
+async def _pinned_lease_amount(db: AsyncSession, binding_id: uuid.UUID) -> int | None:
+    """Amount pinned by the active work or submitted lease, if there is one."""
+    lease = await get_active_lease(db, binding_id)
+    if lease is None:
+        return None
+    spec = await get_acceptance_spec(db, lease.spec_id)
+    if spec is None:
+        raise PermanentJobError("active lease acceptance spec is missing")
+    return int(spec.amount_ate)
+
+
+async def _drop_unleased_ledger_to_spec(
+    db: AsyncSession, binding: GitHubBountyBinding, spec_amount: int
+) -> None:
+    """Let the ledger follow the spec once no work or submitted lease remains.
+
+    A decrease applied while a lease was active keeps the higher obligation and
+    writes the lower spec immediately. A later unchanged-label sync must be
+    able to release that floor, because the spec hash already matches.
+    """
+    if await get_active_lease(db, binding.id) is not None:
+        return
+    ledger = await get_ledger_entry(db, binding.id)
+    if ledger is None or _enum_value(ledger.status) != LedgerStatus.ADVERTISED.value:
+        return
+    if int(ledger.amount_ate) <= spec_amount:
+        return
+    ledger.amount_ate = spec_amount
+    bounty = await get_bounty(db, binding.bounty_id)
+    if bounty is not None:
+        bounty.reward_amount = spec_amount
+
+
 async def _update_binding_terms(
     db: AsyncSession,
     *,
@@ -964,10 +1016,14 @@ async def _update_binding_terms(
         if current is None:
             raise PermanentJobError("binding acceptance spec is missing")
     if current is not None and current.content_hash == content_hash:
+        await _drop_unleased_ledger_to_spec(db, binding, int(current.amount_ate))
         await _refresh_advertised_comment(binding, current, amount_usd, installation_id)
         await _flush(db)
         return
-    user = await lock_user(db, link.funder_user_id)
+    # The ledger funder keeps the obligation after the repo link's funder changes.
+    ledger = await get_ledger_entry(db, binding.id)
+    funder_id = link.funder_user_id if ledger is None else ledger.funder_user_id
+    user = await lock_user(db, funder_id)
     if user is None:
         await _comment_not_advertised(
             installation_id,
@@ -978,11 +1034,12 @@ async def _update_binding_terms(
         )
         await _flush(db)
         return
-    ledger = await get_ledger_entry(db, binding.id)
     previous = 0
     if ledger is not None and _enum_value(ledger.status) == LedgerStatus.ADVERTISED.value:
         previous = int(ledger.amount_ate)
-    amount_ate = int(content["amount_ate"])
+    label_amount = int(content["amount_ate"])
+    pinned = await _pinned_lease_amount(db, binding.id)
+    amount_ate = label_amount if pinned is None else max(label_amount, pinned)
     delta = amount_ate - previous
     if delta > 0:
         if not user.exchange_bot_id:
@@ -1232,6 +1289,119 @@ async def handle_pull_request_updated(db: AsyncSession, job: GitHubJob) -> None:
     )
 
 
+def _stored_assessment(binding) -> dict:
+    if isinstance(binding.last_assessment, dict):
+        return binding.last_assessment
+    return {}
+
+
+def _stored_outcome(binding) -> str:
+    outcome = _stored_assessment(binding).get("outcome")
+    return outcome if isinstance(outcome, str) else ""
+
+
+def _state_for_stored_evaluation(binding) -> str:
+    """State implied by the stored mediator result, including a review clear."""
+    assessment = _stored_assessment(binding)
+    outcome = _stored_outcome(binding)
+    cleared_by = binding.review_cleared_by
+    if (
+        isinstance(cleared_by, str)
+        and cleared_by
+        and outcome == "NEEDS_REVIEW"
+        and not _has_violation(assessment)
+    ):
+        return BindingState.AWAITING_MERGE.value
+    return outcome_to_state(outcome).value
+
+
+def _review_summary(binding) -> str | None:
+    opinion = _stored_assessment(binding).get("reviewer_opinion")
+    summary = opinion.get("summary") if isinstance(opinion, dict) else None
+    text = summary if isinstance(summary, str) and summary else None
+    cleared_by = binding.review_cleared_by
+    if isinstance(cleared_by, str) and cleared_by:
+        note = f"Review cleared by {cleared_by}."
+        if text and note not in text:
+            text = f"{text} {note}"
+        elif text is None:
+            text = note
+    return text
+
+
+async def _comment_stored_evaluation(binding, installation_id: int, spec, head_sha: str) -> None:
+    outcome = _stored_outcome(binding)
+    if not outcome:
+        return
+    await _post_evaluation(
+        binding,
+        installation_id,
+        outcome=outcome,
+        head_sha=head_sha,
+        spec_version=spec.version,
+        findings=_finding_list(_stored_assessment(binding).get("findings")),
+        reviewer_summary=_review_summary(binding),
+    )
+
+
+async def _restore_passed_checks(
+    db: AsyncSession,
+    binding: GitHubBountyBinding,
+    installation_id: int,
+    spec,
+    head_sha: str,
+) -> None:
+    desired = _state_for_stored_evaluation(binding)
+    if _enum_value(binding.state) == desired:
+        return
+    binding.state = desired
+    await _comment_stored_evaluation(binding, installation_id, spec, head_sha)
+    await _flush(db)
+
+
+async def _demote_for_checks(
+    db: AsyncSession,
+    binding: GitHubBountyBinding,
+    installation_id: int,
+    spec,
+    head_sha: str,
+    result: ChecksResult,
+) -> None:
+    """Required checks no longer pass. Advertised is the existing not-passing state."""
+    binding.state = BindingState.ADVERTISED.value
+    findings = _finding_list(_stored_assessment(binding).get("findings"))
+    if result.state == "failed":
+        await _post_evaluation(
+            binding,
+            installation_id,
+            outcome="REJECTED_CHECKS",
+            head_sha=head_sha,
+            spec_version=spec.version,
+            findings=findings,
+            failed_checks=list(result.failed),
+        )
+    elif result.state == "unconfigured":
+        await _post_evaluation(
+            binding,
+            installation_id,
+            outcome="UNCONFIGURED",
+            head_sha=head_sha,
+            spec_version=spec.version,
+            findings=[],
+        )
+    else:
+        await _post_evaluation(
+            binding,
+            installation_id,
+            outcome="NOT_ACCEPTED",
+            head_sha=head_sha,
+            spec_version=spec.version,
+            findings=findings,
+            reviewer_summary=REASON_CHECKS_NOT_PASSING,
+        )
+    await _flush(db)
+
+
 async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
     _event, _action, data = _webhook_parts(job)
     suite = data.get("check_suite")
@@ -1249,11 +1419,10 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
         lease = await get_submitted_lease(db, binding.id)
         if lease is None or lease.pr_number != pr_number:
             continue
-        if (
+        already_evaluated = (
             binding.evaluated_head_sha == head_sha
             and binding.evaluated_spec_id == lease.spec_id
-        ):
-            continue
+        )
         spec = await get_acceptance_spec(db, lease.spec_id)
         if spec is None:
             logger.info("acceptance spec %s is missing", lease.spec_id)
@@ -1270,6 +1439,14 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
         if not isinstance(runs, list):
             raise PermanentJobError("check run response is not a list")
         result = evaluate_required_checks(spec.required_checks or [], runs, head_sha)
+        if already_evaluated:
+            # The mediator result is for this head and spec. Re-running checks
+            # must not call it again; a failing rerun only drops the merge gate.
+            if result.state == "passed":
+                await _restore_passed_checks(db, binding, installation_id, spec, head_sha)
+            elif _state_is(binding, BindingState.AWAITING_MERGE, BindingState.NEEDS_REVIEW):
+                await _demote_for_checks(db, binding, installation_id, spec, head_sha, result)
+            continue
         if result.state == "pending":
             continue
         if result.state == "unconfigured":
@@ -1462,6 +1639,7 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
         _unbind_pull_request(binding)
         await _flush(db)
         return
+    # The audited diff is the pull request head that was merged, not merge_commit_sha.
     head = pull_request.get("head") if isinstance(pull_request.get("head"), dict) else {}
     merged_sha = head.get("sha")
     if not isinstance(merged_sha, str) or not merged_sha:
@@ -1496,6 +1674,31 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
             spec_version=spec.version if spec is not None else 0,
             findings=_finding_list(assessment.get("findings")),
             reviewer_summary=reason,
+        )
+        await _flush(db)
+        return
+    spec = await get_acceptance_spec(db, lease.spec_id)
+    if spec is None:
+        raise PermanentJobError("leased acceptance spec is missing")
+    runs = await _github_call(github_app.list_check_runs(installation_id, repo, merged_sha))
+    if not isinstance(runs, list):
+        raise PermanentJobError("check run response is not a list")
+    checks = evaluate_required_checks(spec.required_checks or [], runs, merged_sha)
+    # Nothing re-runs this decision for a closed PR, so wait for running or missing
+    # checks while attempts remain; the final attempt reports them as not passing.
+    if checks.state == "pending" and int(job.attempts or 0) < settings.GITHUB_JOB_MAX_ATTEMPTS:
+        raise RetryableJobError("required checks are not complete on the merged head")
+    if checks.state != "passed":
+        assessment = binding.last_assessment if isinstance(binding.last_assessment, dict) else {}
+        await _post_evaluation(
+            binding,
+            installation_id,
+            outcome="NOT_ACCEPTED",
+            head_sha=merged_sha,
+            spec_version=spec.version,
+            findings=_finding_list(assessment.get("findings")),
+            failed_checks=list(checks.failed) or None,
+            reviewer_summary=REASON_CHECKS_NOT_PASSING,
         )
         await _flush(db)
         return

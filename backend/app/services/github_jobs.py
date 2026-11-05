@@ -16,7 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session
-from app.models.github import GitHubJob, JobStatus
+from app.models.github import (
+    GitHubJob,
+    GitHubSettlement,
+    JobKind,
+    JobStatus,
+    SettlementState,
+)
 from app.services.github_bounty_service import handle_job
 from app.services.github_errors import PermanentJobError
 from app.services.github_leases import expire_stale_leases
@@ -147,6 +153,92 @@ async def run_due_jobs(session_factory=async_session, limit: int = 10) -> int:
     return len(job_ids)
 
 
+_RESUMABLE_SETTLEMENT_STATES = frozenset(
+    {
+        SettlementState.PENDING.value,
+        SettlementState.ESCROW_CREATED.value,
+        SettlementState.DELIVERED.value,
+    }
+)
+_OPEN_JOB_STATUSES = frozenset({JobStatus.PENDING.value, JobStatus.RUNNING.value})
+
+
+def _text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    enumerated = getattr(value, "value", None)
+    if isinstance(enumerated, str):
+        return enumerated
+    return str(value)
+
+
+def _open_advance_targets(jobs) -> set[str]:
+    covered: set[str] = set()
+    for job in jobs:
+        if _text(getattr(job, "kind", "")) != JobKind.ADVANCE_SETTLEMENT.value:
+            continue
+        if _text(getattr(job, "status", "")) not in _OPEN_JOB_STATUSES:
+            continue
+        payload = getattr(job, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        raw = payload.get("settlement_id")
+        if isinstance(raw, uuid.UUID):
+            covered.add(str(raw))
+        elif isinstance(raw, str) and raw:
+            covered.add(raw)
+    return covered
+
+
+async def enqueue_pending_settlements(db: AsyncSession) -> int:
+    """Queue an advance job for each open settlement that does not already have one.
+
+    Settlement stays disabled until ``GITHUB_SETTLEMENT_ENABLED`` is true, and an
+    advance job that runs while the flag is off is marked done. Re-queueing here
+    lets those settlements resume after the flag is turned on. ``released`` and
+    ``failed`` are terminal: a released row is finalized by the job that released
+    it, and queueing another would enqueue forever. Commits only when a job is
+    inserted. Returns how many jobs were inserted.
+    """
+    if not settings.GITHUB_SETTLEMENT_ENABLED:
+        return 0
+    settlements = (
+        await db.execute(
+            select(GitHubSettlement).where(
+                GitHubSettlement.state.in_(_RESUMABLE_SETTLEMENT_STATES)
+            )
+        )
+    ).scalars().all()
+    jobs = (
+        await db.execute(
+            select(GitHubJob).where(
+                GitHubJob.kind == JobKind.ADVANCE_SETTLEMENT.value,
+                GitHubJob.status.in_(_OPEN_JOB_STATUSES),
+            )
+        )
+    ).scalars().all()
+    covered = _open_advance_targets(jobs)
+    added = 0
+    for settlement in settlements:
+        if _text(settlement.state) not in _RESUMABLE_SETTLEMENT_STATES:
+            continue
+        if str(settlement.id) in covered:
+            continue
+        db.add(
+            GitHubJob(
+                id=uuid.uuid4(),
+                kind=JobKind.ADVANCE_SETTLEMENT.value,
+                payload={"settlement_id": str(settlement.id)},
+                status=JobStatus.PENDING.value,
+            )
+        )
+        added += 1
+    if added:
+        logger.info("queued %s pending GitHub settlement job(s)", added)
+        await db.commit()
+    return added
+
+
 async def run_github_job_loop() -> None:
     """Poll forever. An iteration error is logged; the loop stays up."""
     logger.info(
@@ -163,4 +255,9 @@ async def run_github_job_loop() -> None:
                 await expire_stale_leases(db)
         except Exception:
             logger.exception("GitHub lease expiry sweep failed")
+        try:
+            async with async_session() as db:
+                await enqueue_pending_settlements(db)
+        except Exception:
+            logger.exception("GitHub pending settlement enqueue failed")
         await asyncio.sleep(settings.GITHUB_JOB_POLL_INTERVAL_S)

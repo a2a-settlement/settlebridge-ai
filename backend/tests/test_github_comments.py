@@ -63,7 +63,8 @@ def test_advertised_checks_balance_and_does_not_claim_funds_reserved():
     assert f"https://market.example/bounties/{BOUNTY}" in body
     note = (
         "Payment happens only after the maintainer merges the PR, "
-        "required checks pass on the merged commit, and no policy violations are open."
+        "required checks pass on the pull request's head commit that was merged, "
+        "and no policy violations are open."
     )
     assert note in body
     lowered = body.lower()
