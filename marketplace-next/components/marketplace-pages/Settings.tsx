@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import api from "@/services/api";
+import GitHubIdentity from "@/components/marketplace-pages/GitHubIdentity";
 
 interface ManagedBot {
   id: string;
@@ -367,6 +368,8 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      <GitHubIdentity />
 
       {/* Managed Bots */}
       {user.exchange_bot_id && (

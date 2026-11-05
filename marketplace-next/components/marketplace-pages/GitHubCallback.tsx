@@ -1,0 +1,145 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import axios from "axios";
+import { AlertCircle, ArrowLeft, CheckCircle, Link as LinkIcon } from "lucide-react";
+import api from "@/services/api";
+
+type Phase = "working" | "linked" | "unavailable" | "failed";
+
+const UNAVAILABLE = "GitHub linking isn't available yet.";
+
+function failureMessage(
+  oauthError: string | null,
+  code: string | null,
+  state: string | null
+): string {
+  if (oauthError === "access_denied") return "GitHub linking was cancelled.";
+  if (oauthError) return "GitHub did not complete linking.";
+  if (!code || !state) {
+    return "This page is missing the details needed to finish linking GitHub.";
+  }
+  return "";
+}
+
+function stripOAuthParams() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("code") && !url.searchParams.has("state")) return;
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${url.pathname}${url.search}${url.hash}`
+  );
+}
+
+export default function GitHubCallback() {
+  const searchParams = useSearchParams();
+  const code = searchParams.get("code");
+  const state = searchParams.get("state");
+  const oauthError = searchParams.get("error");
+  // The authorization code is single-use. Strict Mode runs this effect twice.
+  const posted = useRef(false);
+
+  const [phase, setPhase] = useState<Phase>(() =>
+    oauthError || !code || !state ? "failed" : "working"
+  );
+  const [message, setMessage] = useState(() => failureMessage(oauthError, code, state));
+  const [login, setLogin] = useState<string | null>(null);
+
+  useEffect(() => {
+    stripOAuthParams();
+    if (posted.current) return;
+    posted.current = true;
+
+    if (oauthError || !code || !state) {
+      setPhase("failed");
+      setMessage(failureMessage(oauthError, code, state));
+      return;
+    }
+
+    const authorizationCode = code;
+    const authorizationState = state;
+
+    void (async () => {
+      try {
+        const { data } = await api.post<{ login?: string | null }>(
+          "/v1/github/identity/callback",
+          { code: authorizationCode, state: authorizationState }
+        );
+        setLogin(typeof data.login === "string" ? data.login : null);
+        setPhase("linked");
+      } catch (err: unknown) {
+        const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+        if (status === 503) {
+          setPhase("unavailable");
+          setMessage(UNAVAILABLE);
+          return;
+        }
+        if (status === 409) {
+          setPhase("failed");
+          setMessage(
+            "That GitHub account is already linked to another SettleBridge user."
+          );
+          return;
+        }
+        if (status === 400) {
+          setPhase("failed");
+          setMessage(
+            "Linking failed. The authorization code or state was invalid, expired, or issued for a different signed-in user."
+          );
+          return;
+        }
+        setPhase("failed");
+        setMessage("Couldn't finish linking GitHub.");
+      }
+    })();
+  }, [code, oauthError, state]);
+
+  return (
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="bg-white border border-gray-200 rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-xl bg-navy-900 flex items-center justify-center">
+            <LinkIcon className="w-5 h-5 text-money" />
+          </div>
+          <h1 className="font-semibold text-navy-900">Link GitHub</h1>
+        </div>
+
+        {phase === "working" && (
+          <p className="text-sm text-gray-600">Linking your GitHub account...</p>
+        )}
+
+        {phase === "linked" && (
+          <div className="bg-green-50 text-green-700 rounded-lg p-3 flex items-center gap-2 text-sm">
+            <CheckCircle className="w-4 h-4 flex-shrink-0" />
+            <span>{login ? `Linked as @${login}` : "GitHub account linked."}</span>
+          </div>
+        )}
+
+        {phase === "unavailable" && (
+          <p className="text-sm text-gray-600">{UNAVAILABLE}</p>
+        )}
+
+        {phase === "failed" && (
+          <div className="bg-red-50 text-red-700 rounded-lg p-3 flex items-center gap-2 text-sm">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {message}
+          </div>
+        )}
+
+        {phase !== "working" && (
+          <Link
+            href="/dashboard/settings"
+            className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-navy-700 mt-4"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back to settings
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
