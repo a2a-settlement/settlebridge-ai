@@ -22,16 +22,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.bounty import Bounty, BountyMode, BountyStatus, Difficulty, ProvenanceTier
 from app.models.github import (
+    ACTIVE_LEASE_STATUSES,
     AcceptanceSpec,
     BindingState,
     FunderLedgerEntry,
     GitHubBountyBinding,
     GitHubInstallation,
     GitHubJob,
+    GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
     JobKind,
     JobStatus,
+    LeaseStatus,
     LedgerStatus,
     SettlementState,
 )
@@ -67,11 +70,11 @@ REASON_MERGED_SHA_MISMATCH = (
     "merged commit differs from evaluated commit; re-evaluation required"
 )
 REASON_STALE_SPEC = (
-    "evaluation is not under the current acceptance spec; re-evaluation required"
+    "evaluation is not under the leased acceptance spec; re-evaluation required"
 )
 REASON_NOT_AWAITING_MERGE = "binding is not awaiting merge"
 REASON_VIOLATION = "violation findings are present"
-REASON_SOLVER_UNATTRIBUTED = "solver not attributed (leases arrive in a later phase)"
+REASON_NO_LEASE_SUBMISSION = "no lease-bound submission"
 REASON_SETTLEMENT_DISABLED = "settlement disabled"
 _WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 _SETTLED_STATES = frozenset(
@@ -82,13 +85,6 @@ _PR_IGNORE_STATES = frozenset(
         BindingState.SETTLEMENT_PENDING.value,
         BindingState.PAID.value,
         BindingState.CANCELLED.value,
-    }
-)
-_CLEAR_ON_UNBIND = frozenset(
-    {
-        BindingState.EVALUATING.value,
-        BindingState.NEEDS_REVIEW.value,
-        BindingState.AWAITING_MERGE.value,
     }
 )
 _KNOWN_OUTCOMES = {
@@ -338,16 +334,24 @@ def _has_violation(assessment: object) -> bool:
     )
 
 
-def merge_acceptance_decision(binding, merged_head_sha: str) -> tuple[bool, str]:
+def merge_acceptance_decision(binding, merged_head_sha: str, lease) -> tuple[bool, str]:
+    """Accept a merge only for the submitted lease's pinned spec.
+
+    ``lease`` may be None. Label edits change ``current_spec_id`` for future
+    leases and do not invalidate an evaluation pinned to ``lease.spec_id``.
+    """
+    if (
+        lease is None
+        or _enum_value(lease.status) != LeaseStatus.SUBMITTED.value
+        or lease.pr_number != binding.pr_number
+    ):
+        return False, REASON_NO_LEASE_SUBMISSION
     if _enum_value(binding.state) != BindingState.AWAITING_MERGE.value:
         return False, REASON_NOT_AWAITING_MERGE
     evaluated = binding.evaluated_head_sha
     if not evaluated or merged_head_sha != evaluated:
         return False, REASON_MERGED_SHA_MISMATCH
-    if (
-        binding.evaluated_spec_id is None
-        or binding.evaluated_spec_id != binding.current_spec_id
-    ):
+    if binding.evaluated_spec_id is None or binding.evaluated_spec_id != lease.spec_id:
         return False, REASON_STALE_SPEC
     if _has_violation(binding.last_assessment):
         return False, REASON_VIOLATION
@@ -630,6 +634,23 @@ async def get_settlement_for_binding(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_submitted_lease(db: AsyncSession, binding_id: uuid.UUID) -> GitHubLease | None:
+    stmt = select(GitHubLease).where(
+        GitHubLease.binding_id == binding_id,
+        GitHubLease.status == LeaseStatus.SUBMITTED.value,
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def get_active_lease(db: AsyncSession, binding_id: uuid.UUID) -> GitHubLease | None:
+    """The work or submitted lease, if any. A binding has at most one."""
+    stmt = select(GitHubLease).where(
+        GitHubLease.binding_id == binding_id,
+        GitHubLease.status.in_(ACTIVE_LEASE_STATUSES),
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 def _build_issue_content(parsed: ParsedLabels, issue_body: str | None, link) -> dict:
     amount = parsed.amount_usd
     if amount is None:
@@ -773,6 +794,17 @@ def _clear_evaluation(binding: GitHubBountyBinding) -> None:
     binding.review_cleared_by = None
 
 
+def _unbind_pull_request(binding: GitHubBountyBinding) -> None:
+    binding.pr_number = None
+    binding.lease_holder_agent_id = None
+    _clear_evaluation(binding)
+
+
+def _release_lease(lease, reason: str) -> None:
+    lease.status = LeaseStatus.RELEASED.value
+    lease.release_reason = reason
+
+
 def _bounty_status(bounty) -> str:
     return _enum_value(bounty.status)
 
@@ -785,6 +817,12 @@ async def _cancel_binding(
 ) -> None:
     if _state_is(binding, BindingState.SETTLEMENT_PENDING, BindingState.PAID):
         return
+    lease = await get_active_lease(db, binding.id)
+    if lease is not None:
+        submitted = _enum_value(lease.status) == LeaseStatus.SUBMITTED.value
+        _release_lease(lease, "bounty_cancelled")
+        if submitted:
+            _unbind_pull_request(binding)
     if not _state_is(binding, BindingState.CANCELLED):
         binding.state = BindingState.CANCELLED.value
     ledger = await get_ledger_entry(db, binding.id)
@@ -1150,41 +1188,48 @@ async def handle_issue_closed(db: AsyncSession, job: GitHubJob) -> None:
 
 
 async def handle_pull_request_updated(db: AsyncSession, job: GitHubJob) -> None:
+    """A pull request is payable only after a lease submission binds it.
+
+    Closing references do not bind. A new head on the bound pull request drops
+    the previous evaluation. Settlement, paid, and cancelled bindings are left
+    alone.
+    """
     _event, action, data = _webhook_parts(job)
     pull_request = data.get("pull_request")
     if not isinstance(pull_request, dict):
         raise PermanentJobError("webhook payload is missing pull_request")
     repo = _repository_full_name(data)
     pr_number = _positive_int(pull_request.get("number"), "pull_request.number")
-    body = pull_request.get("body")
-    issue_number = parse_closing_reference(body if isinstance(body, str) else None, repo)
-    if issue_number is None:
-        return
-    binding = await get_binding_by_issue(db, repo, issue_number)
-    if binding is None or _enum_value(binding.state) in _PR_IGNORE_STATES:
-        return
-    if binding.pr_number is not None and binding.pr_number != pr_number:
-        logger.info(
-            "ignoring PR %s for %s#%s; already bound to PR %s",
-            pr_number,
-            repo,
-            issue_number,
-            binding.pr_number,
-        )
-        return
-    is_new = binding.pr_number is None
-    binding.pr_number = pr_number
-    if is_new or action == "synchronize":
+    binding = await get_binding_by_pull_request(db, repo, pr_number)
+    if binding is not None and binding.pr_number == pr_number:
+        if _enum_value(binding.state) in _PR_IGNORE_STATES:
+            return
+        if action != "synchronize":
+            return
         head = pull_request.get("head") if isinstance(pull_request.get("head"), dict) else {}
         head_sha = head.get("sha")
         if not isinstance(head_sha, str) or not head_sha:
             raise PermanentJobError("pull request is missing head sha")
-        # A redelivery of this same head must not wipe an evaluation recorded after
-        # the first delivery of the event.
-        if is_new or binding.evaluated_head_sha != head_sha:
-            _clear_evaluation(binding)
-            binding.state = BindingState.ADVERTISED.value
-    await _flush(db)
+        # A redelivery of the evaluated head must not wipe that evaluation.
+        if binding.evaluated_head_sha == head_sha:
+            return
+        _clear_evaluation(binding)
+        binding.state = BindingState.ADVERTISED.value
+        await _flush(db)
+        return
+    body = pull_request.get("body")
+    issue_number = parse_closing_reference(body if isinstance(body, str) else None, repo)
+    if issue_number is None:
+        return
+    referenced = await get_binding_by_issue(db, repo, issue_number)
+    if referenced is None or referenced.pr_number == pr_number:
+        return
+    logger.info(
+        "PR %s references %s#%s but is not the bound pull request; not payable",
+        pr_number,
+        repo,
+        issue_number,
+    )
 
 
 async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
@@ -1201,18 +1246,17 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
         binding = await get_binding_by_pull_request(db, repo, pr_number)
         if binding is None or _enum_value(binding.state) in _PR_IGNORE_STATES:
             continue
+        lease = await get_submitted_lease(db, binding.id)
+        if lease is None or lease.pr_number != pr_number:
+            continue
         if (
             binding.evaluated_head_sha == head_sha
-            and binding.current_spec_id is not None
-            and binding.evaluated_spec_id == binding.current_spec_id
+            and binding.evaluated_spec_id == lease.spec_id
         ):
             continue
-        if binding.current_spec_id is None:
-            logger.info("binding %s has no acceptance spec", binding.id)
-            continue
-        spec = await get_acceptance_spec(db, binding.current_spec_id)
+        spec = await get_acceptance_spec(db, lease.spec_id)
         if spec is None:
-            logger.info("acceptance spec %s is missing", binding.current_spec_id)
+            logger.info("acceptance spec %s is missing", lease.spec_id)
             continue
         pull_request = await _github_call(
             github_app.get_pull_request(installation_id, repo, pr_number)
@@ -1280,7 +1324,7 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
             "git_diff": diff,
             "policy": copy.deepcopy(spec.policy or {}),
             "bounty_id": str(binding.bounty_id),
-            "solver_agent_id": binding.lease_holder_agent_id,
+            "solver_agent_id": lease.agent_id,
             "enable_reviewer": True,
         }
         try:
@@ -1299,7 +1343,7 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
         stored["spec_id"] = str(spec.id)
         binding.last_assessment = stored
         binding.evaluated_head_sha = head_sha
-        binding.evaluated_spec_id = binding.current_spec_id
+        binding.evaluated_spec_id = lease.spec_id
         # A maintainer clearance applied to the previous evaluation only.
         binding.review_cleared_by = None
         outcome = str(assessment.get("outcome") or "")
@@ -1352,6 +1396,10 @@ async def handle_review_clear_comment(db: AsyncSession, job: GitHubJob) -> None:
     binding = await get_binding_by_pull_request(db, repo, pr_number)
     if binding is None or not _state_is(binding, BindingState.NEEDS_REVIEW):
         return
+    lease = await get_submitted_lease(db, binding.id)
+    if lease is None or lease.pr_number != pr_number:
+        logger.info("ignoring review clear; no submitted lease for PR %s", pr_number)
+        return
     pull_request = await _github_call(github_app.get_pull_request(installation_id, repo, pr_number))
     if not isinstance(pull_request, dict):
         raise PermanentJobError("pull request response is not an object")
@@ -1371,9 +1419,7 @@ async def handle_review_clear_comment(db: AsyncSession, job: GitHubJob) -> None:
         return
     binding.state = BindingState.AWAITING_MERGE.value
     binding.review_cleared_by = login
-    spec = None
-    if binding.current_spec_id is not None:
-        spec = await get_acceptance_spec(db, binding.current_spec_id)
+    spec = await get_acceptance_spec(db, lease.spec_id)
     opinion = assessment.get("reviewer_opinion")
     prior = opinion.get("summary") if isinstance(opinion, dict) else None
     summary = f"Review cleared by {login}."
@@ -1391,9 +1437,7 @@ async def handle_review_clear_comment(db: AsyncSession, job: GitHubJob) -> None:
     await _flush(db)
 
 
-def _acceptance_comment_reason(binding: GitHubBountyBinding) -> str | None:
-    if not binding.lease_holder_agent_id:
-        return REASON_SOLVER_UNATTRIBUTED
+def _acceptance_comment_reason() -> str | None:
     if not settings.GITHUB_SETTLEMENT_ENABLED:
         return REASON_SETTLEMENT_DISABLED
     return None
@@ -1411,18 +1455,35 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
     if binding is None or _enum_value(binding.state) in _PR_IGNORE_STATES:
         return
     if not pull_request.get("merged"):
-        if _enum_value(binding.state) in _CLEAR_ON_UNBIND:
-            binding.state = BindingState.ADVERTISED.value
-        binding.pr_number = None
-        _clear_evaluation(binding)
+        lease = await get_submitted_lease(db, binding.id)
+        if lease is not None and lease.pr_number == pr_number:
+            _release_lease(lease, "pr_closed_unmerged")
+        binding.state = BindingState.ADVERTISED.value
+        _unbind_pull_request(binding)
         await _flush(db)
         return
     head = pull_request.get("head") if isinstance(pull_request.get("head"), dict) else {}
     merged_sha = head.get("sha")
     if not isinstance(merged_sha, str) or not merged_sha:
         raise PermanentJobError("merged pull request is missing head sha")
-    accepted, reason = merge_acceptance_decision(binding, merged_sha)
+    lease = await get_submitted_lease(db, binding.id)
+    accepted, reason = merge_acceptance_decision(binding, merged_sha, lease)
     if not accepted:
+        if reason == REASON_NO_LEASE_SUBMISSION:
+            body = github_comments.render_not_payable(
+                bounty_id=binding.bounty_id, reason=reason
+            )
+            marker = github_comments.bounty_marker(binding.bounty_id)
+            binding.comment_id = await _sticky(
+                installation_id,
+                repo,
+                binding.issue_number,
+                marker,
+                body,
+                binding.comment_id,
+            )
+            await _flush(db)
+            return
         spec = None
         if binding.current_spec_id is not None:
             spec = await get_acceptance_spec(db, binding.current_spec_id)
@@ -1443,11 +1504,11 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
         settlement = GitHubSettlement(
             id=uuid.uuid4(),
             binding_id=binding.id,
-            spec_id=binding.evaluated_spec_id,
-            solver_agent_id=binding.lease_holder_agent_id,
+            spec_id=lease.spec_id,
+            solver_agent_id=lease.agent_id,
             head_sha=merged_sha,
             state=SettlementState.PENDING.value,
-            idempotency_prefix=f"gh:{binding.id}:{binding.evaluated_spec_id}",
+            idempotency_prefix=f"gh:{binding.id}:{lease.spec_id}",
         )
         db.add(settlement)
         await _flush(db)
@@ -1459,11 +1520,12 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
                 status=JobStatus.PENDING.value,
             )
         )
+    lease.status = LeaseStatus.SETTLED.value
     binding.state = BindingState.SETTLEMENT_PENDING.value
     body = github_comments.render_accepted_payment_pending(
         bounty_id=binding.bounty_id,
         head_sha=merged_sha,
-        reason=_acceptance_comment_reason(binding),
+        reason=_acceptance_comment_reason(),
     )
     marker = github_comments.bounty_marker(binding.bounty_id)
     binding.comment_id = await _sticky(

@@ -156,6 +156,18 @@ def render_evaluation(
     return "\n".join(lines)
 
 
+def render_not_payable(*, bounty_id: uuid.UUID | str, reason: str) -> str:
+    return "\n".join(
+        [
+            bounty_marker(bounty_id),
+            "",
+            "### Not payable",
+            "",
+            reason,
+        ]
+    )
+
+
 def render_accepted_payment_pending(
     *, bounty_id: uuid.UUID | str, head_sha: str, reason: str | None = None
 ) -> str:

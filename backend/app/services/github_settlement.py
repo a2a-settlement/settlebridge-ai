@@ -21,8 +21,10 @@ from app.models.github import (
     BindingState,
     FunderLedgerEntry,
     GitHubBountyBinding,
+    GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
+    LeaseStatus,
     LedgerStatus,
     SettlementState,
 )
@@ -53,6 +55,7 @@ class SettlementContext:
     repo_link: GitHubRepoLink | None
     ledger: FunderLedgerEntry | None
     provider: User | None
+    lease: GitHubLease | None
 
 
 def next_action(state: str, escrow_status: str | None, delivered: bool | None) -> str:
@@ -143,14 +146,21 @@ async def load_settlement_graph(
     ledger = await _scalar(
         db, select(FunderLedgerEntry).where(FunderLedgerEntry.binding_id == binding.id)
     )
-    provider = None
-    if settlement.solver_agent_id:
-        provider = await _scalar(
-            db,
-            select(User)
-            .where(User.exchange_bot_id == settlement.solver_agent_id)
-            .limit(1),
+    # Pay the lease holder. exchange_bot_id is not unique, so the user comes from
+    # the settled lease's user_id. solver_agent_id stays the exchange provider id.
+    lease = await _scalar(
+        db,
+        select(GitHubLease)
+        .where(
+            GitHubLease.binding_id == settlement.binding_id,
+            GitHubLease.status == LeaseStatus.SETTLED.value,
         )
+        .order_by(GitHubLease.updated_at.desc(), GitHubLease.created_at.desc())
+        .limit(1),
+    )
+    provider = None
+    if lease is not None:
+        provider = await _scalar(db, select(User).where(User.id == lease.user_id))
     return SettlementContext(
         settlement=settlement,
         binding=binding,
@@ -160,6 +170,7 @@ async def load_settlement_graph(
         repo_link=repo_link,
         ledger=ledger,
         provider=provider,
+        lease=lease,
     )
 
 
@@ -189,7 +200,11 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
     if state == SettlementState.RELEASED.value:
         await _finalize(db, ctx)
         return settlement
-    if not settings.GITHUB_SETTLEMENT_ENABLED or not settlement.solver_agent_id:
+    if (
+        not settings.GITHUB_SETTLEMENT_ENABLED
+        or not settlement.solver_agent_id
+        or ctx.lease is None
+    ):
         return settlement
 
     for _ in range(_MAX_TRANSITIONS):

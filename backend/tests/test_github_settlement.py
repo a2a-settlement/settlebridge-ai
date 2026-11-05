@@ -20,6 +20,7 @@ from app.models.github import (  # noqa: E402
     AcceptanceSpec,
     FunderLedgerEntry,
     GitHubBountyBinding,
+    GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
 )
@@ -181,6 +182,14 @@ class _World:
         self.provider = SimpleNamespace(
             id=uuid.uuid4(), exchange_bot_id="solver-1", exchange_api_key="ate_solver"
         )
+        self.lease = SimpleNamespace(
+            id=uuid.uuid4(),
+            binding_id=_BINDING_ID,
+            user_id=self.provider.id,
+            agent_id="solver-1",
+            spec_id=_SPEC_ID,
+            status="settled",
+        )
         self.repo_link = SimpleNamespace(installation_id=99, repo_full_name="octo/hello")
         self.ledger = SimpleNamespace(binding_id=_BINDING_ID, status="advertised")
         self.ctx = SettlementContext(
@@ -192,6 +201,7 @@ class _World:
             repo_link=self.repo_link,
             ledger=self.ledger,
             provider=self.provider,
+            lease=self.lease,
         )
         self.commits: list[tuple] = []
         self.create = MagicMock(return_value={"escrow_id": "esc-1"})
@@ -257,6 +267,21 @@ def _forbid_exchange(world: _World) -> None:
     world.deliver.side_effect = _forbid
     world.release.side_effect = _forbid
     world.get_escrow.side_effect = _forbid
+
+
+def test_missing_settled_lease_makes_no_exchange_calls(monkeypatch):
+    world = _world(monkeypatch)
+    world.ctx.lease = None
+    _forbid_exchange(world)
+    result = _run(world)
+    assert result is world.settlement
+    assert world.settlement.state == "pending"
+    assert world.settlement.escrow_id is None
+    assert world.commits == []
+    assert world.create.call_count == 0
+    assert world.deliver.call_count == 0
+    assert world.release.call_count == 0
+    assert world.get_escrow.call_count == 0
 
 
 def test_disabled_or_missing_solver_stays_pending(monkeypatch):
@@ -583,7 +608,7 @@ def test_rerun_released_makes_no_exchange_calls(monkeypatch):
     world.comment.assert_awaited()
 
 
-def test_loader_locks_settlement_row(monkeypatch):
+def _load_graph(lease):
     settlement = SimpleNamespace(
         id=_SETTLEMENT_ID,
         binding_id=_BINDING_ID,
@@ -596,7 +621,10 @@ def test_loader_locks_settlement_row(monkeypatch):
     spec = SimpleNamespace(id=_SPEC_ID)
     bounty = SimpleNamespace(id=_BOUNTY_ID, requester_id=_FUNDER_ID)
     funder = SimpleNamespace(id=_FUNDER_ID, exchange_api_key="ate_funder")
-    provider = SimpleNamespace(exchange_bot_id="solver-1", exchange_api_key="ate_solver")
+    provider_id = uuid.uuid4()
+    provider = SimpleNamespace(id=provider_id, exchange_api_key="ate_solver")
+    if lease is not None:
+        lease.user_id = provider_id
     repo_link = SimpleNamespace(installation_id=99)
     ledger = SimpleNamespace(status="advertised")
     rows = {
@@ -606,6 +634,7 @@ def test_loader_locks_settlement_row(monkeypatch):
         Bounty: bounty,
         GitHubRepoLink: repo_link,
         FunderLedgerEntry: ledger,
+        GitHubLease: lease,
     }
     executed = []
     user_calls = {"n": 0}
@@ -628,15 +657,40 @@ def test_loader_locks_settlement_row(monkeypatch):
     db = MagicMock()
     db.execute = _execute
     ctx = asyncio.run(load_settlement_graph(db, _SETTLEMENT_ID))
-    assert ctx.settlement is settlement
-    assert ctx.binding is binding
-    assert ctx.spec is spec
-    assert ctx.bounty is bounty
-    assert ctx.funder is funder
+    return ctx, executed, user_calls, provider
+
+
+def test_loader_locks_settlement_row_and_loads_provider_by_lease_user(monkeypatch):
+    lease = SimpleNamespace(binding_id=_BINDING_ID, status="settled", user_id=None)
+    ctx, executed, user_calls, provider = _load_graph(lease)
+    assert ctx.settlement.binding_id == _BINDING_ID
+    assert ctx.binding.id == _BINDING_ID
+    assert ctx.spec.id == _SPEC_ID
+    assert ctx.bounty.id == _BOUNTY_ID
+    assert ctx.funder.id == _FUNDER_ID
     assert ctx.provider is provider
-    assert ctx.repo_link is repo_link
-    assert ctx.ledger is ledger
-    assert len(executed) == 8
+    assert ctx.lease is lease
+    assert ctx.repo_link.installation_id == 99
+    assert ctx.ledger.status == "advertised"
+    assert len(executed) == 9
     assert executed[0]._for_update_arg is not None
     assert all(stmt._for_update_arg is None for stmt in executed[1:])
     assert user_calls["n"] == 2
+    user_stmts = [stmt for stmt in executed if stmt.column_descriptions[0]["entity"] is User]
+    assert user_stmts[1].whereclause.left.name == "id"
+    assert "exchange_bot_id" not in str(user_stmts[0].whereclause)
+    assert "exchange_bot_id" not in str(user_stmts[1].whereclause)
+    lease_stmt = next(
+        stmt for stmt in executed if stmt.column_descriptions[0]["entity"] is GitHubLease
+    )
+    assert "exchange_bot_id" not in str(lease_stmt)
+
+
+def test_loader_without_settled_lease_has_no_provider(monkeypatch):
+    ctx, executed, user_calls, _provider = _load_graph(None)
+    assert ctx.lease is None
+    assert ctx.provider is None
+    assert user_calls["n"] == 1
+    assert len(executed) == 8
+    user_stmts = [stmt for stmt in executed if stmt.column_descriptions[0]["entity"] is User]
+    assert len(user_stmts) == 1

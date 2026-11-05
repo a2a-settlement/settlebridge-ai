@@ -15,6 +15,7 @@ from app.services.github_comments import (  # noqa: E402
     render_cancelled,
     render_evaluation,
     render_not_advertised,
+    render_not_payable,
     render_paid,
 )
 
@@ -212,6 +213,18 @@ def test_payment_pending_never_says_paid_or_completed():
         assert "paid" not in lowered
         assert "completed" not in lowered
     assert "Reason:" not in bare
+
+
+def test_not_payable_names_the_reason_and_does_not_say_paid_or_accepted():
+    body = render_not_payable(bounty_id=BOUNTY, reason="no lease-bound submission")
+    assert body.splitlines()[0] == bounty_marker(BOUNTY)
+    assert "### Not payable" in body
+    assert "no lease-bound submission" in body
+    lowered = body.lower()
+    assert "paid" not in lowered
+    assert "accepted" not in lowered
+    again = render_not_payable(bounty_id=BOUNTY, reason="no lease-bound submission")
+    assert body == again
 
 
 def test_paid_and_cancelled():
