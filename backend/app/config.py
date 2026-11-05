@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     GITHUB_APP_ID: str = ""
     GITHUB_APP_PRIVATE_KEY: str = ""
     GITHUB_WEBHOOK_SECRET: str = ""
+    # GitHub drops webhook deliveries larger than 25 MiB.
+    GITHUB_WEBHOOK_MAX_BODY_BYTES: int = 26_214_400
     GITHUB_API_URL: str = "https://api.github.com"
     GITHUB_SETTLEMENT_ENABLED: bool = False
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75

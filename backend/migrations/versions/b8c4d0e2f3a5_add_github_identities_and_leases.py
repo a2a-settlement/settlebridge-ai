@@ -41,6 +41,7 @@ def upgrade() -> None:
         ),
         sa.Column("agent_id", sa.String(length=255), nullable=False),
         sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("github_user_id", sa.BigInteger(), nullable=False),
         sa.Column(
             "spec_id",
             postgresql.UUID(as_uuid=True),
@@ -67,9 +68,30 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("status IN ('work', 'submitted')"),
     )
+    op.create_index(
+        "uq_github_bounty_bindings_lower_repo_issue",
+        "github_bounty_bindings",
+        [sa.text("lower(repo_full_name)"), "issue_number"],
+        unique=True,
+    )
+    op.create_index(
+        "uq_github_bounty_bindings_lower_repo_pr",
+        "github_bounty_bindings",
+        [sa.text("lower(repo_full_name)"), "pr_number"],
+        unique=True,
+        postgresql_where=sa.text("pr_number IS NOT NULL"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "uq_github_bounty_bindings_lower_repo_pr",
+        table_name="github_bounty_bindings",
+    )
+    op.drop_index(
+        "uq_github_bounty_bindings_lower_repo_issue",
+        table_name="github_bounty_bindings",
+    )
     op.drop_index("uq_github_leases_active_binding", table_name="github_leases")
     op.drop_index("ix_github_leases_agent_id", table_name="github_leases")
     op.drop_index("ix_github_leases_binding_id", table_name="github_leases")

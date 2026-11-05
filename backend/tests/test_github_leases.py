@@ -15,10 +15,12 @@ from decimal import Decimal
 sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 
 import pytest
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex
 
 from app.config import settings
-from app.models.github import GitHubBountyBinding
+from app.models.github import GitHubBountyBinding, GitHubLease
 from app.services import github_bounty_service, github_jobs, github_leases
 
 FIXED = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
@@ -36,9 +38,11 @@ def _sql(stmt) -> str:
 class _Capture:
     def __init__(self):
         self.stmt = None
+        self.params = None
 
-    async def execute(self, stmt):
+    async def execute(self, stmt, params=None, **kwargs):
         self.stmt = stmt
+        self.params = params
         return self
 
     def all(self):
@@ -385,3 +389,57 @@ def test_job_loop_sweeps_leases_in_their_own_session(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         _run(github_jobs.run_github_job_loop())
     assert calls == {"run": 2, "expire": 2, "sleep": 2, "sessions": 2}
+
+
+def test_renewable_rejects_a_passed_deadline():
+    assert github_leases._renewable(_lease(), FIXED) is True
+    at_work_edge = _lease(work_expires_at=FIXED, hard_expires_at=FIXED + timedelta(seconds=1))
+    assert github_leases._renewable(at_work_edge, FIXED) is True
+    stale_work = _lease(work_expires_at=FIXED - timedelta(seconds=1))
+    assert github_leases._renewable(stale_work, FIXED) is False
+    at_hard_cap = _lease(hard_expires_at=FIXED)
+    assert github_leases._renewable(at_hard_cap, FIXED) is False
+    past_hard = _lease(hard_expires_at=FIXED - timedelta(seconds=1))
+    assert github_leases._renewable(past_hard, FIXED) is False
+    assert github_leases._renewable(_lease(status="submitted"), FIXED) is False
+
+
+def test_agent_claim_lock_is_transaction_scoped():
+    db = _Capture()
+    _run(github_leases.lock_agent_for_claim(db, "bot-1"))
+    sql = str(db.stmt)
+    assert "pg_advisory_xact_lock" in sql
+    assert "hashtextextended" in sql
+    assert db.params == {"agent_id": "bot-1"}
+
+
+def test_lease_relock_is_for_update_without_skip_locked():
+    stmt = github_leases._lease_for_update_stmt(uuid.uuid4())
+    sql = _sql(stmt)
+    assert "FOR UPDATE" in sql
+    assert "SKIP LOCKED" not in sql
+    assert stmt.get_execution_options().get("populate_existing") is True
+
+
+def test_binding_repo_indexes_are_case_insensitive_and_partial():
+    table = GitHubBountyBinding.__table__
+    by_name = {index.name: index for index in table.indexes}
+    issue = by_name["uq_github_bounty_bindings_lower_repo_issue"]
+    pull = by_name["uq_github_bounty_bindings_lower_repo_pr"]
+    assert issue.unique is True
+    assert pull.unique is True
+    dialect = postgresql.dialect()
+    issue_sql = str(CreateIndex(issue).compile(dialect=dialect))
+    pull_sql = str(CreateIndex(pull).compile(dialect=dialect))
+    assert "lower(repo_full_name)" in issue_sql
+    assert "issue_number" in issue_sql
+    assert "UNIQUE" in issue_sql.upper()
+    assert "lower(repo_full_name)" in pull_sql
+    assert "pr_number IS NOT NULL" in pull_sql
+    unique_pairs = [
+        {column.name for column in constraint.columns}
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    ]
+    assert {"repo_full_name", "issue_number"} in unique_pairs
+    assert GitHubLease.__table__.c.github_user_id.nullable is False

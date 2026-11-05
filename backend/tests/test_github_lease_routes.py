@@ -107,6 +107,8 @@ def _lease(binding, user, **overrides):
         "pr_number": None,
         "otel_trace_id": None,
         "release_reason": None,
+        "github_user_id": 4242,
+        "created_at": FIXED,
     }
     data.update(overrides)
     return types.SimpleNamespace(**data)
@@ -181,6 +183,7 @@ def api(monkeypatch):
             "user": {"id": 4242, "login": "octocat"},
             "body": "Fixes #12",
             "head": {"sha": "a" * 40},
+            "created_at": "2026-06-01T12:00:00Z",
         },
         "redis_error": False,
         "redis_clients": [],
@@ -188,6 +191,9 @@ def api(monkeypatch):
         "denial": None,
         "bounty": bounty,
         "user": user,
+        "scopes": frozenset({"mcp:tool:financial"}),
+        "events": [],
+        "lock_calls": [],
     }
 
     async def fetch_advertised_bounties(db, *, language, limit):
@@ -216,10 +222,25 @@ def api(monkeypatch):
         return identity_row
 
     async def count_active_leases(db, agent_id):
+        box["events"].append(("count", agent_id))
         return box["active_count"]
 
     async def fetch_expired_timestamps(db, agent_id, since):
+        box["events"].append(("expiries", agent_id))
         return list(box["expiries"])
+
+    async def lock_agent_for_claim(db, agent_id):
+        box["events"].append(("lock", agent_id))
+
+    async def lock_lease(db, lease_id):
+        box["lock_calls"].append(lease_id)
+        current = box["lease"]
+        if current is not None and getattr(current, "id", None) == lease_id:
+            return current
+        for item in box["work_leases"]:
+            if getattr(item, "id", None) == lease_id:
+                return item
+        return None
 
     async def fetch_active_lease_for_binding(db, binding_id):
         active = box["active_lease"]
@@ -302,6 +323,7 @@ def api(monkeypatch):
             org_id="org-1",
             kya_level=2,
             reputation=0.9,
+            scopes=box["scopes"],
             raw={},
         )
 
@@ -315,6 +337,8 @@ def api(monkeypatch):
     monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity_for_user)
     monkeypatch.setattr(github_leases, "count_active_leases", count_active_leases)
     monkeypatch.setattr(github_leases, "fetch_expired_timestamps", fetch_expired_timestamps)
+    monkeypatch.setattr(github_leases, "lock_agent_for_claim", lock_agent_for_claim)
+    monkeypatch.setattr(github_leases, "lock_lease", lock_lease)
     monkeypatch.setattr(
         github_leases, "fetch_active_lease_for_binding", fetch_active_lease_for_binding
     )
@@ -431,6 +455,8 @@ def test_claim_lease_happy_path(api, monkeypatch):
     assert lease.user_id == api.box["user"].id
     assert lease.spec_id == binding.current_spec_id
     assert lease.binding_id == binding.id
+    assert lease.github_user_id == 4242
+    assert lease.created_at == FIXED
     assert api.session.commits == 1
     assert api.session.rollbacks == 0
 
@@ -539,7 +565,7 @@ def test_renew_extends_until_hard_cap(api, monkeypatch):
     assert lease.work_expires_at == FIXED + timedelta(minutes=15)
     assert api.session.commits == 1
 
-    lease.work_expires_at = FIXED - timedelta(minutes=1)
+    lease.work_expires_at = FIXED + timedelta(minutes=1)
     lease.hard_expires_at = FIXED + timedelta(minutes=4)
     capped = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
     assert capped.status_code == 200
@@ -760,7 +786,8 @@ def test_bounty_status_public_shape(api):
     assert body["pr_number"] is None
     assert body["evaluated_head_sha"] == "sha-old"
     assert body["assessment"] == {"outcome": "ACCEPTABLE", "findings": [{"msg": "old"}]}
-    assert body["settlement"] == {"state": "escrow_created", "escrow_id": "escrow-9"}
+    assert body["settlement"] == {"state": "escrow_created"}
+    assert "escrow_id" not in response.text
     assert set(body["lease"]) == {"active", "status", "work_expires_at", "hold_expires_at"}
     assert body["lease"]["active"] is True
     assert body["lease"]["status"] == "submitted"
@@ -814,7 +841,14 @@ def test_heartbeat_idle_extends_work_leases_and_records_presence(api, monkeypatc
     response = _heartbeat(api, payload)
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"status", "ttl_s", "released_leases", "extended_leases", "presence"}
+    assert set(body) == {
+        "status",
+        "ttl_s",
+        "released_leases",
+        "extended_leases",
+        "lapsed_leases",
+        "presence",
+    }
     assert body["status"] == "AVAILABLE_IDLE"
     assert body["ttl_s"] == 17
     assert body["presence"] == "ok"
@@ -897,3 +931,223 @@ def test_heartbeat_rejects_bad_auth_and_body(api):
     )
     _error(garbage, 422, "invalid_body")
     assert api.session.commits == 0
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["claim", "renew", "release", "submit", "heartbeat"],
+)
+def test_mutating_routes_require_financial_scope(api, route):
+    api.box["scopes"] = frozenset({"mcp:read"})
+    lease = api.box["lease"]
+    bounty_id = api.box["binding"].bounty_id
+    if route == "claim":
+        response = api.client.post(
+            f"/api/v1/github/bounties/{bounty_id}/claim-lease",
+            headers=_headers(lease_header=False),
+        )
+    elif route == "renew":
+        response = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
+    elif route == "release":
+        response = api.client.post(f"/api/v1/github/leases/{lease.id}/release", headers=_headers())
+    elif route == "submit":
+        response = _submit(api, lease, {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    else:
+        response = _heartbeat(api, {"status": "AVAILABLE_IDLE"})
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "insufficient_scope",
+        "required_scope": "mcp:tool:financial",
+    }
+    assert api.session.commits == 0
+    assert api.box["events"] == []
+    assert api.box["pr_calls"] == []
+    assert lease.status == "work"
+
+
+def test_invalid_token_is_rejected_before_scope(api):
+    api.box["scopes"] = frozenset()
+    response = api.client.post(
+        f"/api/v1/github/bounties/{api.box['binding'].bounty_id}/claim-lease",
+        headers=_headers(bearer="bad", lease_header=False),
+    )
+    _error(response, 401, "invalid_token")
+
+
+def test_claim_locks_agent_before_counting(api):
+    response = api.client.post(
+        f"/api/v1/github/bounties/{api.box['binding'].bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    assert response.status_code == 201
+    events = api.box["events"]
+    assert ("lock", AGENT) in events
+    assert events.index(("lock", AGENT)) < events.index(("count", AGENT))
+    assert events.index(("lock", AGENT)) < events.index(("expiries", AGENT))
+
+
+def test_renew_rejects_soft_expired_deadlines(api):
+    lease = api.box["lease"]
+    lease.work_expires_at = FIXED - timedelta(seconds=1)
+    lease.hard_expires_at = FIXED + timedelta(hours=1)
+    stale_work = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
+    _error(stale_work, 409, "lease_not_active")
+    assert lease.work_expires_at == FIXED - timedelta(seconds=1)
+
+    lease.work_expires_at = FIXED + timedelta(minutes=5)
+    lease.hard_expires_at = FIXED - timedelta(seconds=1)
+    stale_hard = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
+    _error(stale_hard, 409, "lease_not_active")
+    assert lease.work_expires_at == FIXED + timedelta(minutes=5)
+    assert api.session.commits == 0
+
+
+def test_renew_rechecks_deadline_after_lock(api, monkeypatch):
+    lease = api.box["lease"]
+    original = lease.work_expires_at
+
+    async def lock_lease(db, lease_id):
+        api.box["lock_calls"].append(lease_id)
+        lease.work_expires_at = FIXED - timedelta(seconds=1)
+        return lease
+
+    monkeypatch.setattr(github_leases, "lock_lease", lock_lease)
+    response = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
+    _error(response, 409, "lease_not_active")
+    assert lease.work_expires_at == FIXED - timedelta(seconds=1)
+    assert lease.work_expires_at != original
+    assert api.session.commits == 0
+    assert api.box["lock_calls"] == [lease.id]
+
+
+def test_release_rechecks_status_after_lock(api, monkeypatch):
+    lease = api.box["lease"]
+
+    async def lock_lease(db, lease_id):
+        lease.status = "expired"
+        return lease
+
+    monkeypatch.setattr(github_leases, "lock_lease", lock_lease)
+    response = api.client.post(f"/api/v1/github/leases/{lease.id}/release", headers=_headers())
+    _error(response, 409, "lease_not_active")
+    assert lease.status == "expired"
+    assert lease.release_reason is None
+    assert api.session.commits == 0
+
+
+def test_submit_rechecks_window_after_github(api, monkeypatch):
+    lease = api.box["lease"]
+    seen = {}
+
+    async def lock_lease(db, lease_id):
+        seen["pr_calls"] = list(api.box["pr_calls"])
+        lease.work_expires_at = FIXED - timedelta(seconds=1)
+        return lease
+
+    monkeypatch.setattr(github_leases, "lock_lease", lock_lease)
+    response = _submit(api, lease, {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    _error(response, 409, "lease_not_active")
+    assert seen["pr_calls"] == [(99, REPO, 7)]
+    assert lease.status == "work"
+    assert api.box["binding"].pr_number is None
+    assert api.session.commits == 0
+
+
+def test_submit_uses_claim_snapshot_not_current_identity(api):
+    api.box["identity"] = None
+    api.box["lease"].github_user_id = 4242
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    assert response.status_code == 200
+
+    api.session.commits = 0
+    api.box["lease"].status = "work"
+    api.box["lease"].github_user_id = 7
+    api.box["identity"] = _identity(api.box["user"], github_user_id=4242)
+    mismatch = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    _error(mismatch, 422, "pr_author_mismatch")
+    assert api.box["lease"].status == "work"
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        "missing",
+        None,
+        "",
+        "not-a-timestamp",
+        "2026-06-01T12:00:00",
+        "2026-06-01T11:59:59Z",
+        "2026-05-01T12:00:00+00:00",
+    ],
+)
+def test_submit_rejects_pr_that_predates_the_lease(api, created_at):
+    pull = dict(api.box["pull"])
+    if created_at == "missing":
+        pull.pop("created_at", None)
+    else:
+        pull["created_at"] = created_at
+    api.box["pull"] = pull
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    _error(response, 422, "pr_predates_lease")
+    assert api.box["lease"].status == "work"
+    assert api.session.commits == 0
+
+
+def test_submit_accepts_pr_opened_at_the_lease_instant(api):
+    api.box["pull"] = {**api.box["pull"], "created_at": "2026-06-01T07:00:00-05:00"}
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    assert response.status_code == 200
+
+
+def test_submit_integrity_error_is_pr_already_bound(api):
+    api.session.commit_error = IntegrityError("UPDATE", {}, Exception("duplicate key"))
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    _error(response, 409, "pr_already_bound")
+    assert api.session.rollbacks == 1
+    assert api.session.commits == 1
+
+
+def test_heartbeat_does_not_extend_a_soft_expired_lease(api, monkeypatch):
+    monkeypatch.setattr(settings, "LEASE_WORK_MINUTES", 15)
+    binding = api.box["binding"]
+    user = api.box["user"]
+    live = _lease(binding, user, work_expires_at=FIXED + timedelta(minutes=5))
+    original = live.work_expires_at
+    stale = _lease(
+        binding,
+        user,
+        work_expires_at=FIXED + timedelta(minutes=5),
+        hard_expires_at=FIXED + timedelta(hours=1),
+    )
+    api.box["work_leases"] = [live, stale]
+
+    async def lock_lease(db, lease_id):
+        api.box["lock_calls"].append(lease_id)
+        if lease_id == stale.id:
+            stale.work_expires_at = FIXED - timedelta(seconds=1)
+        return live if lease_id == live.id else stale
+
+    monkeypatch.setattr(github_leases, "lock_lease", lock_lease)
+    response = _heartbeat(api, {"status": "AVAILABLE_IDLE"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extended_leases"] == [str(live.id)]
+    assert body["lapsed_leases"] == [str(stale.id)]
+    assert live.work_expires_at > original
+    assert stale.work_expires_at == FIXED - timedelta(seconds=1)
+    assert stale.status == "work"
+    assert api.box["lock_calls"] == [live.id, stale.id]
+
+
+def test_heartbeat_preempt_releases_soft_expired_work_lease(api):
+    lease = _lease(
+        api.box["binding"],
+        api.box["user"],
+        work_expires_at=FIXED - timedelta(seconds=1),
+    )
+    api.box["work_leases"] = [lease]
+    response = _heartbeat(api, {"status": "BUSY_PREEMPTED"})
+    assert response.status_code == 200
+    assert response.json()["released_leases"] == [str(lease.id)]
+    assert lease.status == "released"
+    assert lease.release_reason == "preempted"

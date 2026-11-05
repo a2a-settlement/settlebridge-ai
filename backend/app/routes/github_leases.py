@@ -31,6 +31,18 @@ def _agent_claims(authorization: str | None):
         return JSONResponse(status_code=401, content={"error": "invalid_token"})
 
 
+def _require_financial_scope(claims) -> JSONResponse | None:
+    if trust_gateway.FINANCIAL_SCOPE in claims.scopes:
+        return None
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": "insufficient_scope",
+            "required_scope": trust_gateway.FINANCIAL_SCOPE,
+        },
+    )
+
+
 async def _json_body(request: Request):
     try:
         payload = await request.json()
@@ -60,6 +72,9 @@ async def claim_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
+    denied = _require_financial_scope(claims)
+    if denied is not None:
+        return denied
     return _response(await github_leases.claim_lease(db, bounty_id, claims))
 
 
@@ -73,6 +88,9 @@ async def renew_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
+    denied = _require_financial_scope(claims)
+    if denied is not None:
+        return denied
     result = await github_leases.renew_lease(db, lease_id, claims, x_lease_token)
     return _response(result)
 
@@ -87,6 +105,9 @@ async def release_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
+    denied = _require_financial_scope(claims)
+    if denied is not None:
+        return denied
     result = await github_leases.release_lease(db, lease_id, claims, x_lease_token)
     return _response(result)
 
@@ -102,6 +123,9 @@ async def submit_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
+    denied = _require_financial_scope(claims)
+    if denied is not None:
+        return denied
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body
@@ -126,6 +150,9 @@ async def worker_heartbeat(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
+    denied = _require_financial_scope(claims)
+    if denied is not None:
+        return denied
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body
