@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.Column("installation_id", sa.BigInteger(), nullable=False, unique=True),
         sa.Column("account_login", sa.String(length=255), nullable=False),
         sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
         sa.Column("removed_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_table(
@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("default_policy", _JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("required_checks", _JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_table(
         "github_bounty_bindings",
@@ -61,8 +61,8 @@ def upgrade() -> None:
         sa.Column("comment_id", sa.BigInteger(), nullable=True),
         sa.Column("last_assessment", _JSONB, nullable=True),
         sa.Column("review_cleared_by", sa.String(length=255), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
         sa.UniqueConstraint("repo_full_name", "issue_number"),
     )
     op.create_table(
@@ -84,7 +84,7 @@ def upgrade() -> None:
         sa.Column("fee_bps", sa.Integer(), nullable=False),
         sa.Column("required_kya", sa.Integer(), nullable=False),
         sa.Column("required_ema", sa.Float(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
         sa.UniqueConstraint("binding_id", "version"),
     )
     op.create_table(
@@ -100,8 +100,8 @@ def upgrade() -> None:
         ),
         sa.Column("amount_ate", sa.Integer(), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False, server_default="advertised"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_index("ix_github_funder_ledger_funder_user_id", "github_funder_ledger", ["funder_user_id"])
     op.create_table(
@@ -109,7 +109,7 @@ def upgrade() -> None:
         sa.Column("delivery_id", sa.String(length=64), primary_key=True),
         sa.Column("event", sa.String(length=64), nullable=False),
         sa.Column("action", sa.String(length=64), nullable=True),
-        sa.Column("received_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("received_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_table(
         "github_jobs",
@@ -127,8 +127,8 @@ def upgrade() -> None:
         sa.Column("next_run_at", sa.DateTime(timezone=True), nullable=False, server_default=_NOW),
         sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_index("ix_github_jobs_status", "github_jobs", ["status"])
     op.create_table(
@@ -154,8 +154,8 @@ def upgrade() -> None:
         sa.Column("idempotency_prefix", sa.String(length=128), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
 
 

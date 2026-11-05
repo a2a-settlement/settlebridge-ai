@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("github_user_id", sa.BigInteger(), nullable=False, unique=True),
         sa.Column("login", sa.String(length=255), nullable=False),
         sa.Column("verified_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_table(
         "github_leases",
@@ -55,8 +55,8 @@ def upgrade() -> None:
         sa.Column("pr_number", sa.Integer(), nullable=True),
         sa.Column("otel_trace_id", sa.String(length=64), nullable=True),
         sa.Column("release_reason", sa.String(length=64), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=_NOW, nullable=False),
     )
     op.create_index("ix_github_leases_binding_id", "github_leases", ["binding_id"])
     op.create_index("ix_github_leases_agent_id", "github_leases", ["agent_id"])
