@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     GITHUB_DEFAULT_KYA_LEVEL: int = 1
     GITHUB_ATE_PER_USD: int = 100
     GITHUB_CLEARING_FEE_BPS: int = 0
+    # Mirror the exchange's A2A_EXCHANGE_FEE_PERCENT and A2A_EXCHANGE_MIN_FEE.
+    # The funder pays this fee on top of the escrow amount.
+    GITHUB_EXCHANGE_FEE_PERCENT: str = "0.25"
+    GITHUB_EXCHANGE_MIN_FEE: int = 1
     GITHUB_JOB_MAX_ATTEMPTS: int = 8
     GITHUB_JOB_POLL_INTERVAL_S: int = 5
     MARKET_URL: str = "https://market.settlebridge.ai"

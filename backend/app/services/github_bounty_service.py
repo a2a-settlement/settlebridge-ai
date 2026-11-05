@@ -12,7 +12,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 import httpx
 from sqlalchemy import select
@@ -264,6 +264,15 @@ def format_usd(amount: Decimal) -> str:
 
 def ledger_allows(open_advertised_total: int, new_amount: int, available_balance: int) -> bool:
     return open_advertised_total + new_amount <= available_balance
+
+
+def escrow_cost(amount_ate: int) -> int:
+    """What the funder's balance pays for an escrow: the amount plus the exchange fee."""
+    if amount_ate <= 0:
+        return 0
+    pct = Decimal(settings.GITHUB_EXCHANGE_FEE_PERCENT) / Decimal("100")
+    fee = (Decimal(amount_ate) * pct).to_integral_value(rounding=ROUND_CEILING)
+    return amount_ate + max(int(fee), int(settings.GITHUB_EXCHANGE_MIN_FEE))
 
 
 def _run_sort_key(run: dict) -> tuple[str, str, int]:
@@ -631,8 +640,8 @@ async def lock_user(db: AsyncSession, user_id: uuid.UUID) -> User | None:
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
-async def sum_advertised_amount(db: AsyncSession, funder_user_id: uuid.UUID) -> int:
-    """Lock advertised ledger rows and total them. This is not a fund reservation."""
+async def sum_advertised_cost(db: AsyncSession, funder_user_id: uuid.UUID) -> int:
+    """Lock advertised ledger rows and total their escrow costs. This is not a fund reservation."""
     stmt = (
         select(FunderLedgerEntry)
         .where(
@@ -642,7 +651,7 @@ async def sum_advertised_amount(db: AsyncSession, funder_user_id: uuid.UUID) -> 
         .with_for_update()
     )
     rows = (await db.execute(stmt)).scalars().all()
-    return sum(int(row.amount_ate) for row in rows)
+    return sum(escrow_cost(int(row.amount_ate)) for row in rows)
 
 
 async def get_ledger_entry(db: AsyncSession, binding_id: uuid.UUID) -> FunderLedgerEntry | None:
@@ -907,9 +916,9 @@ async def _create_advertised_bounty(
         return
     # The exchange read is a checked balance, not a reservation of funds.
     available = await _checked_available(user.exchange_bot_id)
-    open_total = await sum_advertised_amount(db, user.id)
+    open_total = await sum_advertised_cost(db, user.id)
     amount_ate = int(content["amount_ate"])
-    if not ledger_allows(open_total, amount_ate, available):
+    if not ledger_allows(open_total, escrow_cost(amount_ate), available):
         logger.info(
             "not advertising %s#%s; checked balance %s, advertised %s, requested %s",
             repo,
@@ -1061,8 +1070,9 @@ async def _update_binding_terms(
             await _flush(db)
             return
         available = await _checked_available(user.exchange_bot_id)
-        open_total = await sum_advertised_amount(db, user.id)
-        if not ledger_allows(open_total, delta, available):
+        open_total = await sum_advertised_cost(db, user.id)
+        cost_delta = escrow_cost(amount_ate) - escrow_cost(previous)
+        if not ledger_allows(open_total, cost_delta, available):
             logger.info(
                 "not increasing %s#%s; checked balance %s, advertised %s, delta %s",
                 repo,
