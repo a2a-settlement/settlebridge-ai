@@ -13,10 +13,13 @@ sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.database import get_db
+from app.database import Base, get_db
 from app.models.github import GitHubJob, GitHubWebhookDelivery
 from app.routes.github import router
 
@@ -24,16 +27,24 @@ SECRET = "test-webhook-secret"
 
 
 class FakeSession:
-    def __init__(self, fail_commit: bool = False):
+    def __init__(self, fail_commit: bool = False, stored: object | None = None):
         self.added: list[object] = []
         self.events: list[str] = []
         self.fail_commit = fail_commit
+        self.stored = stored
         self.commits = 0
         self.rollbacks = 0
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
         self.events.append("add")
+
+    async def flush(self) -> None:
+        self.events.append("flush")
+
+    async def get(self, model: type, key: object) -> object | None:
+        self.events.append("get")
+        return self.stored
 
     async def commit(self) -> None:
         self.commits += 1
@@ -207,7 +218,7 @@ def test_issues_labeled_queues_delivery_and_job():
         response = _post(client, "issues", "deliv-labeled", payload)
     assert response.status_code == 202
     assert response.json() == {"status": "queued", "delivery_id": "deliv-labeled"}
-    assert session.events == ["add", "add", "commit"]
+    assert session.events == ["add", "flush", "add", "commit"]
     assert session.rollbacks == 0
     deliveries = _deliveries(session)
     jobs = _jobs(session)
@@ -231,7 +242,7 @@ def test_unmapped_event_records_delivery_only():
         response = _post(client, "push", "deliv-push", payload)
     assert response.status_code == 202
     assert response.json() == {"status": "ignored", "delivery_id": "deliv-push"}
-    assert session.events == ["add", "commit"]
+    assert session.events == ["add", "flush", "commit"]
     assert _jobs(session) == []
     deliveries = _deliveries(session)
     assert len(deliveries) == 1
@@ -241,7 +252,8 @@ def test_unmapped_event_records_delivery_only():
 
 
 def test_duplicate_delivery_rolls_back():
-    session = FakeSession(fail_commit=True)
+    stored = GitHubWebhookDelivery(delivery_id="deliv-dup", event="issues", action="labeled")
+    session = FakeSession(fail_commit=True, stored=stored)
     with _client(session) as client:
         response = _post(
             client,
@@ -251,8 +263,66 @@ def test_duplicate_delivery_rolls_back():
         )
     assert response.status_code == 200
     assert response.json() == {"status": "duplicate"}
-    assert session.events == ["add", "add", "commit", "rollback"]
+    assert session.events == ["add", "flush", "add", "commit", "rollback", "get"]
     assert session.rollbacks == 1
+
+
+def test_integrity_error_without_stored_delivery_is_not_a_duplicate():
+    session = FakeSession(fail_commit=True)
+    with _client(session) as client:
+        with pytest.raises(IntegrityError):
+            _post(client, "issues", "deliv-new", {"action": "labeled"})
+    assert session.events == ["add", "flush", "add", "commit", "rollback", "get"]
+
+
+class SQLiteSession:
+    """Async facade over a real SQLite session that enforces foreign keys."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def add(self, obj: object) -> None:
+        self.session.add(obj)
+
+    async def flush(self) -> None:
+        self.session.flush()
+
+    async def get(self, model: type, key: object) -> object | None:
+        return self.session.get(model, key)
+
+    async def commit(self) -> None:
+        self.session.commit()
+
+    async def rollback(self) -> None:
+        self.session.rollback()
+
+
+def test_job_insert_satisfies_delivery_foreign_key():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enforce_foreign_keys(dbapi_connection, _record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine, tables=[GitHubWebhookDelivery.__table__, GitHubJob.__table__])
+    payload = {
+        "action": "created",
+        "installation": {"id": 7, "account": {"login": "octo"}},
+        "repositories": [{"full_name": "octo/repo"}],
+    }
+    with Session(engine) as session:
+        with _client(SQLiteSession(session)) as client:
+            first = _post(client, "installation", "deliv-fk", payload)
+            again = _post(client, "installation", "deliv-fk", payload)
+        assert first.status_code == 202
+        assert first.json() == {"status": "queued", "delivery_id": "deliv-fk"}
+        assert again.status_code == 200
+        assert again.json() == {"status": "duplicate"}
+        assert session.scalar(select(func.count()).select_from(GitHubWebhookDelivery)) == 1
+        jobs = session.scalars(select(GitHubJob)).all()
+        assert [(job.delivery_id, job.kind) for job in jobs] == [("deliv-fk", "installation")]
 
 
 @pytest.mark.parametrize(

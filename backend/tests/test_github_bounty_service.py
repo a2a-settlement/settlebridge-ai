@@ -1945,7 +1945,7 @@ def test_installation_upsert_disable_and_repo_link_idempotency(monkeypatch):
     assert existing.removed_at is not None
     assert link.enabled is False
 
-    present = SimpleNamespace(enabled=False, repo_full_name="acme/old")
+    present = SimpleNamespace(enabled=False, repo_full_name="acme/old", installation_id=9)
     seen = {"acme/old": present}
 
     async def _get_link(_db, full_name):
@@ -1966,6 +1966,33 @@ def test_installation_upsert_disable_and_repo_link_idempotency(monkeypatch):
     assert new_links[0].repo_full_name == "acme/new"
     assert new_links[0].enabled is False
     assert new_links[0].funder_user_id is None
+
+
+def test_installation_created_links_its_selected_repositories(monkeypatch):
+    db = _db()
+    moved = SimpleNamespace(enabled=False, repo_full_name="acme/old", installation_id=3)
+    seen = {"acme/old": moved}
+
+    async def _get_link(_db, full_name):
+        return seen.get(full_name)
+
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_installation", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("app.services.github_bounty_service.get_repo_link", _get_link)
+    created = {
+        "installation": {"id": 9, "account": {"login": "acme"}},
+        "repositories": [{"full_name": "acme/old"}, {"full_name": "acme/new"}],
+    }
+    _run(db, _job(JobKind.INSTALLATION, created, event="installation", action="created"))
+    rows = _added(db)
+    assert [type(row) for row in rows] == [GitHubInstallation, GitHubRepoLink]
+    assert rows[1].repo_full_name == "acme/new"
+    assert rows[1].installation_id == 9
+    assert rows[1].enabled is False
+    assert rows[1].funder_user_id is None
+    assert moved.installation_id == 9
+    assert moved.enabled is False
 
 
 def test_advance_settlement_delegates_and_rejects_bad_jobs(monkeypatch):
