@@ -230,6 +230,22 @@ def effective_requirements(
     return int(kya), ema
 
 
+def default_required_ema(repo_full_name: str) -> float:
+    """The repo's GITHUB_REPO_REQUIRED_EMA entry, else GITHUB_DEFAULT_REQUIRED_EMA."""
+    for entry in settings.GITHUB_REPO_REQUIRED_EMA.split(","):
+        repo, sep, value = entry.strip().partition("=")
+        if not sep or repo.strip().lower() != repo_full_name.lower():
+            continue
+        try:
+            ema = float(value)
+        except ValueError:
+            ema = -1.0
+        if 0.0 <= ema <= 1.0:
+            return ema
+        logger.error("ignoring invalid GITHUB_REPO_REQUIRED_EMA entry for %s", repo_full_name)
+    return float(settings.GITHUB_DEFAULT_REQUIRED_EMA)
+
+
 def build_spec_content(
     *,
     test_command: str | None,
@@ -693,7 +709,7 @@ def _build_issue_content(parsed: ParsedLabels, issue_body: str | None, link) -> 
         raise PermanentJobError("cannot freeze a bounty without an amount")
     kya, ema = effective_requirements(
         parsed,
-        (settings.GITHUB_DEFAULT_KYA_LEVEL, settings.GITHUB_DEFAULT_REQUIRED_EMA),
+        (settings.GITHUB_DEFAULT_KYA_LEVEL, default_required_ema(link.repo_full_name)),
     )
     return build_spec_content(
         test_command=extract_test_command(issue_body if isinstance(issue_body, str) else None),

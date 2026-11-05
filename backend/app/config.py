@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     GITHUB_API_URL: str = "https://api.github.com"
     GITHUB_SETTLEMENT_ENABLED: bool = False
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
+    # Comma-separated owner/repo=ema pairs that replace the default for that repo.
+    GITHUB_REPO_REQUIRED_EMA: str = ""
     GITHUB_DEFAULT_KYA_LEVEL: int = 1
     GITHUB_ATE_PER_USD: int = 100
     GITHUB_CLEARING_FEE_BPS: int = 0
