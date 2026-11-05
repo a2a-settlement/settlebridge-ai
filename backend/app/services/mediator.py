@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 from typing import Any
 
@@ -107,4 +110,24 @@ async def get_audit(escrow_id: str) -> dict[str, Any] | None:
 
 
 async def verify_patch(payload: dict[str, Any]) -> dict[str, Any]:
-    raise NotImplementedError
+    """POST a canonical JSON body to the mediator verify-patch endpoint.
+
+    The body is serialized once and the HMAC is taken over those exact bytes.
+    """
+    secret = settings.MEDIATOR_WEBHOOK_SECRET
+    if not secret:
+        raise ValueError("MEDIATOR_WEBHOOK_SECRET not configured")
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    url = f"{settings.MEDIATOR_URL.rstrip('/')}/api/v1/verify-patch"
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            url,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-A2ASE-Signature": f"sha256={signature}",
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
