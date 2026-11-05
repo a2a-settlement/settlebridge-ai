@@ -384,4 +384,5 @@ def test_job_loop_sweeps_leases_in_their_own_session(monkeypatch):
     monkeypatch.setattr(github_jobs.asyncio, "sleep", fake_sleep)
     with pytest.raises(asyncio.CancelledError):
         _run(github_jobs.run_github_job_loop())
-    assert calls == {"run": 2, "expire": 2, "sleep": 2, "sessions": 2}
+    # Each iteration opens one session for the sweep and one for settlement enqueue.
+    assert calls == {"run": 2, "expire": 2, "sleep": 2, "sessions": 4}

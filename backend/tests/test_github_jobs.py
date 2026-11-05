@@ -14,11 +14,13 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.config import settings
+from app.models.github import GitHubJob
 from app.services import github_jobs
 from app.services.github_errors import PermanentJobError, RetryableJobError
 from app.services.github_jobs import (
     claim_due_jobs,
     compute_backoff,
+    enqueue_pending_settlements,
     failure_transition,
     run_due_jobs,
     run_github_job_loop,
@@ -351,3 +353,177 @@ def test_job_loop_logs_and_continues(monkeypatch):
         _run(run_github_job_loop())
     assert calls["run"] == 2
     assert calls["sleep"] == 2
+
+
+class _QueuedRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _EnqueueDB:
+    def __init__(self, results):
+        self.results = list(results)
+        self.added = []
+        self.commits = 0
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return _QueuedRows(self.results.pop(0))
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def commit(self):
+        self.commits += 1
+
+
+def _settlement(state):
+    row = type("Settlement", (), {})()
+    row.id = uuid.uuid4()
+    row.state = state
+    return row
+
+
+def _advance_job(settlement_id, status="pending", kind="advance_settlement"):
+    job = type("Job", (), {})()
+    job.kind = kind
+    job.status = status
+    job.payload = {"settlement_id": str(settlement_id)}
+    return job
+
+
+def test_enqueue_pending_settlements_is_a_noop_while_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", False)
+    db = _EnqueueDB([[], []])
+    assert _run(enqueue_pending_settlements(db)) == 0
+    assert db.statements == []
+    assert db.added == []
+    assert db.commits == 0
+
+
+def test_enqueue_pending_settlements_fills_only_open_rows_without_a_live_job(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    pending = _settlement("pending")
+    escrow = _settlement("escrow_created")
+    delivered = _settlement("delivered")
+    released = _settlement("released")
+    failed = _settlement("failed")
+    jobs = [
+        _advance_job(pending.id, status="pending"),
+        _advance_job(delivered.id, status="done"),
+        _advance_job(escrow.id, status="running", kind="checks_completed"),
+        _advance_job(uuid.uuid4(), status="running"),
+    ]
+    db = _EnqueueDB([[pending, escrow, delivered, released, failed], jobs])
+    added = _run(enqueue_pending_settlements(db))
+    assert added == 2
+    assert db.commits == 1
+    assert len(db.statements) == 2
+    queued = {row.payload["settlement_id"]: row for row in db.added}
+    assert set(queued) == {str(escrow.id), str(delivered.id)}
+    for row in db.added:
+        assert isinstance(row, GitHubJob)
+        assert row.kind == "advance_settlement"
+        assert row.status == "pending"
+        assert set(row.payload) == {"settlement_id"}
+
+    covered = _EnqueueDB(
+        [
+            [pending, released],
+            [_advance_job(pending.id, status="running")],
+        ]
+    )
+    assert _run(enqueue_pending_settlements(covered)) == 0
+    assert covered.added == []
+    assert covered.commits == 0
+
+
+def _loop_session():
+    calls = {"enqueue": 0, "expire": 0, "sessions": 0, "sleep": 0}
+
+    class _DB:
+        pass
+
+    class _CM:
+        async def __aenter__(self):
+            calls["sessions"] += 1
+            return _DB()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    return calls, _DB, _CM
+
+
+def test_job_loop_enqueues_in_its_own_session_when_settlement_is_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    calls, _DB, _CM = _loop_session()
+
+    async def fake_run():
+        return 0
+
+    async def fake_expire(db):
+        calls["expire"] += 1
+        assert isinstance(db, _DB)
+
+    async def fake_enqueue(db):
+        calls["enqueue"] += 1
+        assert isinstance(db, _DB)
+        if calls["enqueue"] == 1:
+            raise RuntimeError("enqueue down")
+        return 0
+
+    async def fake_sleep(seconds):
+        assert seconds == settings.GITHUB_JOB_POLL_INTERVAL_S
+        calls["sleep"] += 1
+        if calls["sleep"] >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(github_jobs, "run_due_jobs", fake_run)
+    monkeypatch.setattr(github_jobs, "expire_stale_leases", fake_expire)
+    monkeypatch.setattr(github_jobs, "enqueue_pending_settlements", fake_enqueue)
+    monkeypatch.setattr(github_jobs, "async_session", lambda: _CM())
+    monkeypatch.setattr(github_jobs.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        _run(run_github_job_loop())
+    assert calls == {"enqueue": 2, "expire": 2, "sessions": 4, "sleep": 2}
+
+
+def test_job_loop_still_calls_enqueue_when_settlement_is_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", False)
+    calls, _DB, _CM = _loop_session()
+
+    async def fake_run():
+        return 0
+
+    async def fake_expire(db):
+        calls["expire"] += 1
+        assert isinstance(db, _DB)
+
+    async def fake_enqueue(db):
+        calls["enqueue"] += 1
+        assert isinstance(db, _DB)
+        return 0
+
+    async def fake_sleep(seconds):
+        calls["sleep"] += 1
+        if calls["sleep"] >= 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(github_jobs, "run_due_jobs", fake_run)
+    monkeypatch.setattr(github_jobs, "expire_stale_leases", fake_expire)
+    monkeypatch.setattr(github_jobs, "enqueue_pending_settlements", fake_enqueue)
+    monkeypatch.setattr(github_jobs, "async_session", lambda: _CM())
+    monkeypatch.setattr(github_jobs.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        _run(run_github_job_loop())
+    assert calls["enqueue"] == 1
+    assert calls["expire"] == 1
+    assert calls["sessions"] == 2

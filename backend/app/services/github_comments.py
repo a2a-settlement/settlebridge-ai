@@ -6,7 +6,8 @@ import uuid
 
 _PAYMENT_NOTE = (
     "Payment happens only after the maintainer merges the PR, "
-    "required checks pass on the merged commit, and no policy violations are open."
+    "required checks pass on the pull request's head commit that was merged, "
+    "and no policy violations are open."
 )
 _NO_CHECKS = "none configured — this bounty cannot be accepted until required checks are set"
 _REVIEWER_LABEL = "Reviewer opinion (advisory — does not decide payment)"
