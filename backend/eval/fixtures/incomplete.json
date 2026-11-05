@@ -46,5 +46,9 @@
     "content": "{\"ticker\":\"NVDA\",\"forecast_horizon_days\":22,\"last_close\":180.5,\"forecast_bands\":[{\"mean\":182.0,\"p10\":170.0,\"p25\":175.0,\"p75\":190.0,\"p90\":200.0}],\"model_weights\":{\"ensemble_a\":0.5,\"ensemble_b\":0.5}}",
     "content_type": "application/json"
   },
-  "label": { "compliant": false }
+  "label": { "compliant": false },
+  "eval_scores_2026_11_05": {
+    "claude-haiku-4-5-20251001": [45, 20, 20, 15, 45, 20],
+    "claude-haiku-5-5": [22, 18, 22, 22, 25, 22]
+  }
 }

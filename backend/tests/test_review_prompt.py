@@ -188,3 +188,37 @@ def test_failed_review_does_not_stamp_version():
     assert result == {}
     assert "quality_prompt_version" not in result
     assert "model" not in result
+
+
+def test_review_reads_the_text_block_after_a_thinking_block():
+    payload = {"score": 64, "recommendation": "approve", "holdback": False, "notes": "ok"}
+
+    class _Thinking:
+        type = "thinking"
+        thinking = "reasoning"
+
+    class _Text:
+        type = "text"
+        text = json.dumps(payload)
+
+    class _Response:
+        content = [_Thinking(), _Text()]
+
+    fake = MagicMock()
+    fake.messages.create = AsyncMock(return_value=_Response())
+    with (
+        patch("app.services.review_service.settings.ANTHROPIC_API_KEY", "sk-test"),
+        patch("app.services.review_service.anthropic.AsyncAnthropic", return_value=fake),
+    ):
+        result = asyncio.run(
+            review_deliverable(
+                bounty_title="Recon",
+                bounty_description="Passive recon",
+                acceptance_criteria=None,
+                reward_amount=150,
+                difficulty="medium",
+                deliverable_content="{}",
+                provenance=None,
+            )
+        )
+    assert result["score"] == 64

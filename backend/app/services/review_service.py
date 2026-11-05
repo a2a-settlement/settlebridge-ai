@@ -10,6 +10,7 @@ from typing import Any
 import anthropic
 
 from app.config import settings
+from app.services.llm_text import response_text
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ async def review_deliverable(
             messages=[{"role": "user", "content": prompt}],
         )
 
-        review = parse_review_response(response.content[0].text)
+        review = parse_review_response(response_text(response))
         if not review:
             logger.warning("AI review missing required keys or was not valid JSON")
             return {}
