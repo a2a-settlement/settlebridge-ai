@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.config import settings
 from app.models.bounty import Bounty, BountyStatus
@@ -1966,6 +1967,33 @@ def test_installation_upsert_disable_and_repo_link_idempotency(monkeypatch):
     assert new_links[0].repo_full_name == "acme/new"
     assert new_links[0].enabled is False
     assert new_links[0].funder_user_id is None
+
+
+@pytest.mark.parametrize(
+    ("getter", "column"),
+    [
+        (bounty_svc.get_binding_by_issue, "issue_number"),
+        (bounty_svc.get_binding_by_pull_request, "pr_number"),
+    ],
+)
+def test_binding_lookups_lock_and_reload_the_row(getter, column):
+    seen = []
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class _CapturingDB:
+        async def execute(self, stmt):
+            seen.append(stmt)
+            return _Result()
+
+    assert asyncio.run(getter(_CapturingDB(), REPO, 7)) is None
+    (stmt,) = seen
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert sql.rstrip().endswith("FOR UPDATE")
+    assert f"github_bounty_bindings.{column} = " in sql
+    assert stmt.get_execution_options().get("populate_existing") is True
 
 
 def test_installation_created_links_its_selected_repositories(monkeypatch):

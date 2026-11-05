@@ -595,7 +595,7 @@ async def get_binding_by_issue(
         GitHubBountyBinding.repo_full_name == repo_full_name,
         GitHubBountyBinding.issue_number == issue_number,
     )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return await _locked_binding(db, stmt)
 
 
 async def get_binding_by_pull_request(
@@ -605,6 +605,14 @@ async def get_binding_by_pull_request(
         GitHubBountyBinding.repo_full_name == repo_full_name,
         GitHubBountyBinding.pr_number == pr_number,
     )
+    return await _locked_binding(db, stmt)
+
+
+async def _locked_binding(db: AsyncSession, stmt) -> GitHubBountyBinding | None:
+    # Every web worker runs a job loop, so a merge and the issue close it
+    # triggers are handled concurrently. The row lock makes the later handler
+    # wait for the earlier commit, and populate_existing makes it see that commit.
+    stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
