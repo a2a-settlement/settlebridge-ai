@@ -266,6 +266,11 @@ class _Claim:
         monkeypatch.setattr(settings, "GITHUB_EXCHANGE_FEE_PERCENT", "0.25")
         monkeypatch.setattr(settings, "GITHUB_EXCHANGE_MIN_FEE", 1)
         monkeypatch.setattr(github_leases, "fetch_advertised_binding", fetch_advertised_binding)
+
+        async def hidden_bounty_ids(db, ids):
+            return set()
+
+        monkeypatch.setattr(github_leases, "hidden_bounty_ids", hidden_bounty_ids)
         monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
         monkeypatch.setattr(github_leases, "fetch_users_for_agent", fetch_users_for_agent)
         monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity_for_user)

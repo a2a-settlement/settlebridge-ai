@@ -41,6 +41,7 @@ from app.models.github import (
 from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_app, github_bounty_service, trust_gateway
 from app.services.github_errors import RetryableJobError
+from app.services.repo_visibility import bounty_public_clause, hidden_bounty_ids
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,7 @@ async def fetch_advertised_bounties(db: AsyncSession, *, language: str | None, l
             GitHubBountyBinding.state == BindingState.ADVERTISED.value,
             Bounty.status == BountyStatus.OPEN,
             ~active,
+            bounty_public_clause(),
         )
         .order_by(GitHubBountyBinding.created_at, GitHubBountyBinding.id)
         .limit(limit)
@@ -940,6 +942,8 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     binding = await fetch_advertised_binding(db, bounty_id)
     if binding is None or binding.current_spec_id is None:
         return _err(404, "not_found")
+    if await hidden_bounty_ids(db, [binding.bounty_id]):
+        return _err(404, "not_found")
     spec = await fetch_spec(db, binding.current_spec_id)
     if spec is None:
         return _err(404, "not_found")
@@ -1206,6 +1210,8 @@ def _evaluation_job(repo: str, installation_id: int, pr_number: int, head_sha: s
 async def bounty_status(db: AsyncSession, bounty_id: uuid.UUID) -> APIResult:
     binding = await fetch_binding_by_bounty(db, bounty_id)
     if binding is None:
+        return _err(404, "not_found")
+    if await hidden_bounty_ids(db, [binding.bounty_id]):
         return _err(404, "not_found")
     settlement = await fetch_settlement(db, binding.id)
     lease = await fetch_active_lease_for_binding(db, binding.id)
