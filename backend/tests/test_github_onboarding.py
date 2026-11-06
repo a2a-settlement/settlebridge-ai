@@ -23,6 +23,7 @@ from app.cli import github_repos
 from app.models.github import GitHubIdentity, GitHubInstallation, GitHubRepoLink
 from app.models.user import User, UserType
 from app.services import github_app, github_onboarding
+from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
 from app.services.github_onboarding import (
     FunderConflictError,
     OnboardExchangeError,
@@ -37,7 +38,7 @@ from app.services.github_onboarding import (
     validated_allowed_paths,
 )
 from app.services.github_bounty_service import parse_bounty_labels
-from app.services.github_repo_admin import RepoAdminError
+from app.services.github_repo_admin import RepoAdminError, _strict_tests_enabled
 
 REPO = "acme/widget"
 HEAD = "a" * 40
@@ -144,7 +145,10 @@ def _rules_check(context: str, integration_id: int | None) -> dict:
         item["integration_id"] = integration_id
     return {
         "type": "required_status_checks",
-        "parameters": {"required_status_checks": [item], "strict_required_status_checks_policy": False},
+        "parameters": {
+            "required_status_checks": [item],
+            "strict_required_status_checks_policy": False,
+        },
     }
 
 
@@ -261,7 +265,10 @@ def test_checks_from_protection_reads_checks_and_legacy_contexts():
     branch = {
         "protection": {
             "required_status_checks": {
-                "checks": [{"context": "test", "app_id": ACTIONS}, {"context": "docs", "app_id": None}],
+                "checks": [
+                    {"context": "test", "app_id": ACTIONS},
+                    {"context": "docs", "app_id": None},
+                ],
                 "contexts": ["test", "legacy"],
             }
         }
@@ -550,6 +557,86 @@ def test_onboard_reports_exchange_failures(db, gh, balance):
     balance["error"] = ValueError("A2A_DASHBOARD_API_KEY not configured on this server")
     with pytest.raises(OnboardExchangeError, match="could not read"):
         _run(onboard_repo(db, REPO, funder=user))
+
+
+def _stored_option(db: Bridge, field: str) -> bool:
+    link = reload(db)
+    if field == "strict_tests":
+        policy = link.default_policy if isinstance(link.default_policy, dict) else {}
+        return _strict_tests_enabled(policy)
+    return bool(getattr(link, field))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["auto_dispatch_alerts", "auto_merge_acceptable", "strict_tests"],
+)
+def test_onboard_option_set_unset_and_omit(db, gh, balance, field):
+    user = make_user()
+    db.sync.add(user)
+    seed(db.sync)
+
+    turned_on = _run(onboard_repo(db, REPO, funder=user, **{field: True}))
+    assert turned_on["changed"] is True
+    assert turned_on["before"][field] is False
+    assert turned_on["after"][field] is True
+    assert _stored_option(db, field) is True
+    stamped = reload(db).onboarded_at
+    if field == "strict_tests":
+        severity = reload(db).default_policy["rule_severity"]
+        assert severity["star_import"] == "violation"
+        for rule, level in STRICT_TEST_RULE_SEVERITY.items():
+            assert severity[rule] == level
+
+    same = _run(onboard_repo(db, REPO, funder=user, **{field: True}))
+    assert same["changed"] is False
+    assert same["before"] == {} and same["after"] == {}
+    assert reload(db).onboarded_at == stamped
+
+    omitted = _run(onboard_repo(db, REPO, funder=user))
+    assert omitted["changed"] is False
+    assert _stored_option(db, field) is True
+    assert reload(db).onboarded_at == stamped
+
+    turned_off = _run(onboard_repo(db, REPO, funder=user, **{field: False}))
+    assert turned_off["changed"] is True
+    assert turned_off["before"][field] is True
+    assert turned_off["after"][field] is False
+    assert _stored_option(db, field) is False
+    if field == "strict_tests":
+        assert reload(db).default_policy["rule_severity"] == {"star_import": "violation"}
+
+    still_off = _run(onboard_repo(db, REPO, funder=user, **{field: False}))
+    assert still_off["changed"] is False
+    assert _stored_option(db, field) is False
+
+
+def test_onboard_strict_tests_false_drops_only_those_rules(db, gh, balance):
+    user = make_user()
+    db.sync.add(user)
+    seed(
+        db.sync,
+        funder_user_id=user.id,
+        enabled=True,
+        required_checks=[{"name": "test", "app_id": ACTIONS}],
+        default_policy={
+            "allowed_paths": ["src/*", "tests/*"],
+            "rule_severity": {
+                "star_import": "violation",
+                "test_file_deleted": "review",
+                "other": "review",
+            },
+        },
+    )
+    result = _run(onboard_repo(db, REPO, funder=user, strict_tests=False))
+    assert result["changed"] is True
+    assert result["before"]["strict_tests"] is False
+    assert result["after"]["strict_tests"] is False
+    assert reload(db).default_policy["rule_severity"] == {
+        "star_import": "violation",
+        "other": "review",
+    }
+    assert _run(onboard_repo(db, REPO, funder=user, strict_tests=False))["changed"] is False
 
 
 def test_onboard_refuses_a_different_funder_unless_replacing(db, gh, balance):

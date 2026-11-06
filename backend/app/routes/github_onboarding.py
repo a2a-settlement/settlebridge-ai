@@ -4,6 +4,11 @@ Off unless ``GITHUB_SELF_SERVE_ONBOARDING`` is true. The caller is always the
 funder. Their linked GitHub identity must hold ``admin`` on the repo, checked by
 GitHub user id and not only by login, because logins can be renamed. Required
 checks must be passed explicitly; the preview shows what GitHub reports.
+``auto_dispatch_alerts``, ``auto_merge_acceptable`` and ``strict_tests`` are
+optional. Omitted, each stays as it is. Alert dispatch and auto-merge still
+depend on the matching global setting. A caller with linked GitHub is warned,
+without blocking, that pull requests from that account cannot claim bounties
+they fund.
 
 Errors carry ``detail = {"code", "message", ...}`` with a stable ``code``. Nothing
 about a repo is returned until the caller is shown to be its admin, so a missing
@@ -41,7 +46,12 @@ from app.services.github_onboarding import (
     minimum_headroom,
     onboard_repo,
 )
-from app.services.github_repo_admin import RepoAdminError, _installation_row, _require_link
+from app.services.github_repo_admin import (
+    RepoAdminError,
+    _installation_row,
+    _require_link,
+    _strict_tests_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +74,14 @@ class OnboardBody(BaseModel):
     checks: list[CheckBody] = Field(min_length=1)
     allowed_paths: list[str] | None = None
     allowed_dependency_changes: list[str] | None = None
+    auto_dispatch_alerts: bool | None = None
+    auto_merge_acceptable: bool | None = None
+    strict_tests: bool | None = None
     dry_run: bool = False
 
 
 def _error(status_code: int, code: str, message: str, **data) -> HTTPException:
-    return HTTPException(
-        status_code=status_code, detail={"code": code, "message": message, **data}
-    )
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message, **data})
 
 
 def _urls() -> dict:
@@ -113,7 +124,9 @@ async def _is_admin(link: GitHubRepoLink, identity: GitHubIdentity) -> bool:
         if exc.status_code in (403, 404):
             return False
         logger.warning("collaborator lookup failed for %s", link.repo_full_name)
-        raise _error(status.HTTP_502_BAD_GATEWAY, "github_unavailable", "GitHub is unavailable") from exc
+        raise _error(
+            status.HTTP_502_BAD_GATEWAY, "github_unavailable", "GitHub is unavailable"
+        ) from exc
     return permission == "admin" and github_user_id == int(identity.github_user_id)
 
 
@@ -153,9 +166,32 @@ def _step(code: str, message: str, *, blocking: bool = True, **data) -> dict:
     return {"code": code, "message": message, "blocking": blocking, **data}
 
 
+def _repo_options(link: GitHubRepoLink) -> dict:
+    policy = link.default_policy if isinstance(link.default_policy, dict) else {}
+    return {
+        "auto_dispatch_alerts": bool(link.auto_dispatch_alerts),
+        "auto_merge_acceptable": bool(link.auto_merge_acceptable),
+        "strict_tests": _strict_tests_enabled(policy),
+    }
+
+
+def _funder_cannot_solve_step(login: str) -> dict:
+    return _step(
+        "funder_cannot_solve",
+        "You will fund this repo's bounties, so pull requests from your GitHub "
+        f"account (@{login}) cannot claim them. Ask another account to fund the "
+        "repo if you want to solve them yourself.",
+        blocking=False,
+    )
+
+
 async def _funding_steps(db: AsyncSession, user: User) -> tuple[dict, list[dict]]:
     minimum = minimum_headroom()
-    funder = {"exchange_account": bool(user.exchange_bot_id), "headroom_ate": None, "minimum_ate": minimum}
+    funder = {
+        "exchange_account": bool(user.exchange_bot_id),
+        "headroom_ate": None,
+        "minimum_ate": minimum,
+    }
     funding = bool(settings.GITHUB_SETUP_FUNDING_ENABLED)
     extra = {"action": "add_funds", "url": _urls()["setup_page"]} if funding else {}
     if not user.exchange_bot_id:
@@ -210,6 +246,9 @@ async def setup_status(
         "repo_access": False,
         "funder": None,
         "detected": None,
+        "auto_dispatch_alerts": None,
+        "auto_merge_acceptable": None,
+        "strict_tests": None,
         "urls": urls,
     }
     if identity is None:
@@ -228,6 +267,7 @@ async def setup_status(
             result["enabled"] = bool(link.enabled)
             result["funded_by_you"] = link.funder_user_id == user.id
             result["funded_by_other"] = funded_by_other
+            result.update(_repo_options(link))
             if funded_by_other:
                 steps.append(_step("funded_by_other", f"{repo} is already funded by another user"))
             try:
@@ -266,6 +306,8 @@ async def setup_status(
             )
     result["funder"], funding = await _funding_steps(db, user)
     steps.extend(funding)
+    if identity is not None:
+        steps.append(_funder_cannot_solve_step(identity.login))
     result["next_steps"] = steps
     result["ready"] = not any(step["blocking"] for step in steps)
     return result
@@ -299,7 +341,9 @@ async def add_funds(
     if not await ensure_exchange_account(db, user):
         await db.rollback()
         raise _error(
-            status.HTTP_502_BAD_GATEWAY, "exchange_unavailable", "could not create an exchange account"
+            status.HTTP_502_BAD_GATEWAY,
+            "exchange_unavailable",
+            "could not create an exchange account",
         )
     await db.commit()
     try:
@@ -307,7 +351,9 @@ async def add_funds(
         balance = int(dashboard["available"])
     except Exception as exc:
         raise _error(
-            status.HTTP_502_BAD_GATEWAY, "exchange_unavailable", "could not read your exchange balance"
+            status.HTTP_502_BAD_GATEWAY,
+            "exchange_unavailable",
+            "could not read your exchange balance",
         ) from exc
     if balance >= cap:
         raise _error(
@@ -391,6 +437,8 @@ async def preview_onboarding(
         "enabled": bool(link.enabled),
         "funded_by_you": link.funder_user_id == user.id,
         "funded_by_other": link.funder_user_id is not None and link.funder_user_id != user.id,
+        "funder_cannot_solve": True,
+        **_repo_options(link),
     }
 
 
@@ -412,6 +460,9 @@ async def onboard(
             checks=[check.model_dump() for check in body.checks],
             allowed_paths=body.allowed_paths,
             allowed_dependency_changes=body.allowed_dependency_changes,
+            auto_dispatch_alerts=body.auto_dispatch_alerts,
+            auto_merge_acceptable=body.auto_merge_acceptable,
+            strict_tests=body.strict_tests,
             actor_user_id=user.id,
             create_labels=not body.dry_run,
         )

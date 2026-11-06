@@ -24,6 +24,7 @@ from app.services import exchange, github_app
 from app.services.github_bounty_service import escrow_cost, sum_advertised_cost
 from app.services.github_repo_admin import (
     RepoAdminError,
+    _apply_strict_tests,
     _checks_copy,
     _installation_row,
     _plain_list,
@@ -40,7 +41,18 @@ JS_MARKERS = frozenset({"package.json"})
 PYTHON_DIRS = ("src", "app", "lib", "tests", "test")
 JS_DIRS = ("src", "lib", "test", "tests")
 NOT_PACKAGE_DIRS = frozenset(
-    {"build", "dist", "doc", "docs", "env", "example", "examples", "node_modules", "scripts", "venv"}
+    {
+        "build",
+        "dist",
+        "doc",
+        "docs",
+        "env",
+        "example",
+        "examples",
+        "node_modules",
+        "scripts",
+        "venv",
+    }
 )
 MAX_PACKAGE_PROBES = 10
 _BOUNTY_COLOR = "0E8A16"
@@ -295,9 +307,7 @@ async def ensure_standard_labels(installation_id: int, repo: str) -> dict:
     report: dict[str, list] = {"created": [], "existing": [], "failed": []}
     for name, color, description in STANDARD_LABELS:
         try:
-            outcome = await github_app.ensure_label(
-                installation_id, repo, name, color, description
-            )
+            outcome = await github_app.ensure_label(installation_id, repo, name, color, description)
         except github_app.GitHubAPIError as exc:
             report["failed"].append({"name": name, "status": exc.status_code})
             continue
@@ -317,9 +327,7 @@ async def funder_headroom(db: AsyncSession, funder: User) -> int:
             f"funder {funder.email} has no exchange account", code="funder_no_exchange"
         )
     try:
-        dashboard = await asyncio.to_thread(
-            exchange.get_balance_dashboard, funder.exchange_bot_id
-        )
+        dashboard = await asyncio.to_thread(exchange.get_balance_dashboard, funder.exchange_bot_id)
         available = int(dashboard["available"])
     except Exception as exc:
         raise OnboardExchangeError("could not read the funder's exchange balance") from exc
@@ -330,6 +338,32 @@ def _format_checks(checks: list[dict]) -> str:
     return ", ".join(f"{check['name']}:{check['app_id']}" for check in checks) or "none"
 
 
+def _option_changed(current: object, requested: bool | None) -> bool:
+    if requested is None:
+        return False
+    if not isinstance(requested, bool):
+        return True
+    return bool(current) is not requested
+
+
+def _severity_map(policy: dict) -> dict | None:
+    severity = policy.get("rule_severity")
+    if isinstance(severity, dict):
+        return dict(severity)
+    return None
+
+
+def _strict_tests_differs(policy: dict, strict_tests: bool | None) -> bool:
+    """Whether applying ``strict_tests`` would change ``rule_severity``. ``None`` would not."""
+    if strict_tests is None:
+        return False
+    if not isinstance(strict_tests, bool):
+        return True
+    trial = _policy_dict(policy)
+    _apply_strict_tests(trial, strict_tests)
+    return _severity_map(trial) != _severity_map(policy)
+
+
 async def onboard_repo(
     db: AsyncSession,
     repo: str,
@@ -338,6 +372,9 @@ async def onboard_repo(
     checks: list | None = None,
     allowed_paths: list | None = None,
     allowed_dependency_changes: list | None = None,
+    auto_dispatch_alerts: bool | None = None,
+    auto_merge_acceptable: bool | None = None,
+    strict_tests: bool | None = None,
     replace_funder: bool = False,
     actor_user_id=None,
     create_labels: bool = False,
@@ -347,16 +384,17 @@ async def onboard_repo(
     With ``create_labels``, also creates any missing ``STANDARD_LABELS`` on GitHub.
     That write is outside the transaction, so dry runs must leave it off.
 
+    ``auto_dispatch_alerts``, ``auto_merge_acceptable`` and ``strict_tests`` update
+    those repo options when passed. ``None`` leaves each one as it is.
+    ``strict_tests`` merges or removes the rules that make weakening existing tests
+    a violation, and leaves every other ``rule_severity`` entry in place.
+
     Passed values win over detected ones. Running it again with the same inputs
     returns ``changed: False`` and writes nothing.
     """
     detected = await detect_defaults(db, repo)
     link = await _require_link(db, repo)
-    if (
-        link.funder_user_id is not None
-        and link.funder_user_id != funder.id
-        and not replace_funder
-    ):
+    if link.funder_user_id is not None and link.funder_user_id != funder.id and not replace_funder:
         raise FunderConflictError(f"{link.repo_full_name} is already funded by another user")
 
     if checks is not None:
@@ -401,6 +439,9 @@ async def onboard_repo(
             and _plain_list(policy.get("allowed_dependency_changes")) != chosen_deps
         )
         or not bool(link.enabled)
+        or _option_changed(link.auto_dispatch_alerts, auto_dispatch_alerts)
+        or _option_changed(link.auto_merge_acceptable, auto_merge_acceptable)
+        or _strict_tests_differs(policy, strict_tests)
     )
     result = {
         "repo": link.repo_full_name,
@@ -420,6 +461,9 @@ async def onboard_repo(
             checks=chosen_checks,
             allowed_paths=chosen_paths,
             allowed_dependency_changes=chosen_deps,
+            auto_dispatch_alerts=auto_dispatch_alerts,
+            auto_merge_acceptable=auto_merge_acceptable,
+            strict_tests=strict_tests,
         )
         enabled = await set_repo_enabled(db, link.repo_full_name, True)
         link.onboarded_by_user_id = actor_user_id if actor_user_id is not None else funder.id
