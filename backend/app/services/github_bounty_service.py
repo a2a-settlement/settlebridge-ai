@@ -703,7 +703,12 @@ async def get_active_lease(db: AsyncSession, binding_id: uuid.UUID) -> GitHubLea
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
-def _build_issue_content(parsed: ParsedLabels, issue_body: str | None, link) -> dict:
+def _build_issue_content(
+    parsed: ParsedLabels, issue_body: str | None, link, dispatch=None
+) -> dict:
+    """``dispatch`` is the issue's GitHubAlertDispatch, if a security alert created it."""
+    from app.services import github_alerts
+
     amount = parsed.amount_usd
     if amount is None:
         raise PermanentJobError("cannot freeze a bounty without an amount")
@@ -714,8 +719,16 @@ def _build_issue_content(parsed: ParsedLabels, issue_body: str | None, link) -> 
     return build_spec_content(
         test_command=extract_test_command(issue_body if isinstance(issue_body, str) else None),
         required_checks=_as_list(link.required_checks),
-        policy=_as_dict(link.default_policy),
-        payment_trigger=PAYMENT_TRIGGER,
+        policy=(
+            github_alerts.merge_policy(
+                _as_dict(link.default_policy), _as_dict(dispatch.policy_overrides)
+            )
+            if dispatch is not None
+            else _as_dict(link.default_policy)
+        ),
+        payment_trigger=(
+            github_alerts.ALERT_FIXED_TRIGGER if dispatch is not None else PAYMENT_TRIGGER
+        ),
         amount_ate=usd_to_ate(amount),
         fee_bps=int(settings.GITHUB_CLEARING_FEE_BPS),
         required_kya=kya,
@@ -1175,7 +1188,14 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
         )
         await _flush(db)
         return
-    content = _build_issue_content(parsed, issue.get("body"), link)
+    from app.services import github_alerts
+
+    dispatch = (
+        await github_alerts.dispatch_for_issue(db, repo, issue_number)
+        if getattr(link, "auto_dispatch_alerts", False) is True
+        else None
+    )
+    content = _build_issue_content(parsed, issue.get("body"), link, dispatch)
     content_hash = spec_content_hash(content)
     amount_usd = format_usd(parsed.amount_usd)
     if binding is None:
@@ -1584,6 +1604,24 @@ async def handle_checks_completed(db: AsyncSession, job: GitHubJob) -> None:
             reviewer_summary=summary if isinstance(summary, str) else None,
         )
         await _flush(db)
+        if outcome == "ACCEPTABLE" and settings.GITHUB_AUTO_MERGE_ACCEPTABLE:
+            from app.services import github_automerge
+
+            link = await get_enabled_funded_repo_link(db, repo)
+            if link is not None:
+                await github_automerge.maybe_auto_merge(
+                    db,
+                    binding=binding,
+                    lease=lease,
+                    spec=spec,
+                    link=link,
+                    installation_id=installation_id,
+                    repo=repo,
+                    pr_number=pr_number,
+                    pull_request=pull_request,
+                    head_sha=head_sha,
+                    assessment=assessment,
+                )
 
 
 async def handle_review_clear_comment(db: AsyncSession, job: GitHubJob) -> None:
@@ -1812,6 +1850,22 @@ _HANDLERS = {
     JobKind.REVIEW_CLEAR_COMMENT.value: handle_review_clear_comment,
     JobKind.ADVANCE_SETTLEMENT.value: handle_advance_settlement,
 }
+
+
+async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
+    from app.services import github_alerts
+
+    await github_alerts.handle_security_alert(db, job)
+
+
+async def handle_refund_hold(db: AsyncSession, job: GitHubJob) -> None:
+    from app.services import github_leases
+
+    await github_leases.handle_refund_hold(db, job)
+
+
+_HANDLERS[JobKind.SECURITY_ALERT.value] = handle_security_alert
+_HANDLERS[JobKind.REFUND_HOLD.value] = handle_refund_hold
 
 
 async def handle_job(db: AsyncSession, job: GitHubJob) -> None:

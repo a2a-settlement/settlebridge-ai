@@ -7,6 +7,7 @@ from app.models.gateway import AlertEvent, AlertRule, AuditEntry, GatewayAgent, 
 from app.models.github import (
     AcceptanceSpec,
     FunderLedgerEntry,
+    GitHubAlertDispatch,
     GitHubBountyBinding,
     GitHubIdentity,
     GitHubInstallation,
@@ -30,7 +31,7 @@ __all__ = [
     "GatewayAgent",
     "GitHubInstallation", "GitHubRepoLink", "GitHubBountyBinding", "AcceptanceSpec",
     "FunderLedgerEntry", "GitHubWebhookDelivery", "GitHubJob", "GitHubSettlement",
-    "GitHubIdentity", "GitHubLease",
+    "GitHubIdentity", "GitHubLease", "GitHubAlertDispatch",
     "ScoreHistory", "ScoreMode",
     "TrainingRun", "TrainingRunStatus", "TrainingTranscript",
 ]

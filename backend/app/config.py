@@ -68,6 +68,25 @@ class Settings(BaseSettings):
     # Test ATE deposited into the exchange account a first GitHub sign-in creates,
     # when GITHUB_SETUP_FUNDING_ENABLED is on. 0 disables it.
     GITHUB_LOGIN_STARTER_ATE: int = 1000
+    # Security-alert auto-bounties. Each repo must also opt in (auto_dispatch_alerts).
+    GITHUB_AUTO_DISPATCH_ALERTS: bool = False
+    GITHUB_AUTO_BOUNTY_DEPENDABOT_USD: int = 15
+    GITHUB_AUTO_BOUNTY_CODEQL_USD: int = 25
+    # Per repo, over the trailing 7 days.
+    GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE: int = 10000
+    # How long settlement of an alert bounty waits for GitHub to mark the alert fixed.
+    GITHUB_ALERT_FIXED_TIMEOUT_HOURS: int = 24
+    # Bounded auto-merge. Each repo must also opt in (auto_merge_acceptable).
+    GITHUB_AUTO_MERGE_ACCEPTABLE: bool = False
+    GITHUB_AUTO_MERGE_MIN_EMA: float = 0.90
+    GITHUB_AUTO_MERGE_MIN_KYA: int = 2
+    GITHUB_AUTO_MERGE_MAX_DIFF_LINES: int = 100
+    # Create the funder's escrow when a lease is claimed; refund it if the lease ends unpaid.
+    GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM: bool = False
+    # Extra escrow lifetime beyond the lease and alert windows.
+    GITHUB_HOLD_TTL_MARGIN_MINUTES: int = 360
+    # Refuse leases where the solver is the funder, by user, GitHub account or exchange principal.
+    GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION: bool = True
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     # Comma-separated owner/repo=ema pairs that replace the default for that repo.
     GITHUB_REPO_REQUIRED_EMA: str = ""

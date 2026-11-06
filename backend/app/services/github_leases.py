@@ -944,3 +944,8 @@ async def expire_stale_leases(db: AsyncSession) -> int:
     if expired:
         logger.info("expired %s bounty leases", expired)
     return expired
+
+
+async def handle_refund_hold(db: AsyncSession, job) -> None:
+    """Refund ``payload["lease_id"]``'s hold escrow to the funder. Idempotent."""
+    raise NotImplementedError
