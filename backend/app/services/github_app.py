@@ -327,6 +327,39 @@ async def upsert_sticky_comment(
         return _comment_id(response)
 
 
+def _already_exists(response: httpx.Response) -> bool:
+    if response.status_code != 422:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    errors = data.get("errors") if isinstance(data, dict) else None
+    return isinstance(errors, list) and any(
+        isinstance(item, dict) and item.get("code") == "already_exists" for item in errors
+    )
+
+
+async def ensure_label(
+    installation_id: int, repo: str, name: str, color: str, description: str
+) -> str:
+    """Create a label unless one with that name exists. Returns ``created`` or ``exists``.
+
+    An existing label is left as it is, including its color and description.
+    """
+    repo = _validate_repo(repo)
+    if not isinstance(name, str) or not name.strip() or any(c in name for c in "\r\n"):
+        raise GitHubAPIError("invalid label name")
+    token = await installation_token(installation_id)
+    body = {"name": name, "color": color, "description": description}
+    async with _client() as client:
+        response = await _send(client, "POST", f"{_api_root()}/repos/{repo}/labels", token, json_body=body)
+    if _already_exists(response):
+        return "exists"
+    _ensure_ok(response)
+    return "created"
+
+
 async def get_collaborator_permission(installation_id: int, repo: str, username: str) -> str:
     repo = _validate_repo(repo)
     safe_user = _validate_username(username)

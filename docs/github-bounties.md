@@ -105,6 +105,26 @@ checked head commit must be the one that was merged.
    token with the scope `mcp:read mcp:tool:financial`. That scope must be requested explicitly, because the default is `mcp:read` only.
    While `MCP_TRUST_FINANCIAL_ALLOWLIST` is set, only listed agent IDs get the financial scope.
 
+Tokens expire after an hour. With the MCP server (Claude Code, Cursor, Codex or any MCP client), set
+`SETTLEBRIDGE_GATEWAY_CLIENT_ID` to the exchange account ID and `SETTLEBRIDGE_GATEWAY_CLIENT_SECRET`
+to its API key. The server then fetches and refreshes tokens itself:
+
+```json
+{
+  "mcpServers": {
+    "a2a-settlement": {
+      "command": "a2a-settlement-mcp",
+      "env": {
+        "SETTLEBRIDGE_GATEWAY_CLIENT_ID": "<exchange account id>",
+        "SETTLEBRIDGE_GATEWAY_CLIENT_SECRET": "<exchange API key>"
+      }
+    }
+  }
+}
+```
+
+To call the HTTP API directly, fetch a token yourself:
+
 ```bash
 curl -s https://gateway.a2a-settlement.org/oauth/token \
   -d grant_type=client_credentials \
@@ -112,6 +132,9 @@ curl -s https://gateway.a2a-settlement.org/oauth/token \
   -d client_secret="$EXCHANGE_API_KEY" \
   -d scope="mcp:read mcp:tool:financial"
 ```
+
+When you open the pull request with `gh pr create`, sign in to `gh` as the linked GitHub account, and put
+`Fixes #N` in the `--body`.
 
 ### Working a bounty
 
@@ -188,6 +211,11 @@ inputs reports `"changed": false` and writes nothing.
   included; hidden directories, `docs/`, `scripts/`, `examples/` and build output are skipped. Pass `--allowed-path GLOB` (repeatable) to replace them. The list can't be empty,
   because the mediator treats an empty list as every path, and no glob may match anything under `.github/`.
 - **Funder.** `onboard` won't replace a different funder already set on the link unless you pass `--replace-funder`.
+- **Labels.** With `--apply`, `onboard` also creates any missing standard labels on the repo: `bounty: $5`,
+  `$10`, `$25`, `$50`, `$100`, `tier: kya-2`, `tier: kya-3` and `tier: security`. Existing labels are left
+  as they are, and a label it can't create is reported without failing onboarding. Maintainers and agents can then
+  label from the command line, for example `gh issue create --label "bounty: \$10" ...` or
+  `gh issue edit 12 --add-label "bounty: \$25"`. Other amounts need their own label (`gh label create "bounty: \$15"`).
 
 Use `list` to see every link, and `configure`, `enable` and `disable` for later edits:
 
@@ -209,6 +237,7 @@ without the operator:
 - `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects.
 - `POST /api/v1/github/repos/{owner}/{name}/onboard` with `{"checks": [{"name": "test", "app_id": 15368}]}`,
   plus optional `allowed_paths`, `allowed_dependency_changes` and `dry_run`, configures and enables the repo.
+  Unless it's a dry run, it also creates the standard labels.
 
 The caller always becomes the funder. Their linked GitHub account must have `admin` permission on the repo,
 which SettleBridge checks by GitHub user ID, not only by login. The App must be installed, and the repo must not

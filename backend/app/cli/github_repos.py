@@ -72,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[write_flags],
         help=(
             "Detect required checks and allowed paths, then set the funder and enable the "
-            "repo in one transaction. Passed values replace detected ones."
+            "repo in one transaction. Passed values replace detected ones. With --apply, "
+            "also creates any missing standard bounty and tier labels on the repo."
         ),
     )
     onboard.add_argument("--repo", required=True, help="GitHub repo as OWNER/NAME")
@@ -169,6 +170,7 @@ async def _invoke(db, args: argparse.Namespace) -> tuple[object, bool]:
             allowed_paths=args.allowed_path,
             allowed_dependency_changes=args.allowed_dependency,
             replace_funder=args.replace_funder,
+            create_labels=args.apply,
         )
         return payload, bool(payload["changed"])
     if args.command == "configure":

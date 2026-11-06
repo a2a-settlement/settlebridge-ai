@@ -580,6 +580,64 @@ def test_list_root_entries_reads_a_subdirectory(monkeypatch: pytest.MonkeyPatch)
     assert seen == ["/repos/acme/widgets/contents/pilot?ref=main"]
 
 
+def _label_handler(monkeypatch: pytest.MonkeyPatch, response: httpx.Response) -> list[dict]:
+    _configure(monkeypatch, _PRIVATE_PEM)
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        assert request.method == "POST"
+        assert request.url.path == "/repos/acme/widgets/labels"
+        bodies.append(json.loads(request.content))
+        return response
+
+    _install(monkeypatch, handler)
+    return bodies
+
+
+def test_ensure_label_creates(monkeypatch: pytest.MonkeyPatch):
+    bodies = _label_handler(monkeypatch, httpx.Response(201, json={"name": "bounty: $5"}))
+    outcome = asyncio.run(
+        github_app.ensure_label(3, REPO, "bounty: $5", "0E8A16", "SettleBridge bounty, $5 USD")
+    )
+    assert outcome == "created"
+    assert bodies == [
+        {"name": "bounty: $5", "color": "0E8A16", "description": "SettleBridge bounty, $5 USD"}
+    ]
+
+
+def test_ensure_label_existing_is_left_alone(monkeypatch: pytest.MonkeyPatch):
+    response = httpx.Response(
+        422,
+        json={"message": "Validation Failed", "errors": [{"resource": "Label", "code": "already_exists"}]},
+    )
+    _label_handler(monkeypatch, response)
+    assert asyncio.run(github_app.ensure_label(3, REPO, "bounty: $5", "0E8A16", "d")) == "exists"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(422, json={"errors": [{"code": "invalid", "field": "color"}]}),
+        httpx.Response(403, json={"message": "Resource not accessible by integration"}),
+    ],
+)
+def test_ensure_label_other_errors_raise(monkeypatch: pytest.MonkeyPatch, response):
+    _label_handler(monkeypatch, response)
+    with pytest.raises(GitHubAPIError) as caught:
+        asyncio.run(github_app.ensure_label(3, REPO, "bounty: $5", "zz", "d"))
+    assert caught.value.status_code == response.status_code
+
+
+def test_ensure_label_rejects_bad_names(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(github_app, "_client", _refuse_network)
+    _configure(monkeypatch, _PRIVATE_PEM)
+    for name in ("", "  ", "a\nb"):
+        with pytest.raises(GitHubAPIError):
+            asyncio.run(github_app.ensure_label(3, REPO, name, "0E8A16", "d"))
+
+
 def test_get_branch_error_is_raised(monkeypatch: pytest.MonkeyPatch):
     _routes(monkeypatch, {"/repos/acme/widgets/branches/main": httpx.Response(404)})
     with pytest.raises(GitHubAPIError) as caught:

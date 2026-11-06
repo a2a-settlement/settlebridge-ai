@@ -189,6 +189,7 @@ def test_admin_onboards_as_the_funder(db, gh):
     assert link.enabled is True
     assert link.funder_user_id == user.id
     assert link.onboarded_by_user_id == user.id
+    assert "bounty: $5" in payload["labels"]["created"]
 
 
 def test_dry_run_rolls_back(db, gh):
@@ -196,6 +197,8 @@ def test_dry_run_rolls_back(db, gh):
     response = _client(db, user).post(URL, json={**BODY, "dry_run": True})
     assert response.status_code == 200
     assert response.json()["changed"] is True
+    assert response.json()["labels"] is None
+    assert gh.label_calls == []
     assert reload(db).enabled is False
 
 

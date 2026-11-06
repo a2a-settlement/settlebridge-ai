@@ -134,6 +134,7 @@ async def onboard(
             allowed_paths=body.allowed_paths,
             allowed_dependency_changes=body.allowed_dependency_changes,
             actor_user_id=user.id,
+            create_labels=not body.dry_run,
         )
     except RepoAdminError as exc:
         await db.rollback()
