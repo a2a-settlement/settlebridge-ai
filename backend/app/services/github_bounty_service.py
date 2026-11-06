@@ -865,9 +865,12 @@ def _unbind_pull_request(binding: GitHubBountyBinding) -> None:
     _clear_evaluation(binding)
 
 
-def _release_lease(lease, reason: str) -> None:
+def _release_lease(db: AsyncSession, lease, reason: str) -> None:
+    from app.services.github_leases import enqueue_hold_refund
+
     lease.status = LeaseStatus.RELEASED.value
     lease.release_reason = reason
+    enqueue_hold_refund(db, lease)
 
 
 def _bounty_status(bounty) -> str:
@@ -885,7 +888,7 @@ async def _cancel_binding(
     lease = await get_active_lease(db, binding.id)
     if lease is not None:
         submitted = _enum_value(lease.status) == LeaseStatus.SUBMITTED.value
-        _release_lease(lease, "bounty_cancelled")
+        _release_lease(db, lease, "bounty_cancelled")
         if submitted:
             _unbind_pull_request(binding)
     if not _state_is(binding, BindingState.CANCELLED):
@@ -1717,7 +1720,7 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
     if not pull_request.get("merged"):
         lease = await get_submitted_lease(db, binding.id)
         if lease is not None and lease.pr_number == pr_number:
-            _release_lease(lease, "pr_closed_unmerged")
+            _release_lease(db, lease, "pr_closed_unmerged")
         binding.state = BindingState.ADVERTISED.value
         _unbind_pull_request(binding)
         await _flush(db)
