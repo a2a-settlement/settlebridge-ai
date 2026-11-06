@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     TRUST_GATEWAY_AUDIENCE: str = "https://gateway.a2a-settlement.org"
     TRUST_GATEWAY_KEY: str = ""
     TRUST_GATEWAY_ALGORITHMS: str = "RS256"
+    TRUST_GATEWAY_TOKEN_URL: str = ""
 
     # Bounty leases
     LEASE_WORK_MINUTES: int = 15
