@@ -150,8 +150,9 @@ def test_unknown_repo_looks_like_no_access(db, gh):
     unknown = _client(db, user).post("/api/v1/github/repos/acme/other/onboard", json=BODY)
     not_admin = _client(db, user).post(URL, json=BODY)
     assert unknown.status_code == not_admin.status_code == 403
-    assert unknown.json()["detail"]["message"].replace("acme/other", REPO) == (
-        not_admin.json()["detail"]["message"]
+    assert (
+        unknown.json()["detail"]["message"].replace("acme/other", REPO)
+        == (not_admin.json()["detail"]["message"])
     )
 
 
@@ -182,6 +183,10 @@ def test_preview_returns_detection_without_writing(db, gh):
     assert payload["detected"]["required_checks"] == [{"name": "test", "app_id": ACTIONS}]
     assert payload["enabled"] is False
     assert payload["funded_by_you"] is False and payload["funded_by_other"] is False
+    assert payload["auto_dispatch_alerts"] is False
+    assert payload["auto_merge_acceptable"] is False
+    assert payload["strict_tests"] is False
+    assert payload["funder_cannot_solve"] is True
     assert db.commits == 0
 
 
@@ -208,12 +213,30 @@ def test_admin_onboards_as_the_funder(db, gh):
 
 def test_dry_run_rolls_back(db, gh):
     user = _setup(db)
-    response = _client(db, user).post(URL, json={**BODY, "dry_run": True})
+    response = _client(db, user).post(
+        URL,
+        json={
+            **BODY,
+            "dry_run": True,
+            "auto_dispatch_alerts": True,
+            "auto_merge_acceptable": True,
+            "strict_tests": True,
+        },
+    )
     assert response.status_code == 200
-    assert response.json()["changed"] is True
-    assert response.json()["labels"] is None
+    body = response.json()
+    assert body["changed"] is True and body["dry_run"] is True
+    assert body["labels"] is None
+    assert body["after"]["auto_dispatch_alerts"] is True
+    assert body["after"]["auto_merge_acceptable"] is True
+    assert body["after"]["strict_tests"] is True
     assert gh.label_calls == []
-    assert reload(db).enabled is False
+    link = reload(db)
+    assert link.enabled is False
+    assert bool(link.auto_dispatch_alerts) is False
+    assert bool(link.auto_merge_acceptable) is False
+    assert "test_file_deleted" not in link.default_policy["rule_severity"]
+    assert link.default_policy["rule_severity"]["star_import"] == "violation"
 
 
 def test_different_funder_is_409(db, gh):
@@ -254,6 +277,73 @@ def test_low_balance_reports_headroom(db, gh, monkeypatch):
     assert detail["headroom_ate"] == 50 and detail["minimum_ate"] == 101
 
 
+def _stored_option(db: Bridge, field: str) -> bool:
+    from app.services.github_repo_admin import _strict_tests_enabled
+
+    link = reload(db)
+    if field == "strict_tests":
+        policy = link.default_policy if isinstance(link.default_policy, dict) else {}
+        return _strict_tests_enabled(policy)
+    return bool(getattr(link, field))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["auto_dispatch_alerts", "auto_merge_acceptable", "strict_tests"],
+)
+def test_post_sets_unsets_and_omits_each_option(db, gh, field):
+    from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
+
+    user = _setup(db)
+    client = _client(db, user)
+    turned_on = client.post(URL, json={**BODY, field: True})
+    assert turned_on.status_code == 200
+    assert turned_on.json()["changed"] is True
+    assert turned_on.json()["after"][field] is True
+    assert turned_on.json()["before"][field] is False
+    assert _stored_option(db, field) is True
+    if field == "strict_tests":
+        severity = reload(db).default_policy["rule_severity"]
+        assert severity["star_import"] == "violation"
+        for rule, level in STRICT_TEST_RULE_SEVERITY.items():
+            assert severity[rule] == level
+
+    assert client.post(URL, json={**BODY, field: True}).json()["changed"] is False
+    assert client.post(URL, json=BODY).json()["changed"] is False
+    assert _stored_option(db, field) is True
+
+    turned_off = client.post(URL, json={**BODY, field: False})
+    assert turned_off.status_code == 200
+    assert turned_off.json()["changed"] is True
+    assert turned_off.json()["before"][field] is True
+    assert turned_off.json()["after"][field] is False
+    assert _stored_option(db, field) is False
+    if field == "strict_tests":
+        assert reload(db).default_policy["rule_severity"] == {"star_import": "violation"}
+    assert client.post(URL, json={**BODY, field: False}).json()["changed"] is False
+
+
+def test_preview_and_status_expose_current_options(db, gh):
+    from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
+
+    user = _setup(
+        db,
+        auto_dispatch_alerts=True,
+        auto_merge_acceptable=False,
+        default_policy={"rule_severity": {"star_import": "violation", **STRICT_TEST_RULE_SEVERITY}},
+    )
+    client = _client(db, user)
+    preview = client.get(URL).json()
+    assert preview["auto_dispatch_alerts"] is True
+    assert preview["auto_merge_acceptable"] is False
+    assert preview["strict_tests"] is True
+    assert preview["funder_cannot_solve"] is True
+    status_payload = client.get(STATUS_URL).json()
+    assert status_payload["auto_dispatch_alerts"] is True
+    assert status_payload["auto_merge_acceptable"] is False
+    assert status_payload["strict_tests"] is True
+
+
 # Setup status
 
 STATUS_URL = f"/api/v1/github/repos/{REPO}/setup-status"
@@ -275,10 +365,19 @@ def test_setup_status_ready_for_a_funded_admin(db, gh):
     assert response.status_code == 200
     payload = response.json()
     assert payload["ready"] is True
-    assert payload["next_steps"] == []
+    assert _codes(payload) == ["funder_cannot_solve"]
+    assert payload["next_steps"][0]["blocking"] is False
+    assert "@pat" in payload["next_steps"][0]["message"]
     assert payload["repo_access"] is True and payload["enabled"] is False
+    assert payload["auto_dispatch_alerts"] is False
+    assert payload["auto_merge_acceptable"] is False
+    assert payload["strict_tests"] is False
     assert payload["detected"]["required_checks"] == [{"name": "test", "app_id": ACTIONS}]
-    assert payload["funder"] == {"exchange_account": True, "headroom_ate": 5_000, "minimum_ate": 101}
+    assert payload["funder"] == {
+        "exchange_account": True,
+        "headroom_ate": 5_000,
+        "minimum_ate": 101,
+    }
     assert payload["urls"]["install_app"] == (
         "https://github.com/apps/settlebridge-bounties/installations/new"
     )
@@ -292,8 +391,12 @@ def test_setup_status_lists_every_missing_step_without_repo_details(db, gh):
     payload = _client(db, user).get(STATUS_URL).json()
     assert payload["ready"] is False
     assert _codes(payload) == ["link_github", "funder_no_exchange"]
+    assert "funder_cannot_solve" not in _codes(payload)
     assert payload["next_steps"][0]["url"].endswith("/dashboard/settings/github")
     assert payload["detected"] is None and payload["enabled"] is None
+    assert payload["auto_dispatch_alerts"] is None
+    assert payload["auto_merge_acceptable"] is None
+    assert payload["strict_tests"] is None
 
 
 @pytest.mark.parametrize("record", [("write", 4242), ("admin", 999)])
@@ -301,11 +404,12 @@ def test_setup_status_hides_repo_state_from_non_admins(db, gh, record):
     user = _setup(db, enabled=True)
     gh.record = record
     payload = _client(db, user).get(STATUS_URL).json()
-    assert _codes(payload) == ["repo_access"]
+    assert _codes(payload) == ["repo_access", "funder_cannot_solve"]
     assert payload["repo_access"] is False
     assert payload["detected"] is None and payload["enabled"] is None
+    assert payload["auto_dispatch_alerts"] is None and payload["strict_tests"] is None
     unknown = _client(db, user).get("/api/v1/github/repos/acme/other/setup-status").json()
-    assert _codes(unknown) == ["repo_access"] and unknown["enabled"] is None
+    assert _codes(unknown) == ["repo_access", "funder_cannot_solve"] and unknown["enabled"] is None
 
 
 def test_setup_status_asks_for_a_check_and_funding(db, gh, monkeypatch):
@@ -318,7 +422,7 @@ def test_setup_status_asks_for_a_check_and_funding(db, gh, monkeypatch):
         github_onboarding.exchange, "get_balance_dashboard", lambda account_id: {"available": 10}
     )
     payload = _client(db, user).get(STATUS_URL).json()
-    assert _codes(payload) == ["no_pinned_check", "funder_low_balance"]
+    assert _codes(payload) == ["no_pinned_check", "funder_low_balance", "funder_cannot_solve"]
     assert payload["next_steps"][0]["candidates"] == [{"name": "ci", "app_id": ACTIONS}]
     assert payload["ready"] is False
 
@@ -345,7 +449,7 @@ def test_setup_status_reports_another_funder(db, gh):
     reload(db).funder_user_id = other.id
     db.sync.commit()
     payload = _client(db, user).get(STATUS_URL).json()
-    assert _codes(payload) == ["funded_by_other"]
+    assert _codes(payload) == ["funded_by_other", "funder_cannot_solve"]
     assert payload["funded_by_other"] is True and payload["ready"] is False
 
 
@@ -356,7 +460,7 @@ def test_setup_status_notes_an_enabled_repo_without_blocking(db, gh):
     link.enabled = True
     db.sync.commit()
     payload = _client(db, user).get(STATUS_URL).json()
-    assert _codes(payload) == ["already_enabled"]
+    assert _codes(payload) == ["already_enabled", "funder_cannot_solve"]
     assert payload["ready"] is True and payload["enabled"] is True
 
 

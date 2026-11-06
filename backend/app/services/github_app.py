@@ -17,6 +17,7 @@ _API_VERSION = "2022-11-28"
 _JSON_ACCEPT = "application/vnd.github+json"
 _DIFF_ACCEPT = "application/vnd.github.diff"
 _MAX_PAGES = 10
+_ISSUE_LIST_PAGES = 5
 _TOKEN_SKEW = timedelta(minutes=5)
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
@@ -439,6 +440,63 @@ async def create_issue(
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         raise GitHubAPIError("unexpected issue payload", response.status_code)
     return number
+
+
+def _utc_stamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _marked_issue_number(item: object, marker: str) -> int | None:
+    if not isinstance(item, dict) or "pull_request" in item:
+        return None
+    body = item.get("body")
+    if not isinstance(body, str) or marker not in body:
+        return None
+    number = item.get("number")
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise GitHubAPIError("unexpected issue payload")
+    return number
+
+
+async def find_issue_with_marker(
+    installation_id: int,
+    repo: str,
+    marker: str,
+    since: datetime | None = None,
+) -> int | None:
+    """Number of the first issue whose body contains ``marker``, or None.
+
+    Raises when the page limit is reached first, so a caller never mistakes an
+    unfinished search for a missing issue.
+    """
+    repo = _validate_repo(repo)
+    if not isinstance(marker, str) or marker == "":
+        raise GitHubAPIError("invalid marker")
+    token = await installation_token(installation_id)
+    query = "state=all&per_page=100"
+    if since is not None:
+        query = f"{query}&since={quote(_utc_stamp(since), safe='')}"
+    url = f"{_api_root()}/repos/{repo}/issues?{query}"
+    async with _client() as client:
+        for _ in range(_ISSUE_LIST_PAGES):
+            response = await _send(client, "GET", url, token)
+            _ensure_ok(response)
+            payload = _read_json(response)
+            if not isinstance(payload, list):
+                raise GitHubAPIError("unexpected issue list", response.status_code)
+            for item in payload:
+                number = _marked_issue_number(item, marker)
+                if number is not None:
+                    return number
+            nxt = _next_url(response)
+            if nxt is None:
+                return None
+            url = nxt
+    raise GitHubAPIError("issue search reached the page limit")
 
 
 async def get_issue(installation_id: int, repo: str, issue_number: int) -> dict:

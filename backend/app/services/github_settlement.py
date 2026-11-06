@@ -119,14 +119,10 @@ def delivery_content(
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
-async def load_settlement_graph(
-    db: AsyncSession, settlement_id: uuid.UUID
-) -> SettlementContext:
+async def load_settlement_graph(db: AsyncSession, settlement_id: uuid.UUID) -> SettlementContext:
     settlement = await _scalar(
         db,
-        select(GitHubSettlement)
-        .where(GitHubSettlement.id == settlement_id)
-        .with_for_update(),
+        select(GitHubSettlement).where(GitHubSettlement.id == settlement_id).with_for_update(),
     )
     if settlement is None:
         raise PermanentJobError(f"settlement {settlement_id} not found")
@@ -461,17 +457,62 @@ async def _alert_gate(db: AsyncSession, ctx: SettlementContext) -> str:
     return "wait"
 
 
+def _pending_advance_for_settlement(job: GitHubJob, settlement_id: str) -> bool:
+    kind = getattr(job, "kind", None)
+    if getattr(kind, "value", kind) != JobKind.ADVANCE_SETTLEMENT.value:
+        return False
+    status = getattr(job, "status", None)
+    if getattr(status, "value", status) != JobStatus.PENDING.value:
+        return False
+    payload = getattr(job, "payload", None)
+    if not isinstance(payload, dict):
+        return False
+    raw = payload.get("settlement_id")
+    if isinstance(raw, uuid.UUID):
+        return str(raw) == settlement_id
+    return isinstance(raw, str) and raw == settlement_id
+
+
+def _pull_next_run(job: GitHubJob, due: datetime) -> None:
+    current = getattr(job, "next_run_at", None)
+    if isinstance(current, datetime) and current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if not isinstance(current, datetime) or current > due:
+        job.next_run_at = due
+
+
 async def _schedule_recheck(db: AsyncSession, settlement: GitHubSettlement) -> None:
-    """A pending job also stops enqueue_pending_settlements from adding another."""
-    db.add(
-        GitHubJob(
-            id=uuid.uuid4(),
-            kind=JobKind.ADVANCE_SETTLEMENT.value,
-            payload={"settlement_id": str(settlement.id)},
-            status=JobStatus.PENDING.value,
-            next_run_at=datetime.now(timezone.utc) + _ALERT_POLL,
+    """Queue one pending advance job so the alert is polled again.
+
+    When a pending advance job for this settlement already exists, pull its
+    ``next_run_at`` forward to at most one poll interval and leave that row in
+    place. A pending job also stops ``enqueue_pending_settlements`` from adding
+    another. The running job is the caller and is marked done after this returns,
+    so only ``pending`` rows count.
+    """
+    due = datetime.now(timezone.utc) + _ALERT_POLL
+    rows = await db.execute(
+        select(GitHubJob).where(
+            GitHubJob.kind == JobKind.ADVANCE_SETTLEMENT.value,
+            GitHubJob.status == JobStatus.PENDING.value,
         )
     )
+    pending = rows.scalars().all()
+    target = str(settlement.id)
+    matched = [job for job in pending if _pending_advance_for_settlement(job, target)]
+    if matched:
+        for job in matched:
+            _pull_next_run(job, due)
+    else:
+        db.add(
+            GitHubJob(
+                id=uuid.uuid4(),
+                kind=JobKind.ADVANCE_SETTLEMENT.value,
+                payload={"settlement_id": target},
+                status=JobStatus.PENDING.value,
+                next_run_at=due,
+            )
+        )
     await db.commit()
     logger.info("settlement %s waiting for the alert to be fixed", settlement.id)
 
