@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     GITHUB_WEBHOOK_MAX_BODY_BYTES: int = 26_214_400
     GITHUB_API_URL: str = "https://api.github.com"
     GITHUB_SETTLEMENT_ENABLED: bool = False
+    # Lets a signed-in repo admin onboard their own repo through the API.
+    GITHUB_SELF_SERVE_ONBOARDING: bool = False
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     # Comma-separated owner/repo=ema pairs that replace the default for that repo.
     GITHUB_REPO_REQUIRED_EMA: str = ""

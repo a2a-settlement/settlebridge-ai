@@ -345,3 +345,84 @@ async def get_collaborator_permission(installation_id: int, repo: str, username:
     if isinstance(permission, str) and permission:
         return permission
     return "none"
+
+
+async def get_collaborator_record(
+    installation_id: int, repo: str, username: str
+) -> tuple[str, int | None]:
+    """``(permission, github_user_id)``. ``("none", None)`` when not a collaborator."""
+    repo = _validate_repo(repo)
+    safe_user = _validate_username(username)
+    url = f"{_api_root()}/repos/{repo}/collaborators/{safe_user}/permission"
+    data = await _get_json(installation_id, url, missing={})
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected permission payload")
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    user_id = user.get("id")
+    if isinstance(user_id, bool) or not isinstance(user_id, int):
+        user_id = None
+    if data.get("role_name") == "maintain":
+        return "maintain", user_id
+    permission = data.get("permission")
+    if isinstance(permission, str) and permission:
+        return permission, user_id
+    return "none", user_id
+
+
+def _quoted_ref(ref: str) -> str:
+    if not isinstance(ref, str) or ref == "" or any(char in ref for char in "\r\n\t "):
+        raise GitHubAPIError("invalid ref")
+    return quote(ref, safe="")
+
+
+async def _get_json(installation_id: int, url: str, *, missing: Any = None) -> Any:
+    """GET with an installation token. A 404 returns ``missing`` when it is not None."""
+    token = await installation_token(installation_id)
+    async with _client() as client:
+        response = await _send(client, "GET", url, token)
+    if response.status_code == 404 and missing is not None:
+        return missing
+    _ensure_ok(response)
+    return _read_json(response)
+
+
+async def get_repository(installation_id: int, repo: str) -> dict:
+    repo = _validate_repo(repo)
+    data = await _get_json(installation_id, f"{_api_root()}/repos/{repo}")
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected repository payload")
+    return data
+
+
+async def get_branch(installation_id: int, repo: str, branch: str) -> dict:
+    """The branch, including ``protection`` when the App is allowed to see it."""
+    repo = _validate_repo(repo)
+    url = f"{_api_root()}/repos/{repo}/branches/{_quoted_ref(branch)}"
+    data = await _get_json(installation_id, url)
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected branch payload")
+    return data
+
+
+async def get_branch_rules(installation_id: int, repo: str, branch: str) -> list[dict]:
+    """Ruleset rules that apply to the branch. Empty when none apply."""
+    repo = _validate_repo(repo)
+    url = f"{_api_root()}/repos/{repo}/rules/branches/{_quoted_ref(branch)}?per_page=100"
+    data = await _get_json(installation_id, url, missing=[])
+    if not isinstance(data, list):
+        raise GitHubAPIError("unexpected branch rules payload")
+    return [item for item in data if isinstance(item, dict)]
+
+
+async def list_root_entries(installation_id: int, repo: str, ref: str) -> list[dict]:
+    """``{"name", "type"}`` for each entry at the repository root on ``ref``."""
+    repo = _validate_repo(repo)
+    url = f"{_api_root()}/repos/{repo}/contents?ref={_quoted_ref(ref)}"
+    data = await _get_json(installation_id, url, missing=[])
+    if not isinstance(data, list):
+        raise GitHubAPIError("unexpected contents payload")
+    entries = []
+    for item in data:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            entries.append({"name": item["name"], "type": str(item.get("type") or "")})
+    return entries

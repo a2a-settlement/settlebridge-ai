@@ -12,6 +12,7 @@ from app.routes import gateway as gateway_routes
 from app.routes import github as github_routes
 from app.routes import github_identity as github_identity_routes
 from app.routes import github_leases as github_lease_routes
+from app.routes import github_onboarding as github_onboarding_routes
 from app.services.github_jobs import run_github_job_loop
 from app.services.review_service import QUALITY_PROMPT_VERSION, REVIEW_MODEL
 from app.services.scheduler import run_scheduler
@@ -239,6 +240,9 @@ if settings.MARKETPLACE_ENABLED:
         github_identity_routes.router, prefix="/api/v1/github/identity", tags=["github"]
     )
     app.include_router(github_lease_routes.router, prefix="/api/v1", tags=["github-leases"])
+    app.include_router(
+        github_onboarding_routes.router, prefix="/api/v1/github", tags=["github"]
+    )
 
 
 app.include_router(submissions.public_router, prefix="/api", tags=["public"])

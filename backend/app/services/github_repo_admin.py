@@ -164,6 +164,10 @@ async def list_repo_links(db: AsyncSession) -> list[dict]:
                 "allowed_dependency_changes": _plain_list(
                     policy.get("allowed_dependency_changes")
                 ),
+                "onboarded_by_user_id": (
+                    str(link.onboarded_by_user_id) if link.onboarded_by_user_id else None
+                ),
+                "onboarded_at": link.onboarded_at.isoformat() if link.onboarded_at else None,
             }
         )
     return listed

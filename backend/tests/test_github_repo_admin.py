@@ -205,6 +205,8 @@ def test_list_repo_links(db):
             "required_checks": [],
             "allowed_paths": [],
             "allowed_dependency_changes": [],
+            "onboarded_by_user_id": None,
+            "onboarded_at": None,
         },
         {
             "repo": "Zen/Lib",
@@ -215,6 +217,8 @@ def test_list_repo_links(db):
             "required_checks": [{"name": "ci", "app_id": 9}],
             "allowed_paths": ["lib/*"],
             "allowed_dependency_changes": ["pytest"],
+            "onboarded_by_user_id": None,
+            "onboarded_at": None,
         },
     ]
 
