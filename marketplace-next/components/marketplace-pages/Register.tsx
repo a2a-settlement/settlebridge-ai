@@ -2,14 +2,21 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Shield } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { safeReturnPath } from "@/lib/returnTo";
 import { GitHubLoginButton } from "@/components/GitHubLoginButton";
+
+function signInHref(next: string | null): string {
+  const safe = safeReturnPath(next);
+  return safe ? `/login?next=${encodeURIComponent(safe)}` : "/login";
+}
 
 export default function Register() {
   const { register } = useAuth();
   const router = useRouter();
+  const next = useSearchParams().get("next");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -23,7 +30,7 @@ export default function Register() {
     setLoading(true);
     try {
       await register(email, password, displayName, userType);
-      router.push("/dashboard");
+      router.push(safeReturnPath(next) ?? "/dashboard");
     } catch (err: any) {
       setError(err.response?.data?.detail || "Registration failed");
     } finally {
@@ -123,7 +130,10 @@ export default function Register() {
           </form>
           <p className="text-sm text-gray-500 text-center mt-6">
             Already have an account?{" "}
-            <Link href="/login" className="text-navy-700 font-medium hover:underline">
+            <Link
+              href={signInHref(next)}
+              className="text-navy-700 font-medium hover:underline"
+            >
               Sign in
             </Link>
           </p>

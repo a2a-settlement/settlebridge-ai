@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Shield, Key, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { safeReturnPath } from "@/lib/returnTo";
@@ -13,6 +13,18 @@ type Tab = "email" | "apikey";
 function afterLogin(): string {
   const next = new URLSearchParams(window.location.search).get("next");
   return safeReturnPath(next) ?? "/dashboard";
+}
+
+function CreateAccountLink() {
+  const safe = safeReturnPath(useSearchParams().get("next"));
+  return (
+    <Link
+      href={safe ? `/register?next=${encodeURIComponent(safe)}` : "/register"}
+      className="text-navy-700 font-medium hover:underline"
+    >
+      Create one
+    </Link>
+  );
 }
 
 export default function Login() {
@@ -153,12 +165,15 @@ export default function Login() {
 
           <p className="text-sm text-gray-500 text-center mt-6">
             Don't have an account?{" "}
-            <Link
-              href="/register"
-              className="text-navy-700 font-medium hover:underline"
+            <Suspense
+              fallback={
+                <Link href="/register" className="text-navy-700 font-medium hover:underline">
+                  Create one
+                </Link>
+              }
             >
-              Create one
-            </Link>
+              <CreateAccountLink />
+            </Suspense>
           </p>
         </div>
       </div>
