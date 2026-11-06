@@ -20,7 +20,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.github import AlertKind, GitHubAlertDispatch, GitHubJob, GitHubRepoLink
+from app.models.github import (
+    AlertKind,
+    GitHubAlertDispatch,
+    GitHubBountyBinding,
+    GitHubJob,
+    GitHubRepoLink,
+    GitHubSettlement,
+    JobKind,
+    JobStatus,
+    SettlementState,
+)
 from app.services.github_errors import PermanentJobError
 
 logger = logging.getLogger(__name__)
@@ -89,13 +99,25 @@ class _AlertPlan:
 
 
 async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
-    """``dependabot_alert`` / ``code_scanning_alert`` with ``action == "created"``."""
-    if not settings.GITHUB_AUTO_DISPATCH_ALERTS:
-        return
+    """``dependabot_alert`` / ``code_scanning_alert``.
+
+    ``created`` opens a bounty issue. ``fixed`` wakes the settlement waiting on that
+    alert, even with dispatch turned off, so an already-open bounty still pays promptly.
+    """
     from app.services import github_bounty_service
 
-    event, action, data = github_bounty_service._webhook_parts(job)
-    if action != "created" or event not in _ALERT_EVENTS:
+    try:
+        event, action, data = github_bounty_service._webhook_parts(job)
+    except PermanentJobError:
+        if not settings.GITHUB_AUTO_DISPATCH_ALERTS:
+            return
+        raise
+    if event not in _ALERT_EVENTS:
+        return
+    if action == "fixed":
+        await _wake_settlement(db, event, data)
+        return
+    if action != "created" or not settings.GITHUB_AUTO_DISPATCH_ALERTS:
         return
     repo = github_bounty_service._repository_full_name(data)
     if _REPO_RE.fullmatch(repo) is None:
@@ -111,6 +133,61 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
         return
     installation_id = github_bounty_service._installation_id(data)
     await _open_dispatch(db, data, repo, installation_id, plan)
+
+
+async def _wake_settlement(db: AsyncSession, event: str, data: dict) -> None:
+    """Move the waiting settlement's next alert poll to now. The poll still reads GitHub."""
+    from app.services import github_bounty_service
+
+    repo = github_bounty_service._repository_full_name(data)
+    if _REPO_RE.fullmatch(repo) is None:
+        raise PermanentJobError("webhook repository.full_name is invalid")
+    number = _alert_number(_alert_dict(data))
+    kind = (
+        AlertKind.DEPENDABOT.value if event == "dependabot_alert" else AlertKind.CODE_SCANNING.value
+    )
+    dispatch = await _find_dispatch(db, repo, kind, number)
+    if dispatch is None or dispatch.issue_number is None:
+        return
+    settlement = (
+        await db.execute(
+            select(GitHubSettlement)
+            .join(GitHubBountyBinding, GitHubBountyBinding.id == GitHubSettlement.binding_id)
+            .where(
+                GitHubBountyBinding.repo_full_name == repo,
+                GitHubBountyBinding.issue_number == dispatch.issue_number,
+            )
+        )
+    ).scalar_one_or_none()
+    if settlement is None or settlement.state != SettlementState.ESCROW_CREATED.value:
+        return
+    now = datetime.now(timezone.utc)
+    jobs = (
+        (
+            await db.execute(
+                select(GitHubJob).where(
+                    GitHubJob.kind == JobKind.ADVANCE_SETTLEMENT.value,
+                    GitHubJob.status == JobStatus.PENDING.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    woken = 0
+    for pending in jobs:
+        payload = pending.payload if isinstance(pending.payload, dict) else {}
+        if payload.get("settlement_id") != str(settlement.id):
+            continue
+        due = _as_utc(pending.next_run_at)
+        if due is not None and due > now:
+            pending.next_run_at = now
+            woken += 1
+    if woken:
+        await db.commit()
+        logger.info(
+            "%s alert %s#%s fixed; settlement %s rechecks now", kind, repo, number, settlement.id
+        )
 
 
 async def dispatch_for_issue(

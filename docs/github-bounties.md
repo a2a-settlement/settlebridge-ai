@@ -320,7 +320,8 @@ PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAM
   `tier: security` when the rule has a security severity. Security-severity alerts are never posted on
   public repos. Each alert opens at most one issue, and alert bounties stop for the week once a repo
   reaches `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE`. Payment for an alert bounty waits after the merge until
-  GitHub marks the alert fixed. The escrow is locked at the merge, and if the alert isn't fixed within
+  GitHub marks the alert fixed. SettleBridge checks the alert every 15 minutes, and right away when GitHub
+  sends the alert's `fixed` webhook. The escrow is locked at the merge, and if the alert isn't fixed within
   `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` it is refunded and the issue gets a comment.
 - **Auto-merge** (`--auto-merge`). The App merges a pull request only when all of these hold:
   - the outcome is ACCEPTABLE with no findings and no maintainer override;

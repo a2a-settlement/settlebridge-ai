@@ -23,10 +23,14 @@ from app.config import settings
 from app.models.github import (
     AlertKind,
     GitHubAlertDispatch,
+    GitHubBountyBinding,
     GitHubInstallation,
     GitHubJob,
     GitHubRepoLink,
+    GitHubSettlement,
     JobKind,
+    JobStatus,
+    SettlementState,
 )
 from app.models.user import User, UserType
 from app.services import github_alerts, github_app, github_bounty_service
@@ -139,7 +143,15 @@ def make_engine():
         poolclass=StaticPool,
         connect_args={"check_same_thread": False},
     )
-    for model in (User, GitHubInstallation, GitHubRepoLink, GitHubAlertDispatch):
+    for model in (
+        User,
+        GitHubInstallation,
+        GitHubRepoLink,
+        GitHubAlertDispatch,
+        GitHubBountyBinding,
+        GitHubSettlement,
+        GitHubJob,
+    ):
         model.__table__.create(engine)
     return engine
 
@@ -717,3 +729,99 @@ def test_github_client_error_is_permanent_and_frees_the_row(db, configured, gith
     _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
     assert len(github.calls) == 1
     assert _run(_rows(db))[0].issue_number == github.number
+
+
+def _waiting(
+    db: Bridge,
+    *,
+    issue_number: int = 50,
+    state: str = SettlementState.ESCROW_CREATED.value,
+    due_in: timedelta = timedelta(minutes=12),
+) -> tuple[GitHubSettlement, GitHubJob]:
+    binding = GitHubBountyBinding(
+        id=uuid.uuid4(), bounty_id=uuid.uuid4(), repo_full_name=REPO, issue_number=issue_number
+    )
+    settlement = GitHubSettlement(
+        id=uuid.uuid4(),
+        binding_id=binding.id,
+        spec_id=uuid.uuid4(),
+        head_sha="a" * 40,
+        state=state,
+        idempotency_prefix=f"gh-settle:{binding.id}",
+    )
+    job = GitHubJob(
+        id=uuid.uuid4(),
+        kind=JobKind.ADVANCE_SETTLEMENT.value,
+        payload={"settlement_id": str(settlement.id)},
+        status=JobStatus.PENDING.value,
+        next_run_at=datetime.now(timezone.utc) + due_in,
+    )
+    db.sync.add_all([binding, settlement, job])
+    db.sync.commit()
+    return settlement, job
+
+
+def _fixed(number: int = 1) -> GitHubJob:
+    alert = _dependabot(number=number)
+    alert["state"] = "fixed"
+    return _job("dependabot_alert", _envelope(alert), action="fixed")
+
+
+def _due(db: Bridge, job: GitHubJob) -> datetime:
+    db.sync.expire_all()
+    return github_alerts._as_utc(db.sync.get(GitHubJob, job.id).next_run_at)
+
+
+@pytest.mark.parametrize("dispatch_on", [True, False])
+def test_fixed_alert_wakes_only_its_waiting_settlement(db, monkeypatch, github, dispatch_on):
+    monkeypatch.setattr(settings, "GITHUB_AUTO_DISPATCH_ALERTS", dispatch_on)
+    _prior(db, amount=1500, age_days=0, number=1)
+    _, mine = _waiting(db, issue_number=50)
+    _, other = _waiting(db, issue_number=51)
+    before = datetime.now(timezone.utc)
+    _dispatch(db, _fixed(1))
+    assert _due(db, mine) <= datetime.now(timezone.utc)
+    assert _due(db, mine) >= before - timedelta(seconds=1)
+    assert _due(db, other) > datetime.now(timezone.utc) + timedelta(minutes=10)
+    assert github.calls == []
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        SettlementState.PENDING.value,
+        SettlementState.DELIVERED.value,
+        SettlementState.RELEASED.value,
+        SettlementState.FAILED.value,
+    ],
+)
+def test_fixed_alert_leaves_other_settlement_states_alone(db, configured, github, state):
+    _prior(db, amount=1500, age_days=0, number=1)
+    _, job = _waiting(db, state=state)
+    _dispatch(db, _fixed(1))
+    assert _due(db, job) > datetime.now(timezone.utc) + timedelta(minutes=10)
+    assert db.commits == 0
+
+
+def test_fixed_alert_without_a_dispatch_does_nothing(db, configured, github):
+    _prior(db, amount=1500, age_days=0, number=1)
+    _, job = _waiting(db)
+    _dispatch(db, _fixed(2))
+    assert _due(db, job) > datetime.now(timezone.utc) + timedelta(minutes=10)
+    assert db.commits == 0
+
+
+def test_fixed_alert_does_not_touch_a_job_that_is_already_due(db, configured, github):
+    _prior(db, amount=1500, age_days=0, number=1)
+    _, job = _waiting(db, due_in=timedelta(minutes=-3))
+    _dispatch(db, _fixed(1))
+    assert _due(db, job) < datetime.now(timezone.utc) - timedelta(minutes=2)
+    assert db.commits == 0
+
+
+def test_fixed_alert_with_a_bad_repo_is_permanent(db, configured, github):
+    job = _fixed(1)
+    job.payload["data"]["repository"]["full_name"] = "not a repo"
+    with pytest.raises(PermanentJobError):
+        _dispatch(db, job)
