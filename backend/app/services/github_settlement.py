@@ -250,11 +250,99 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
     raise RuntimeError("settlement exceeded transition budget")
 
 
+def _status_code(exc: BaseException) -> int | None:
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code
+    return None
+
+
+def _present(payload: dict, *keys: str):
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return None
+
+
+def _plain_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        try:
+            truncated = int(value)
+        except (ValueError, OverflowError):
+            return None
+        if truncated != value:
+            return None
+        return truncated
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _hold_matches(escrow: dict, ctx: SettlementContext) -> bool:
+    """Held, and provider/amount match when the exchange included those fields."""
+    status = str(escrow.get("status") or "").strip().lower()
+    if status != "held":
+        return False
+    provider = _present(escrow, "provider_id", "provider")
+    amount = _present(escrow, "amount", "amount_ate")
+    solver = ctx.settlement.solver_agent_id
+    if provider is not None and str(provider) != str(solver):
+        return False
+    if amount is None:
+        return True
+    parsed = _plain_int(amount)
+    return parsed is not None and parsed == int(ctx.spec.amount_ate)
+
+
+async def _adopted_hold_id(ctx: SettlementContext) -> str | None:
+    """Reuse the lease hold when it is still held for this solver and amount.
+
+    A missing escrow (404) falls through to create. Any other lookup failure is
+    re-raised so a blip cannot lock a second escrow while the hold is still open.
+    """
+    lease = ctx.lease
+    hold_id = getattr(lease, "hold_escrow_id", None) if lease is not None else None
+    if not hold_id:
+        return None
+    try:
+        escrow = await asyncio.to_thread(exchange.get_escrow, ctx.funder, hold_id)
+    except Exception as exc:
+        if _status_code(exc) == 404:
+            logger.info(
+                "hold escrow %s is gone; settlement %s will create one",
+                hold_id,
+                ctx.settlement.id,
+            )
+            return None
+        raise
+    if not isinstance(escrow, dict) or not _hold_matches(escrow, ctx):
+        logger.info("hold escrow %s not adoptable for settlement %s", hold_id, ctx.settlement.id)
+        return None
+    return str(hold_id)
+
+
 async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
     settlement = ctx.settlement
     # Deliver needs the solver's key; failing after create would strand funds in escrow.
     if ctx.provider is None or not getattr(ctx.provider, "exchange_api_key", None):
         raise ValueError("Solver has not linked an exchange account")
+    # Create stays first. A later alert-fixed wait belongs after this step.
+    hold_id = await _adopted_hold_id(ctx)
+    if hold_id:
+        settlement.escrow_id = hold_id
+        await _mark(db, settlement, SettlementState.ESCROW_CREATED.value)
+        return
     idempotency_key = f"{settlement.idempotency_prefix}:create"
     task_id = f"gh:{settlement.binding_id}:{settlement.spec_id}"
     try:
