@@ -124,8 +124,13 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
     repo = github_bounty_service._repository_full_name(data)
     if _REPO_RE.fullmatch(repo) is None:
         raise PermanentJobError("webhook repository.full_name is invalid")
+    await github_bounty_service._record_repository_visibility(db, repo, data.get("repository"))
     link = await github_bounty_service.get_enabled_funded_repo_link(db, repo)
     if link is None or not link.auto_dispatch_alerts:
+        return
+    installation_id = github_bounty_service._installation_id(data)
+    if not await github_bounty_service._ensure_public_repository(link, installation_id, repo):
+        logger.info("skipping %s alert on %s: repository is not public", event, repo)
         return
     if event == "dependabot_alert":
         plan = _dependabot_plan(data, repo)
@@ -133,7 +138,6 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
         plan = _code_scanning_plan(data, repo)
     if plan is None:
         return
-    installation_id = github_bounty_service._installation_id(data)
     await _open_dispatch(db, data, repo, installation_id, plan)
 
 
@@ -161,7 +165,8 @@ async def _wake_settlement(db: AsyncSession, event: str, data: dict) -> None:
             )
         )
     ).scalar_one_or_none()
-    if settlement is None or settlement.state != SettlementState.ESCROW_CREATED.value:
+    waiting = (SettlementState.ESCROW_CREATED.value, SettlementState.NEEDS_REVIEW.value)
+    if settlement is None or settlement.state not in waiting:
         return
     now = datetime.now(timezone.utc)
     jobs = (
@@ -177,14 +182,28 @@ async def _wake_settlement(db: AsyncSession, event: str, data: dict) -> None:
         .all()
     )
     woken = 0
+    queued = False
     for pending in jobs:
         payload = pending.payload if isinstance(pending.payload, dict) else {}
         if payload.get("settlement_id") != str(settlement.id):
             continue
+        queued = True
         due = _as_utc(pending.next_run_at)
         if due is not None and due > now:
             pending.next_run_at = now
             woken += 1
+    # needs_review has no recheck job; the fixed webhook is what re-enters the gate.
+    if not queued and settlement.state == SettlementState.NEEDS_REVIEW.value:
+        db.add(
+            GitHubJob(
+                id=uuid.uuid4(),
+                kind=JobKind.ADVANCE_SETTLEMENT.value,
+                payload={"settlement_id": str(settlement.id)},
+                status=JobStatus.PENDING.value,
+                next_run_at=now,
+            )
+        )
+        woken += 1
     if woken:
         await db.commit()
         logger.info(
@@ -503,10 +522,9 @@ def _code_scanning_plan(data: dict, repo: str) -> _AlertPlan | None:
     if not isinstance(rule, dict):
         raise PermanentJobError("code scanning alert is missing rule")
     level = rule.get("security_severity_level")
-    repository = data.get("repository")
-    private = isinstance(repository, dict) and repository.get("private") is True
     # A public repo must not receive an issue that publishes an undisclosed security finding.
-    if not private and level:
+    # Private and internal repos are refused before a plan is built.
+    if level:
         logger.info(
             "skipping public code scanning alert %s#%s with a security severity",
             repo,

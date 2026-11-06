@@ -5,6 +5,7 @@ export interface User {
   email: string;
   display_name: string;
   user_type: UserType;
+  account_kind?: "test" | "house" | null;
   exchange_bot_id: string | null;
   exchange_balance_cached: number | null;
   managed_developer_id: string | null;

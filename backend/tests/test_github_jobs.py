@@ -445,6 +445,22 @@ def test_enqueue_pending_settlements_fills_only_open_rows_without_a_live_job(mon
     assert covered.commits == 0
 
 
+def test_enqueue_pending_settlements_skips_needs_review(monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_SETTLEMENT_ENABLED", True)
+    review = _settlement("needs_review")
+    pending = _settlement("pending")
+    db = _EnqueueDB([[review], []])
+    added = _run(enqueue_pending_settlements(db))
+    assert added == 0
+    assert db.added == []
+    assert db.commits == 0
+    mixed = _EnqueueDB([[review, pending], []])
+    assert _run(enqueue_pending_settlements(mixed)) == 1
+    assert mixed.added[0].payload["settlement_id"] == str(pending.id)
+    compiled = str(mixed.statements[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "needs_review" not in compiled
+
+
 def _loop_session():
     calls = {"enqueue": 0, "expire": 0, "sessions": 0, "sleep": 0}
 

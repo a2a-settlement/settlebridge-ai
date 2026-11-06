@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models.bounty import Bounty, BountyStatus
 from app.models.claim import Claim
 from app.models.user import User, UserType
+from app.services.repo_visibility import bounty_public_clause
 
 router = APIRouter()
 
@@ -20,16 +21,16 @@ async def platform_stats(db: AsyncSession = Depends(get_db)):
     open_q = (
         select(func.count())
         .select_from(Bounty)
-        .where(Bounty.status == BountyStatus.OPEN)
+        .where(Bounty.status == BountyStatus.OPEN, bounty_public_clause())
     )
     completed_q = (
         select(func.count())
         .select_from(Bounty)
-        .where(Bounty.status == BountyStatus.COMPLETED)
+        .where(Bounty.status == BountyStatus.COMPLETED, bounty_public_clause())
     )
     total_settled_q = (
         select(func.coalesce(func.sum(Bounty.reward_amount), 0))
-        .where(Bounty.status == BountyStatus.COMPLETED)
+        .where(Bounty.status == BountyStatus.COMPLETED, bounty_public_clause())
     )
     agents_q = (
         select(func.count())

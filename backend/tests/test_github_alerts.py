@@ -90,9 +90,12 @@ class GitHubBox:
         self.calls: list[dict] = []
         self.syncs: list[object] = []
         self.searches: list[dict] = []
+        self.repository_calls: list[dict] = []
+        self.repository = {"visibility": "public", "private": False}
         self.number = 101
         self.error: Exception | None = None
         self.search_error: Exception | None = None
+        self.repository_error: Exception | None = None
         self.found: int | None = None
         self.db: Bridge | None = None
 
@@ -136,6 +139,12 @@ class GitHubBox:
                 raise self.search_error
             return self.found
 
+        async def get_repository(installation_id, repo):
+            self.repository_calls.append({"installation_id": installation_id, "repo": repo})
+            if self.repository_error is not None:
+                raise self.repository_error
+            return dict(self.repository)
+
         async def sync(session, job):
             assert session is db
             if self.calls:
@@ -155,6 +164,7 @@ class GitHubBox:
 
         monkeypatch.setattr(github_app, "create_issue", create_issue)
         monkeypatch.setattr(github_app, "find_issue_with_marker", find_issue_with_marker)
+        monkeypatch.setattr(github_app, "get_repository", get_repository)
         monkeypatch.setattr(github_bounty_service, "_sync_issue_terms", sync)
         return self
 
@@ -654,14 +664,16 @@ def test_malformed_alert_is_permanent(db, configured, github):
     [
         (False, "high", False, False),
         (None, "critical", False, False),
-        (True, "high", True, True),
-        (True, None, True, False),
+        (True, "high", False, False),
+        (True, None, False, False),
         (False, None, True, False),
         (False, "", True, False),
     ],
 )
 def test_code_scanning_visibility(db, configured, github, private, level, opened, security):
     _seed(db)
+    if private is True:
+        github.repository = {"visibility": "private", "private": True}
     alert = _code_alert(level=level)
     _dispatch(db, _job("code_scanning_alert", _envelope(alert, private=private)))
     if not opened:
@@ -937,6 +949,29 @@ def test_fixed_alert_leaves_other_settlement_states_alone(db, configured, github
     assert db.commits == 0
 
 
+def test_fixed_alert_queues_an_advance_for_needs_review(db, configured, github):
+    _prior(db, amount=1500, age_days=0, number=1)
+    settlement, job = _waiting(db, state=SettlementState.NEEDS_REVIEW.value)
+    db.sync.delete(db.sync.get(GitHubJob, job.id))
+    db.sync.commit()
+    before = datetime.now(timezone.utc)
+    _dispatch(db, _fixed(1))
+    db.sync.expire_all()
+    jobs = db.sync.execute(select(GitHubJob)).scalars().all()
+    advances = [j for j in jobs if j.kind == JobKind.ADVANCE_SETTLEMENT.value]
+    assert len(advances) == 1
+    assert advances[0].payload == {"settlement_id": str(settlement.id)}
+    assert advances[0].status == JobStatus.PENDING.value
+    assert github_alerts._as_utc(advances[0].next_run_at) <= datetime.now(timezone.utc)
+    assert github_alerts._as_utc(advances[0].next_run_at) >= before - timedelta(seconds=1)
+    assert db.commits == 1
+
+    _dispatch(db, _fixed(1))
+    db.sync.expire_all()
+    jobs = db.sync.execute(select(GitHubJob)).scalars().all()
+    assert len([j for j in jobs if j.kind == JobKind.ADVANCE_SETTLEMENT.value]) == 1
+
+
 def test_fixed_alert_without_a_dispatch_does_nothing(db, configured, github):
     _prior(db, amount=1500, age_days=0, number=1)
     _, job = _waiting(db)
@@ -958,3 +993,50 @@ def test_fixed_alert_with_a_bad_repo_is_permanent(db, configured, github):
     job.payload["data"]["repository"]["full_name"] = "not a repo"
     with pytest.raises(PermanentJobError):
         _dispatch(db, job)
+
+
+def _link_visibility(db: Bridge) -> str | None:
+    return db.sync.execute(select(GitHubRepoLink)).scalar_one().visibility
+
+
+def test_private_dependabot_opens_no_issue(db, configured, github, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.github_alerts")
+    _seed(db)
+    github.repository = {"visibility": "private", "private": True, "token": TOKEN}
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot(), private=True)))
+    assert github.calls == []
+    assert github.syncs == []
+    assert _run(_rows(db)) == []
+    assert github.repository_calls == [{"installation_id": INSTALLATION_ID, "repo": REPO}]
+    assert _link_visibility(db) == "private"
+    assert TOKEN not in caplog.text
+
+
+def test_internal_code_scanning_opens_no_issue(db, configured, github):
+    _seed(db)
+    github.repository = {"visibility": "internal", "private": True}
+    data = _envelope(_code_alert(level=None), private=True)
+    data["repository"]["visibility"] = "internal"
+    _dispatch(db, _job("code_scanning_alert", data))
+    assert github.calls == []
+    assert github.syncs == []
+    assert _run(_rows(db)) == []
+    assert _link_visibility(db) == "internal"
+
+
+def test_unknown_visibility_refreshes_then_opens_a_public_dependabot(db, configured, github):
+    _seed(db)
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot(), private=None)))
+    assert len(github.calls) == 1
+    assert github.repository_calls == [{"installation_id": INSTALLATION_ID, "repo": REPO}]
+    assert _link_visibility(db) == "public"
+
+
+def test_visibility_refresh_failure_opens_nothing(db, configured, github):
+    _seed(db)
+    github.repository_error = github_app.GitHubAPIError(f"down {TOKEN}", 503)
+    with pytest.raises(RetryableJobError):
+        _dispatch(db, _job("dependabot_alert", _envelope(_dependabot(), private=None)))
+    assert github.calls == []
+    assert _run(_rows(db)) == []
+    assert db.commits == 0

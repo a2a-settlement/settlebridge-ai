@@ -337,6 +337,11 @@ def api(monkeypatch):
 
     monkeypatch.setattr(github_leases, "fetch_advertised_bounties", fetch_advertised_bounties)
     monkeypatch.setattr(github_leases, "fetch_advertised_binding", fetch_advertised_binding)
+
+    async def hidden_bounty_ids(db, ids):
+        return set(ids) & box.setdefault("hidden", set())
+
+    monkeypatch.setattr(github_leases, "hidden_bounty_ids", hidden_bounty_ids)
     monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
     monkeypatch.setattr(github_leases, "fetch_users_for_agent", fetch_users_for_agent)
     monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity_for_user)
@@ -465,6 +470,40 @@ def test_claim_lease_happy_path(api, monkeypatch):
     assert lease.created_at == FIXED
     assert api.session.commits == 1
     assert api.session.rollbacks == 0
+
+
+def test_house_solver_claim_is_delayed_on_the_route(api, monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_HOUSE_CLAIM_DELAY_HOURS", 24)
+    user = api.box["user"]
+    user.account_kind = "house"
+    binding = api.box["binding"]
+    binding.created_at = FIXED - timedelta(hours=1)
+    response = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    body = _error(response, 409, "house_claim_delay")
+    assert body["available_at"] == "2026-06-02T11:00:00Z"
+    assert api.session.commits == 0
+    assert api.session.added == []
+
+    binding.created_at = FIXED - timedelta(hours=24)
+    allowed = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    assert allowed.status_code == 201
+    assert api.session.commits == 1
+
+    user.account_kind = "test"
+    binding.created_at = FIXED
+    api.session.commits = 0
+    api.session.added.clear()
+    ordinary = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    assert ordinary.status_code == 201
 
 
 def test_claim_requires_gateway_token(api):
@@ -817,6 +856,19 @@ def test_bounty_status_public_shape(api):
     _error(missing, 404, "not_found")
 
 
+def test_hidden_repo_bounty_status_and_claim_are_not_found(api):
+    binding = api.box["binding"]
+    api.box["hidden"] = {binding.bounty_id}
+    status = api.client.get(f"/api/v1/github/bounties/{binding.bounty_id}/status")
+    _error(status, 404, "not_found")
+    claim = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    _error(claim, 404, "not_found")
+    assert api.session.added == []
+
+
 def _heartbeat(api, payload, **header_kwargs):
     headers = _headers(lease_header=False, **header_kwargs)
     return api.client.post("/api/v1/workers/heartbeat", headers=headers, json=payload)
@@ -1157,3 +1209,25 @@ def test_heartbeat_preempt_releases_soft_expired_work_lease(api):
     assert response.json()["released_leases"] == [str(lease.id)]
     assert lease.status == "released"
     assert lease.release_reason == "preempted"
+
+
+def test_advertised_query_excludes_non_public_repos():
+    import asyncio
+
+    from sqlalchemy.dialects import postgresql
+
+    captured = {}
+
+    class _Result:
+        def all(self):
+            return []
+
+    class _DB:
+        async def execute(self, stmt):
+            captured["sql"] = str(stmt.compile(dialect=postgresql.dialect()))
+            return _Result()
+
+    asyncio.run(github_leases.fetch_advertised_bounties(_DB(), language=None, limit=5))
+    sql = captured["sql"]
+    assert "github_repo_links.visibility" in sql
+    assert "NOT (EXISTS" in sql

@@ -69,6 +69,8 @@ class SettlementState(str, enum.Enum):
     DELIVERED = "delivered"
     RELEASED = "released"
     FAILED = "failed"
+    # Alert state could not be verified after the deadline; escrow stays held.
+    NEEDS_REVIEW = "needs_review"
 
 
 class LeaseStatus(str, enum.Enum):
@@ -80,6 +82,13 @@ class LeaseStatus(str, enum.Enum):
 
 
 ACTIVE_LEASE_STATUSES = (LeaseStatus.WORK.value, LeaseStatus.SUBMITTED.value)
+
+PUBLIC_VISIBILITY = "public"
+
+
+def is_public_visibility(value: object) -> bool:
+    """Only GitHub's ``public`` visibility is public. Unknown, private, and internal are not."""
+    return value == PUBLIC_VISIBILITY
 
 
 class GitHubIdentity(Base):
@@ -134,6 +143,8 @@ class GitHubLease(Base):
     release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Escrow created from the funder at claim time (GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM).
     hold_escrow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # One-time exchange cancel secret for a workflow-locked hold. Never log or return it.
+    hold_cancel_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Trust claims seen at claim, refreshed at submit; used by auto-merge.
     claim_kya: Mapped[int | None] = mapped_column(Integer, nullable=True)
     claim_reputation: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -186,6 +197,8 @@ class GitHubRepoLink(Base):
     auto_merge_acceptable: Mapped[bool] = mapped_column(
         default=False, server_default=text("false"), nullable=False
     )
+    # GitHub repository visibility: public, private, or internal. Null until known.
+    visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -362,6 +375,8 @@ class GitHubSettlement(Base):
         String(16), nullable=False, default=SettlementState.PENDING.value
     )
     escrow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Cancel secret for an escrow this settlement created. Never log or return it.
+    cancel_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     idempotency_prefix: Mapped[str] = mapped_column(String(128), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

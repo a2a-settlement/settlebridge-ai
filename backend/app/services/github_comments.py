@@ -185,7 +185,12 @@ def render_accepted_payment_pending(
 
 
 def render_paid(
-    *, bounty_id: uuid.UUID | str, escrow_id: str, amount_ate: int, fee_ate: int | None
+    *,
+    bounty_id: uuid.UUID | str,
+    escrow_id: str,
+    amount_ate: int,
+    fee_ate: int | None,
+    house_agent: bool = False,
 ) -> str:
     lines = [
         bounty_marker(bounty_id),
@@ -197,6 +202,8 @@ def render_paid(
     ]
     if fee_ate is not None:
         lines.append(f"Exchange fee: {fee_ate} ATE (paid by the funder)")
+    if house_agent:
+        lines.append("Solver: SettleBridge house agent")
     return "\n".join(lines)
 
 

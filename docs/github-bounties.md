@@ -116,7 +116,18 @@ set a different value for each repo with `GITHUB_REPO_REQUIRED_EMA`, but the sec
 The funder's available exchange balance must cover every currently advertised bounty, plus the
 new one, each counted with the exchange's escrow fee: 0.25%, rounded up, at least 1 ATE. A
 $5 bounty therefore needs 502 ATE. This is a check, not a reservation. The escrow is
-created only after the merge, and the funder pays the fee on top of the bounty.
+created when a solver claims the bounty (with claim-time holds on) or after the merge, and the funder pays
+the fee on top of the bounty. Either way the escrow is workflow-locked: the funder can't refund or dispute
+it, and it never expires on a timer. Only SettleBridge, which holds a cancel secret for each escrow, can
+refund it, and only when the lease ends unpaid or an alert bounty's alert is confirmed unfixed.
+
+### Public repos only
+
+Bounties are advertised only for public repos. SettleBridge records each repo's GitHub visibility and refuses
+to advertise a bounty, open an alert issue, or onboard a repo that is private or internal. A labelled issue on
+such a repo gets a comment explaining why. Bounties on a repo that later becomes non-public are hidden from the
+marketplace, the bounty APIs and solver setup; only the requester, the repo's funder and an active lease holder
+can still see them.
 
 ### The SettleBridge comment
 
@@ -275,7 +286,8 @@ key. They do nothing on the hosted server, which has no key.
 | `GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION` | SettleBridge `.env` | Refuses a lease (`403 self_dealing`) to the bounty's funder or the repo's funder: same user, same GitHub account, or same exchange principal (on by default). If the exchange can't answer the principal lookup, the claim fails with `502` rather than skipping the check. |
 | `GITHUB_AUTO_DISPATCH_ALERTS` | SettleBridge `.env` | Global switch for opening bounty issues from Dependabot and code-scanning alerts (off by default). Each repo must also opt in. |
 | `GITHUB_AUTO_BOUNTY_DEPENDABOT_USD` / `GITHUB_AUTO_BOUNTY_CODEQL_USD` / `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE` | SettleBridge `.env` | Bounty sizes for alert issues (defaults $15 and $25) and the per-repo weekly cap on alert bounties (default 10000 ATE). |
-| `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` | SettleBridge `.env` | How long after the merge an alert bounty waits for GitHub to mark the alert fixed before refunding (default 24). |
+| `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` | SettleBridge `.env` | How long after the merge an alert bounty waits for GitHub to mark the alert fixed (default 24). After that a confirmed-open alert is refunded, and an alert GitHub can't report on moves to `needs_review` with the escrow locked. |
+| `GITHUB_HOUSE_CLAIM_DELAY_HOURS` | SettleBridge `.env` | How long a bounty must be advertised before a house solver can claim it (default 24). |
 | `GITHUB_AUTO_MERGE_ACCEPTABLE` / `GITHUB_AUTO_MERGE_MIN_EMA` / `GITHUB_AUTO_MERGE_MIN_KYA` / `GITHUB_AUTO_MERGE_MAX_DIFF_LINES` | SettleBridge `.env` | Global auto-merge switch (off by default) and its minimum solver reputation (0.90), KYA level (2) and diff size (100 lines). Each repo must also opt in. |
 
 ### Adding a repo
@@ -337,13 +349,16 @@ PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAM
 - **Alert bounties** (`--auto-dispatch-alerts`). A new Dependabot alert for a pip or npm package with a
   patched version opens an issue labelled `bounty: $15`. The issue's reproduce command checks the
   installed version, and only the manifest, its lockfiles and that one package may change. Weakening
-  tests is always a violation for these bounties. A code-scanning alert opens a `bounty: $25` issue, with
-  `tier: security` when the rule has a security severity. Security-severity alerts are never posted on
-  public repos. Each alert opens at most one issue, and alert bounties stop for the week once a repo
+  tests is always a violation for these bounties. A code-scanning alert opens a `bounty: $25` issue only when
+  the rule has no security severity; security-severity alerts are never posted. Alert issues are opened only
+  on public repos. Each alert opens at most one issue, and alert bounties stop for the week once a repo
   reaches `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE`. Payment for an alert bounty waits after the merge until
   GitHub marks the alert fixed. SettleBridge checks the alert every 15 minutes, and right away when GitHub
-  sends the alert's `fixed` webhook. The escrow is locked at the merge, and if the alert isn't fixed within
-  `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` it is refunded and the issue gets a comment.
+  sends the alert's `fixed` webhook. The escrow stays locked meanwhile. If GitHub confirms the alert is still
+  open after `GITHUB_ALERT_FIXED_TIMEOUT_HOURS`, the escrow is refunded and the issue gets a comment. If
+  GitHub can't be asked (an outage, a missing alert, or no permission), the settlement moves to
+  `needs_review` instead: the escrow stays locked, the issue gets a comment, and payment follows once the
+  alert's `fixed` webhook arrives or an operator resolves it.
 - **Auto-merge** (`--auto-merge`). The App merges a pull request only when all of these hold:
   - the outcome is ACCEPTABLE with no findings and no maintainer override;
   - the solver's KYA and reputation at claim meet the minimums;
@@ -358,6 +373,10 @@ PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAM
   locked for the lease, and the claim response has `funds_reserved: true`. A lease that is released,
   expires, or whose pull request closes unmerged gets its escrow refunded. A merged lease's escrow is the
   one that pays.
+- **House solvers.** A SettleBridge-operated solver account (`account_kind = house`) can claim a bounty only
+  after it has been advertised for `GITHUB_HOUSE_CLAIM_DELAY_HOURS` (default 24); earlier claims get `409
+  house_claim_delay` with `available_at`. Every other rule, including the self-dealing check, still applies,
+  and its "Payment completed" comment names it as a SettleBridge house agent.
 
 Alert bounties need these GitHub App permissions: Dependabot alerts (read), Code scanning alerts
 (read) and Contents (read and write, for auto-merge). They also need the `dependabot_alert` and

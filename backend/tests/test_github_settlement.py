@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import types
@@ -38,7 +39,15 @@ from app.services.github_settlement import (  # noqa: E402
 from app.services import github_settlement as settlement_mod  # noqa: E402
 
 _FAILURE = frozenset({"refunded", "expired", "disputed"})
-_STATES = ("pending", "escrow_created", "delivered", "released", "failed", "unknown")
+_STATES = (
+    "pending",
+    "escrow_created",
+    "delivered",
+    "released",
+    "failed",
+    "needs_review",
+    "unknown",
+)
 _STATUSES = (None, "", "held", "released", "refunded", "expired", "disputed", "partially_released")
 _DELIVERED = (None, False, True)
 
@@ -57,11 +66,11 @@ def _expected(state: str, escrow_status: str | None, delivered: bool | None) -> 
         return "noop"
     if state == "released":
         return "finalize"
-    if state in ("escrow_created", "delivered") and status in _FAILURE:
+    if state in ("escrow_created", "delivered", "needs_review") and status in _FAILURE:
         return "fail"
     if state == "pending":
         return "create"
-    if state == "escrow_created":
+    if state in ("escrow_created", "needs_review"):
         if status == "released" or delivered:
             return "release"
         return "deliver"
@@ -92,6 +101,9 @@ def test_next_action_priority_rows():
     assert next_action("escrow_created", "disputed", True) == "fail"
     assert next_action("escrow_created", "expired", None) == "fail"
     assert next_action("escrow_created", "refunded", False) == "fail"
+    assert next_action("needs_review", "held", False) == "deliver"
+    assert next_action("needs_review", "held", True) == "release"
+    assert next_action("needs_review", "refunded", False) == "fail"
     assert next_action("delivered", "held", True) == "release"
     assert next_action("delivered", "released", True) == "release"
     assert next_action("delivered", "Refunded", True) == "fail"
@@ -249,6 +261,7 @@ def _world(monkeypatch, **overrides) -> _World:
         SimpleNamespace(GITHUB_SETTLEMENT_ENABLED=True, ESCROW_TTL_MINUTES=90),
     )
     monkeypatch.setattr(settlement_mod.exchange, "create_escrow", world.create)
+    monkeypatch.setattr(settlement_mod.exchange, "create_locked_escrow", world.create)
     monkeypatch.setattr(settlement_mod.exchange, "deliver", world.deliver)
     monkeypatch.setattr(settlement_mod.exchange, "release_escrow", world.release)
     monkeypatch.setattr(settlement_mod.exchange, "get_escrow", world.get_escrow)
@@ -315,12 +328,16 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
     def _create(*args, **kwargs):
         events.append("create")
         assert args[0] is world.funder
+        secret = world.settlement.cancel_secret
+        assert secret
+        assert secret not in json.dumps(kwargs)
         assert kwargs == {
             "provider_id": "solver-1",
             "amount": 2500,
             "task_id": f"gh:{_BINDING_ID}:{_SPEC_ID}",
             "ttl_minutes": 90,
             "idempotency_key": f"{_PREFIX}:create",
+            "cancel_secret_hash": hashlib.sha256(secret.encode()).hexdigest(),
         }
         return {"escrow_id": "esc-1"}
 
@@ -360,14 +377,15 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
 
     assert result is world.settlement
     assert events == ["create", "get", "deliver", "get", "release", "get"]
-    assert [row[0] for row in world.commits[:4]] == [
+    assert [row[0] for row in world.commits[:5]] == [
+        "pending",
         "escrow_created",
         "delivered",
         "released",
         "released",
     ]
-    assert world.commits[2][1] == "settlement_pending"
-    assert world.commits[3][1:] == ("paid", BountyStatus.COMPLETED, "settled", None)
+    assert world.commits[3][1] == "settlement_pending"
+    assert world.commits[4][1:] == ("paid", BountyStatus.COMPLETED, "settled", None)
     assert world.commits[-1][4] == 555
     assert world.settlement.state == "released"
     assert world.settlement.escrow_id == "esc-1"
@@ -381,7 +399,11 @@ def test_happy_path_commits_each_step_and_finalizes(monkeypatch):
     assert world.bounty.completed_at is not None
     assert world.bounty.completed_at.tzinfo is not None
     world.render_paid.assert_called_once_with(
-        bounty_id=_BOUNTY_ID, escrow_id="esc-1", amount_ate=2500, fee_ate=7
+        bounty_id=_BOUNTY_ID,
+        escrow_id="esc-1",
+        amount_ate=2500,
+        fee_ate=7,
+        house_agent=False,
     )
     world.marker.assert_called_once_with(_BOUNTY_ID)
     world.comment.assert_awaited_once_with(
@@ -395,7 +417,11 @@ def test_paid_comment_omits_fee_when_escrow_lookup_fails(monkeypatch):
     _run(world)
     assert world.binding.state == "paid"
     world.render_paid.assert_called_once_with(
-        bounty_id=_BOUNTY_ID, escrow_id="esc-1", amount_ate=2500, fee_ate=None
+        bounty_id=_BOUNTY_ID,
+        escrow_id="esc-1",
+        amount_ate=2500,
+        fee_ate=None,
+        house_agent=False,
     )
     world.comment.assert_awaited_once()
 
@@ -410,16 +436,23 @@ def test_create_accepts_id_field(monkeypatch):
 
 def test_crash_before_create_commit_reuses_idempotency_key(monkeypatch):
     world = _world(monkeypatch)
+    calls = {"n": 0}
 
-    async def _boom() -> None:
-        raise RuntimeError("db down")
+    async def _commit() -> None:
+        calls["n"] += 1
+        # The secret commit succeeds. The escrow_created commit does not.
+        if calls["n"] >= 2:
+            raise RuntimeError("db down")
 
-    world.db.commit = _boom
+    world.db.commit = _commit
     with pytest.raises(RetryableJobError):
         _run(world)
+    assert world.settlement.cancel_secret
     assert world.create.call_count == 1
     key = world.create.call_args.kwargs["idempotency_key"]
     assert key == f"{_PREFIX}:create"
+    secret = world.settlement.cancel_secret
+    digest = world.create.call_args.kwargs["cancel_secret_hash"]
 
     world.settlement.state = "pending"
     world.settlement.escrow_id = None
@@ -427,8 +460,10 @@ def test_crash_before_create_commit_reuses_idempotency_key(monkeypatch):
     world.record_commit()
     _run(world)
     assert world.create.call_count == 2
+    assert world.settlement.cancel_secret == secret
     assert world.create.call_args_list[0].kwargs["idempotency_key"] == key
     assert world.create.call_args_list[1].kwargs["idempotency_key"] == key
+    assert world.create.call_args_list[1].kwargs["cancel_secret_hash"] == digest
 
 
 def test_persisted_escrow_created_does_not_create_again(monkeypatch):
@@ -787,18 +822,25 @@ def test_alert_lookup_error_waits(monkeypatch):
     _run(world)
     assert world.settlement.state == "escrow_created"
     assert world.deliver.call_count == 0
+    assert world.refund.call_count == 0
     assert len(world.added) == 1
 
 
-def test_alert_not_fixed_after_timeout_refunds_and_fails(monkeypatch):
+def test_alert_not_fixed_after_timeout_refunds_and_fails(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
     world = _alert_world(monkeypatch, "dismissed", age_hours=25)
     with pytest.raises(PermanentJobError):
         _run(world)
+    secret = world.settlement.cancel_secret
+    assert secret
     assert world.settlement.state == "failed"
     assert world.refund.call_args.args[:2] == (world.funder, "esc-1")
+    assert world.refund.call_args.kwargs["cancel_secret"] == secret
     assert world.deliver.call_count == 0
     assert world.release.call_count == 0
     assert world.comment.await_args.args[3] == "<!-- settlebridge:alert-fixed -->"
+    assert secret not in caplog.text
+    assert secret not in world.comment.await_args.args[4]
     assert world.added == []
 
 
@@ -839,6 +881,135 @@ def test_alert_gate_blocks_release_when_the_solver_delivered_early(monkeypatch):
     assert world.release.call_count == 0
     assert world.settlement.state == "escrow_created"
     assert len(world.added) == 1
+
+
+def _parked_alert(monkeypatch, alert_state, *, age_hours):
+    world = _alert_world(monkeypatch, alert_state, age_hours=age_hours)
+    world.settlement.state = "escrow_created"
+    world.settlement.escrow_id = "esc-locked"
+    world.settlement.cancel_secret = "plaintext-cancel-secret"
+    world.lease.hold_cancel_secret = "plaintext-hold-secret"
+    return world
+
+
+def _assert_needs_review(world):
+    assert world.settlement.state == "needs_review"
+    assert world.settlement.escrow_id == "esc-locked"
+    assert world.settlement.last_error
+    assert world.refund.call_count == 0
+    assert world.release.call_count == 0
+    assert world.deliver.call_count == 0
+    assert world.added == []
+    body = world.comment.await_args.args[4]
+    assert world.comment.await_args.args[3] == "<!-- settlebridge:alert-fixed -->"
+    assert "refund" not in body.lower()
+    assert "could not be verified" in body
+    assert "pending review" in body
+    assert "plaintext-cancel-secret" not in body
+    assert "plaintext-hold-secret" not in body
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["runtime", "http-503", "http-404", "no-dispatch", "not-object", "missing-state"],
+)
+def test_alert_unavailable_after_deadline_needs_review(monkeypatch, caplog, problem):
+    caplog.set_level("DEBUG")
+    world = _parked_alert(monkeypatch, "fixed", age_hours=25)
+    if problem == "runtime":
+        world.alert.side_effect = RuntimeError("boom")
+    elif problem == "http-503":
+        world.alert.side_effect = settlement_mod.github_app.GitHubAPIError("down", 503)
+    elif problem == "http-404":
+        world.alert.side_effect = settlement_mod.github_app.GitHubAPIError("missing", 404)
+    elif problem == "no-dispatch":
+        world.dispatch_lookup.return_value = None
+    elif problem == "not-object":
+        world.alert.return_value = ["nope"]
+    else:
+        world.alert.return_value = {"number": 7}
+    result = _run(world)
+    assert result is world.settlement
+    _assert_needs_review(world)
+    assert "plaintext-cancel-secret" not in caplog.text
+    assert "plaintext-hold-secret" not in caplog.text
+
+
+def test_alert_dispatch_db_error_stays_retryable(monkeypatch):
+    world = _parked_alert(monkeypatch, "fixed", age_hours=25)
+    world.dispatch_lookup.side_effect = RuntimeError("db down")
+    with pytest.raises(RetryableJobError):
+        _run(world)
+    assert world.settlement.state == "escrow_created"
+    assert world.settlement.escrow_id == "esc-locked"
+    assert world.refund.call_count == 0
+    assert world.release.call_count == 0
+    assert world.deliver.call_count == 0
+
+
+def test_needs_review_pays_when_the_alert_is_fixed(monkeypatch):
+    world = _alert_world(monkeypatch, "fixed", age_hours=25)
+    world.settlement.state = "needs_review"
+    world.settlement.escrow_id = "esc-locked"
+    world.settlement.last_error = "GitHub alert state could not be verified"
+    world.get_escrow.return_value = {"status": "held", "fee_amount": 1}
+    _run(world)
+    assert world.settlement.state == "released"
+    assert world.release.call_count == 1
+    assert world.deliver.call_count == 1
+    assert world.refund.call_count == 0
+    assert world.settlement.escrow_id == "esc-locked"
+
+
+def test_needs_review_refunds_when_the_alert_stays_unfixed(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    world = _alert_world(monkeypatch, "dismissed", age_hours=25)
+    world.settlement.state = "needs_review"
+    world.settlement.escrow_id = "hold-1"
+    world.lease.hold_escrow_id = "hold-1"
+    world.lease.hold_cancel_secret = "hold-cancel-secret"
+    world.settlement.cancel_secret = "settlement-cancel-secret"
+    world.get_escrow.return_value = {"status": "held"}
+    with pytest.raises(PermanentJobError):
+        _run(world)
+    assert world.settlement.state == "failed"
+    assert world.refund.call_args.kwargs["cancel_secret"] == "hold-cancel-secret"
+    assert world.release.call_count == 0
+    assert world.deliver.call_count == 0
+    assert "hold-cancel-secret" not in caplog.text
+    assert "settlement-cancel-secret" not in caplog.text
+
+
+def test_needs_review_unfixed_before_deadline_waits(monkeypatch):
+    world = _alert_world(monkeypatch, "dismissed", age_hours=1)
+    world.settlement.state = "needs_review"
+    world.settlement.escrow_id = "esc-locked"
+    _run(world)
+    assert world.settlement.state == "needs_review"
+    assert world.refund.call_count == 0
+    assert world.release.call_count == 0
+    assert world.deliver.call_count == 0
+    assert len(world.added) == 1
+
+
+def test_needs_review_unavailable_does_not_recheck(monkeypatch):
+    world = _parked_alert(monkeypatch, "fixed", age_hours=1)
+    world.settlement.state = "needs_review"
+    world.alert.side_effect = RuntimeError("still down")
+    _run(world)
+    assert world.settlement.state == "needs_review"
+    assert world.settlement.escrow_id == "esc-locked"
+    assert world.added == []
+    assert world.refund.call_count == 0
+    assert world.release.call_count == 0
+    assert world.deliver.call_count == 0
+
+
+def test_paid_comment_names_a_house_solver(monkeypatch):
+    world = _world(monkeypatch)
+    world.provider.account_kind = "house"
+    _run(world)
+    assert world.render_paid.call_args.kwargs["house_agent"] is True
 
 
 def _pending_advance(settlement_id, status="pending", *, when=None):

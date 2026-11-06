@@ -19,9 +19,14 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.github import is_public_visibility
 from app.models.user import User
 from app.services import exchange, github_app
-from app.services.github_bounty_service import escrow_cost, sum_advertised_cost
+from app.services.github_bounty_service import (
+    escrow_cost,
+    sum_advertised_cost,
+    visibility_from_repository,
+)
 from app.services.github_repo_admin import (
     RepoAdminError,
     _apply_strict_tests,
@@ -246,7 +251,10 @@ async def _github(call):
 
 
 async def detect_defaults(db: AsyncSession, repo: str) -> dict:
-    """What onboarding would use for ``repo``, read from GitHub. Does not write."""
+    """What onboarding would use for ``repo``, read from GitHub.
+
+    Records repository visibility on the link. Does not change bounty settings.
+    """
     link = await _require_link(db, repo)
     installation = await _installation_row(db, int(link.installation_id))
     if installation is None or installation.removed_at is not None:
@@ -257,6 +265,10 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
     installation_id = int(link.installation_id)
     name = link.repo_full_name
     repository = await _github(github_app.get_repository(installation_id, name))
+    visibility = visibility_from_repository(repository)
+    if visibility is not None and link.visibility != visibility:
+        link.visibility = visibility
+        await db.flush()
     branch_name = repository.get("default_branch")
     if not isinstance(branch_name, str) or branch_name == "":
         raise OnboardGitHubError(f"GitHub did not return a default branch for {name}")
@@ -394,6 +406,8 @@ async def onboard_repo(
     """
     detected = await detect_defaults(db, repo)
     link = await _require_link(db, repo)
+    if not is_public_visibility(link.visibility):
+        raise OnboardError(f"{link.repo_full_name} is not public", code="repo_not_public")
     if link.funder_user_id is not None and link.funder_user_id != funder.id and not replace_funder:
         raise FunderConflictError(f"{link.repo_full_name} is already funded by another user")
 

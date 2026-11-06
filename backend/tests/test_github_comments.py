@@ -238,6 +238,11 @@ def test_paid_and_cancelled():
     assert "fee" not in render_paid(
         bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=5000, fee_ate=None
     ).lower()
+    house = render_paid(
+        bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=5000, fee_ate=500, house_agent=True
+    )
+    assert "SettleBridge house agent" in house
+    assert "house agent" not in paid.lower()
     cancelled = render_cancelled(bounty_id=BOUNTY, reason="issue closed")
     assert cancelled.splitlines()[0] == bounty_marker(BOUNTY)
     assert "cancelled" in cancelled.lower()

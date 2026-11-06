@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.bounty import Bounty, BountyStatus, Difficulty
 from app.models.claim import Claim, ClaimStatus
+from app.services.repo_visibility import bounty_public_clause
 
 # Visible to anonymous callers. DRAFT / CANCELLED / EXPIRED are owner-only.
 PUBLIC_BOUNTY_STATUSES = (
@@ -79,6 +80,13 @@ async def list_bounties(
     if viewer_id:
         visibility = or_(visibility, Bounty.requester_id == viewer_id)
     filters.append(visibility)
+
+    # Private, internal, unknown, and missing repo links stay off this list.
+    # A signed-in requester still sees bounties they posted.
+    repo_public = bounty_public_clause()
+    if viewer_id:
+        repo_public = or_(repo_public, Bounty.requester_id == viewer_id)
+    filters.append(repo_public)
 
     if category_id:
         filters.append(Bounty.category_id == category_id)
