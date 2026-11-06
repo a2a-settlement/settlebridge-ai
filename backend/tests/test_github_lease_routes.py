@@ -991,36 +991,62 @@ def test_heartbeat_rejects_bad_auth_and_body(api):
     assert api.session.commits == 0
 
 
-@pytest.mark.parametrize(
-    "route",
-    ["claim", "renew", "release", "submit", "heartbeat"],
-)
-def test_mutating_routes_require_financial_scope(api, route):
-    api.box["scopes"] = frozenset({"mcp:read"})
+def _mutating(api, route):
     lease = api.box["lease"]
     bounty_id = api.box["binding"].bounty_id
     if route == "claim":
-        response = api.client.post(
+        return api.client.post(
             f"/api/v1/github/bounties/{bounty_id}/claim-lease",
             headers=_headers(lease_header=False),
         )
-    elif route == "renew":
-        response = api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
-    elif route == "release":
-        response = api.client.post(f"/api/v1/github/leases/{lease.id}/release", headers=_headers())
-    elif route == "submit":
-        response = _submit(api, lease, {"pr_url": f"https://github.com/{REPO}/pull/7"})
-    else:
-        response = _heartbeat(api, {"status": "AVAILABLE_IDLE"})
+    if route == "renew":
+        return api.client.post(f"/api/v1/github/leases/{lease.id}/renew", headers=_headers())
+    if route == "release":
+        return api.client.post(f"/api/v1/github/leases/{lease.id}/release", headers=_headers())
+    if route == "submit":
+        return _submit(api, lease, {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    if route == "heartbeat":
+        return _heartbeat(api, {"status": "AVAILABLE_IDLE"})
+    raise AssertionError(route)
+
+
+_MUTATING_ROUTES = ["claim", "renew", "release", "submit", "heartbeat"]
+
+
+@pytest.mark.parametrize("scopes", [frozenset({"mcp:read"}), frozenset({"mcp:tool:financial"})])
+@pytest.mark.parametrize("route", _MUTATING_ROUTES)
+def test_mutating_routes_accept_read_or_legacy_financial_scope(api, scopes, route):
+    api.box["scopes"] = scopes
+    response = _mutating(api, route)
+    assert response.status_code in (200, 201), response.text
+    assert response.json().get("error") != "insufficient_scope"
+
+
+@pytest.mark.parametrize("scopes", [frozenset(), frozenset({"settlement:transact"})])
+@pytest.mark.parametrize("route", _MUTATING_ROUTES)
+def test_mutating_routes_reject_tokens_without_read_or_financial_scope(api, scopes, route):
+    api.box["scopes"] = scopes
+    response = _mutating(api, route)
     assert response.status_code == 403
-    assert response.json() == {
-        "error": "insufficient_scope",
-        "required_scope": "mcp:tool:financial",
-    }
+    assert response.json() == {"error": "insufficient_scope", "required_scope": "mcp:read"}
     assert api.session.commits == 0
     assert api.box["events"] == []
     assert api.box["pr_calls"] == []
-    assert lease.status == "work"
+    assert api.box["lease"].status == "work"
+
+
+def test_claim_without_linked_github_creates_no_hold(api, monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM", True)
+    api.box["identity"] = None
+    response = api.client.post(
+        f"/api/v1/github/bounties/{api.box['binding'].bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    _error(response, 409, "no_github_identity")
+    assert api.session.commits == 0
+    assert api.session.added == []
+    assert api.box["events"] == []
+    assert api.box["lock_calls"] == []
 
 
 def test_invalid_token_is_rejected_before_scope(api):

@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     GITHUB_JOB_MAX_ATTEMPTS: int = 8
     GITHUB_JOB_POLL_INTERVAL_S: int = 5
     MARKET_URL: str = "https://market.settlebridge.ai"
+    SETTLEBRIDGE_HOSTED_MCP_URL: str = "https://mcp.a2a-settlement.org/mcp"
 
     # GitHub user OAuth (identity verification through the GitHub App)
     GITHUB_OAUTH_CLIENT_ID: str = ""

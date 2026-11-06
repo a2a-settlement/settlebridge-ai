@@ -24,6 +24,7 @@ _HMAC_PREFIX = "HS"
 _KYA_MIN = 0
 _KYA_MAX = 5
 FINANCIAL_SCOPE = "mcp:tool:financial"
+READ_SCOPE = "mcp:read"
 
 
 class TrustTokenError(Exception):
