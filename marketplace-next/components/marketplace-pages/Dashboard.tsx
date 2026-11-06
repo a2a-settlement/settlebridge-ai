@@ -10,6 +10,8 @@ import {
   Coins,
   TrendingUp,
   RefreshCw,
+  Wallet,
+  Wrench,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import api from "@/services/api";
@@ -293,6 +295,18 @@ export default function Dashboard() {
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
             >
               <Bell className="w-4 h-4" /> Notifications
+            </Link>
+            <Link
+              href="/dashboard/wallet"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+            >
+              <Wallet className="w-4 h-4" /> Wallet
+            </Link>
+            <Link
+              href="/dashboard/github/solver"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+            >
+              <Wrench className="w-4 h-4" /> Solver setup
             </Link>
             <Link
               href="/dashboard/settings"
