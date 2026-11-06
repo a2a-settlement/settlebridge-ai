@@ -31,17 +31,22 @@ Payment needs all of the following:
 
 ### Setting up your repo
 
-You need an exchange account with at least 101 ATE free (the cost of a $1 bounty plus fees)
-and admin rights on the repo. There are two ways to set up.
+You need admin rights on the repo and an exchange account with at least 101 ATE free (the cost of a $1
+bounty plus fees). There are two ways to set up.
 
 **In the browser:**
 
 1. Install the [SettleBridge GitHub App](https://github.com/apps/settlebridge-bounties/installations/new)
    on the repo. GitHub then sends you to `https://market.settlebridge.ai/dashboard/github/setup`.
-2. Sign in, with your exchange API key or a password, and link your GitHub account if asked.
-   You come back to the setup page afterwards.
-3. Pick the repo, confirm the required check and the paths solvers may change, then click **Enable bounties**.
+2. Click **Continue with GitHub**. On your first sign-in this creates your SettleBridge user and an exchange
+   account, and links your GitHub account. If your GitHub account is already linked to a SettleBridge user,
+   you're signed in as that user. You come back to the setup page afterwards.
+3. If your balance is too low, click **Add 1000 test ATE**. ATE is a test currency, and the button stops
+   working once your balance reaches 2,000 ATE.
+4. Pick the repo, confirm the required check and the paths solvers may change, then click **Enable bounties**.
    This also creates the `bounty:` and `tier:` labels.
+
+You can still sign in with an exchange API key or a password instead, and link GitHub from Settings.
 
 **From an agent** (Claude Code, Codex, Cursor or any MCP client): set `SETTLEBRIDGE_API_KEY` to your exchange
 API key in the [a2a-settlement-mcp](https://github.com/a2a-settlement/a2a-settlement-mcp) server, then ask:
@@ -53,7 +58,8 @@ steps, each with a link for you to open: installing the App, linking GitHub, or 
 When the repo is ready, the agent shows you a dry run first, and enables bounties only after you confirm.
 
 Installing the App and linking GitHub each need one browser visit, because GitHub requires a person to
-approve them. Funding your exchange account is always a separate, explicit step.
+approve them. Funding your exchange account is always a separate, explicit step: **Add funds** on the
+setup page, or a deposit you make on the exchange yourself.
 
 ### Writing the issue
 
@@ -210,6 +216,9 @@ Submitting a pull request is not payment. Payment happens only after the merge a
 | `MCP_TRUST_FINANCIAL_ALLOWLIST` | mcp-trust-gateway `.env` | Comma-separated agent IDs allowed to get the financial scope. |
 | `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API and the setup page (off by default). |
 | `GITHUB_APP_SLUG` | SettleBridge `.env` | The App's slug for its install link (default `settlebridge-bounties`). |
+| `GITHUB_LOGIN_ENABLED` | SettleBridge `.env` | Shows **Continue with GitHub** sign-in, which creates the user and an exchange account on first sign-in (off by default). Uses the `GITHUB_OAUTH_*` settings. |
+| `GITHUB_SETUP_FUNDING_ENABLED` | SettleBridge `.env` | Enables the setup page's **Add funds** button (off by default). |
+| `GITHUB_SETUP_FUND_ATE` / `GITHUB_SETUP_FUND_MAX_BALANCE_ATE` | SettleBridge `.env` | ATE added per click (default 1000), and the available balance at which the button stops (default 2000). |
 
 ### Adding a repo
 
@@ -265,6 +274,10 @@ without the operator:
   with a stable `code`, a message, and a link where one helps. `ready` is true when `onboard` would succeed.
 - `GET /api/v1/github/setup/installations/{installation_id}/repos` lists the repos in an installation
   where the caller's linked GitHub account is an admin. The setup page uses it after GitHub redirects there.
+- `GET /api/v1/github/setup/info` returns the install link and the Add funds settings.
+- `POST /api/v1/github/setup/add-funds` deposits `GITHUB_SETUP_FUND_ATE` into the caller's own exchange
+  account, creating the account first if needed. It returns `409 balance_sufficient` once the available
+  balance reaches `GITHUB_SETUP_FUND_MAX_BALANCE_ATE`, and 404 unless `GITHUB_SETUP_FUNDING_ENABLED` is on.
 - `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects.
 - `POST /api/v1/github/repos/{owner}/{name}/onboard` with `{"checks": [{"name": "test", "app_id": 15368}]}`,
   plus optional `allowed_paths`, `allowed_dependency_changes` and `dry_run`, configures and enables the repo.
@@ -278,7 +291,8 @@ who onboarded it and when.
 Errors return `detail` as `{"code", "message", ...}`. The codes are `link_github`, `repo_access`,
 `no_pinned_check` (with `candidates`), `needs_allowed_path`, `forbidden_path`, `funder_no_exchange`,
 `funder_low_balance` (with `headroom_ate` and `minimum_ate`), `funded_by_other`, `app_not_installed`,
-`github_unavailable`, `exchange_unavailable` and `invalid_request`. Nothing about a repo is returned until the
+`github_unavailable`, `exchange_unavailable`, `balance_sufficient` and `invalid_request`. With Add funds on,
+the `funder_no_exchange` and `funder_low_balance` steps also carry `"action": "add_funds"`. Nothing about a repo is returned until the
 caller is shown to be its admin, so a repo without the App and a repo the caller can't administer give the
 same `repo_access` answer.
 
@@ -286,6 +300,11 @@ For outside owners to use this, the GitHub App must be public, and its **Setup U
 `https://market.settlebridge.ai/dashboard/github/setup` with **Redirect on update** on. Leave
 **Request user authorization (OAuth) during installation** off: SettleBridge links identities through its own
 signed-state flow. `GITHUB_APP_SLUG` (default `settlebridge-bounties`) builds the install link.
+
+**Continue with GitHub** (`POST /api/auth/github/start`, then `POST /api/auth/github/callback`) uses the
+same OAuth client and callback URL as linking. Its state is signed, expires after 10 minutes, and carries
+a hash of a one-time nonce that the starting browser keeps, so a sign-in link can't be replayed in another
+browser. Users created this way have no password and get the email `<github user id>@github.settlebridge.ai`.
 
 ### Adding a solver
 

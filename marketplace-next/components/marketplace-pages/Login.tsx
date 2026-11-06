@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Shield, Key, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { safeReturnPath } from "@/lib/returnTo";
+import { GitHubLoginButton } from "@/components/GitHubLoginButton";
 
 type Tab = "email" | "apikey";
 
@@ -70,6 +71,7 @@ export default function Login() {
         </div>
         <div className="bg-white rounded-2xl shadow-xl p-8">
           <h1 className="text-2xl font-bold text-navy-900 mb-6">Sign in</h1>
+          <GitHubLoginButton />
 
           <div className="flex bg-gray-100 rounded-lg p-1 mb-6">
             <button type="button" className={tabClass("email")} onClick={() => { setTab("email"); setError(""); }}>

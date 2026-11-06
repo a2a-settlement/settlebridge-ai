@@ -78,6 +78,11 @@ def register_account(
     )
 
 
+def deposit(user: User, amount: int, reference: str) -> dict[str, Any]:
+    """Deposit ``amount`` ATE into the user's own exchange account."""
+    return _user_client(user).deposit(amount=amount, reference=reference)
+
+
 def get_balance(user: User) -> dict[str, Any]:
     client = _user_client(user)
     return client.get_balance()

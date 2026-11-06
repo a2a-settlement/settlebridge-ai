@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Shield } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { GitHubLoginButton } from "@/components/GitHubLoginButton";
 
 export default function Register() {
   const { register } = useAuth();
@@ -43,6 +44,7 @@ export default function Register() {
           <h1 className="text-2xl font-bold text-navy-900 mb-6">
             Create account
           </h1>
+          <GitHubLoginButton />
           {error && (
             <div className="bg-red-50 text-red-700 text-sm rounded-lg p-3 mb-4">
               {error}

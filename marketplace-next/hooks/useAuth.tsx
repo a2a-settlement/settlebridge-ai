@@ -14,6 +14,7 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   exchangeLogin: (apiKey: string) => Promise<void>;
+  githubLogin: (code: string, state: string, nonce: string) => Promise<GitHubLoginResult>;
   register: (
     email: string,
     password: string,
@@ -22,6 +23,12 @@ interface AuthContextType {
   ) => Promise<void>;
   logout: () => void;
   refresh: () => Promise<void>;
+}
+
+export interface GitHubLoginResult {
+  login: string;
+  created: boolean;
+  next: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -70,6 +77,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await refresh();
   };
 
+  const githubLogin = async (code: string, state: string, nonce: string) => {
+    const { data } = await api.post<GitHubLoginResult & { access_token: string }>(
+      "/auth/github/callback",
+      { code, state, nonce }
+    );
+    localStorage.setItem("sb_token", data.access_token);
+    await refresh();
+    return { login: data.login, created: data.created, next: data.next };
+  };
+
   const register = async (
     email: string,
     password: string,
@@ -96,7 +113,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, exchangeLogin, register, logout, refresh }}
+      value={{
+        user,
+        loading,
+        login,
+        exchangeLogin,
+        githubLogin,
+        register,
+        logout,
+        refresh,
+      }}
     >
       {children}
     </AuthContext.Provider>

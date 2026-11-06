@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import GitHubCallback from "@/components/marketplace-pages/GitHubCallback";
 
-export const metadata = { title: "Link GitHub" };
+export const metadata = { title: "GitHub" };
 
 export default function GitHubCallbackPage() {
   return (

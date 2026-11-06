@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     GITHUB_SELF_SERVE_ONBOARDING: bool = False
     # The App's public slug, used to build its install link.
     GITHUB_APP_SLUG: str = "settlebridge-bounties"
+    # Sign in with GitHub, creating the user and an exchange account on first sign-in.
+    GITHUB_LOGIN_ENABLED: bool = False
+    # The setup page's Add funds button deposits test ATE into the caller's own
+    # exchange account. Off unless enabled; refused once the balance reaches the cap.
+    GITHUB_SETUP_FUNDING_ENABLED: bool = False
+    GITHUB_SETUP_FUND_ATE: int = 1000
+    GITHUB_SETUP_FUND_MAX_BALANCE_ATE: int = 2000
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     # Comma-separated owner/repo=ema pairs that replace the default for that repo.
     GITHUB_REPO_REQUIRED_EMA: str = ""

@@ -20,7 +20,13 @@ interface Step {
   message: string;
   blocking: boolean;
   url?: string;
+  action?: string;
   candidates?: Check[];
+}
+
+interface SetupInfo {
+  urls: { install_app: string };
+  add_funds: { enabled: boolean; amount_ate: number; max_balance_ate: number };
 }
 
 interface Detected {
@@ -113,6 +119,9 @@ export default function GitHubSetup() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<OnboardResult | null>(null);
   const [error, setError] = useState("");
+  const [info, setInfo] = useState<SetupInfo | null>(null);
+  const [funding, setFunding] = useState(false);
+  const [fundedMessage, setFundedMessage] = useState("");
 
   const linked = identity?.linked === true;
 
@@ -148,6 +157,20 @@ export default function GitHubSetup() {
       if (timer) clearTimeout(timer);
     };
   }, [linked, installationId]);
+
+  useEffect(() => {
+    if (!linked) return;
+    let cancelled = false;
+    api
+      .get<SetupInfo>("/v1/github/setup/info")
+      .then(({ data }) => {
+        if (!cancelled) setInfo(data);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [linked]);
 
   const loadStatus = useCallback(async (repo: string) => {
     setLoadingStatus(true);
@@ -200,6 +223,26 @@ export default function GitHubSetup() {
       setError(messageFrom(err, "Couldn't enable bounties on this repo."));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleAddFunds = async () => {
+    if (!status || funding) return;
+    setFunding(true);
+    setError("");
+    setFundedMessage("");
+    try {
+      const { data } = await api.post<{ deposited_ate: number; balance_ate: number }>(
+        "/v1/github/setup/add-funds"
+      );
+      setFundedMessage(
+        `Added ${data.deposited_ate} test ATE. Your balance is ${data.balance_ate} ATE.`
+      );
+      await loadStatus(status.repo);
+    } catch (err: unknown) {
+      setError(messageFrom(err, "Couldn't add funds."));
+    } finally {
+      setFunding(false);
     }
   };
 
@@ -283,6 +326,15 @@ export default function GitHubSetup() {
             </div>
           )}
 
+          {!installationId && !selected && info && (
+            <a
+              href={info.urls.install_app}
+              className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-navy-900 text-white rounded-lg font-semibold text-sm hover:bg-navy-800 transition"
+            >
+              Install SettleBridge on a GitHub repo <ExternalLink className="w-4 h-4" />
+            </a>
+          )}
+
           {repos && repos.length === 0 && (
             <p className="text-sm text-gray-600">
               No repos in this installation list @{identity?.login} as an admin. Enter a repo
@@ -346,7 +398,16 @@ export default function GitHubSetup() {
                   }`}
                 >
                   {step.message}
-                  {step.url && (
+                  {step.action === "add_funds" && info?.add_funds.enabled ? (
+                    <button
+                      type="button"
+                      onClick={handleAddFunds}
+                      disabled={funding}
+                      className="ml-2 px-3 py-1 rounded-md bg-navy-900 text-white text-xs font-semibold hover:bg-navy-800 disabled:opacity-50"
+                    >
+                      {funding ? "Adding…" : `Add ${info.add_funds.amount_ate} test ATE`}
+                    </button>
+                  ) : step.url && (
                     <a
                       href={step.url}
                       className="ml-2 inline-flex items-center gap-1 font-medium underline"
@@ -357,6 +418,12 @@ export default function GitHubSetup() {
                 </li>
               ))}
             </ul>
+          )}
+
+          {fundedMessage && (
+            <div className="bg-green-50 text-green-700 rounded-lg p-3 flex items-center gap-2 text-sm">
+              <CheckCircle className="w-4 h-4 flex-shrink-0" /> {fundedMessage}
+            </div>
           )}
 
           {status.funder && status.funder.headroom_ate !== null && (
