@@ -153,6 +153,8 @@ async def run_due_jobs(session_factory=async_session, limit: int = 10) -> int:
     return len(job_ids)
 
 
+# needs_review is omitted on purpose. The alert gate left that escrow locked, and
+# sweeping it would enqueue a new advance forever while GitHub stays unreachable.
 _RESUMABLE_SETTLEMENT_STATES = frozenset(
     {
         SettlementState.PENDING.value,
@@ -197,8 +199,9 @@ async def enqueue_pending_settlements(db: AsyncSession) -> int:
     advance job that runs while the flag is off is marked done. Re-queueing here
     lets those settlements resume after the flag is turned on. ``released`` and
     ``failed`` are terminal: a released row is finalized by the job that released
-    it, and queueing another would enqueue forever. Commits only when a job is
-    inserted. Returns how many jobs were inserted.
+    it, and queueing another would enqueue forever. ``needs_review`` is not
+    queued; a later advance re-enters the alert gate without a sweep job.
+    Commits only when a job is inserted. Returns how many jobs were inserted.
     """
     if not settings.GITHUB_SETTLEMENT_ENABLED:
         return 0

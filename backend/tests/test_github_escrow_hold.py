@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import types
 import uuid
@@ -18,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.models.github import GitHubJob, GitHubLease, JobKind, JobStatus
+from app.models.user import ACCOUNT_KIND_HOUSE
 from app.services import github_app, github_bounty_service, github_leases, github_settlement
 from app.services.github_errors import RetryableJobError
 from app.services.github_settlement import SettlementContext
@@ -276,6 +278,7 @@ class _Claim:
         )
         monkeypatch.setattr(github_leases.exchange, "get_balance_dashboard", get_balance)
         monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
+        monkeypatch.setattr(github_leases.exchange, "create_locked_escrow", create_escrow)
         monkeypatch.setattr(github_leases.httpx, "AsyncClient", _Client)
         monkeypatch.setattr(github_leases, "_principal_links", fetch_principal)
         monkeypatch.setattr(github_leases, "fetch_bounty_funder", fetch_bounty_funder)
@@ -452,6 +455,8 @@ def test_hold_is_created_with_ttl_and_idempotency_key(monkeypatch):
     assert set(result.body) == CLAIM_KEYS | {"funds_reserved"}
     lease = _lease_row(world)
     assert lease.hold_escrow_id == "esc-hold"
+    assert lease.hold_cancel_secret
+    assert lease.hold_cancel_secret not in str(result.body)
     assert lease.status == "work"
     assert lease.claim_kya == 2
     assert lease.claim_reputation == 0.91
@@ -462,6 +467,7 @@ def test_hold_is_created_with_ttl_and_idempotency_key(monkeypatch):
         "task_id": f"gh-hold:{lease.id}",
         "ttl_minutes": 10 + 2 * 60 + 3 * 60 + 4,
         "idempotency_key": f"gh-hold:{lease.id}",
+        "cancel_secret_hash": hashlib.sha256(lease.hold_cancel_secret.encode()).hexdigest(),
     }
     assert world.events == ["balance", "add", "create"]
     assert world.db.commits == 2
@@ -929,7 +935,7 @@ def test_refund_returns_a_held_escrow_to_the_funder(monkeypatch):
         calls["get"] = (user, escrow_id)
         return {"status": "held", "provider_id": AGENT, "amount": 100}
 
-    def refund(user, escrow_id, reason=""):
+    def refund(user, escrow_id, reason="", cancel_secret=None):
         calls["refund"] = (user, escrow_id, reason)
         return {"status": "refunded"}
 
@@ -951,7 +957,7 @@ def test_refund_treats_an_already_final_client_error_as_done(monkeypatch):
     def get_escrow(user, escrow_id):
         return {"status": "held"}
 
-    def refund(user, escrow_id, reason=""):
+    def refund(user, escrow_id, reason="", cancel_secret=None):
         raise _http_error(400, "Escrow is already refunded")
 
     lease = _refund_lease()
@@ -979,7 +985,7 @@ def test_refund_retries_transient_exchange_errors(monkeypatch):
     def get_held(user, escrow_id):
         return {"status": "held"}
 
-    def refund_down(user, escrow_id, reason=""):
+    def refund_down(user, escrow_id, reason="", cancel_secret=None):
         raise ConnectionError("reset")
 
     retry_db, _funder = _install_refund(monkeypatch, lease, get_escrow=get_held, refund=refund_down)
@@ -1083,32 +1089,37 @@ def test_settlement_adopts_a_held_escrow_and_falls_back_otherwise(monkeypatch, e
 
     refunded = []
     monkeypatch.setattr(github_settlement.exchange, "get_escrow", get_escrow)
-    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_escrow)
     monkeypatch.setattr(
         github_settlement.exchange,
         "refund_escrow",
-        lambda user, escrow_id, reason="": refunded.append(escrow_id),
+        lambda user, escrow_id, reason="", cancel_secret=None: refunded.append(
+            (escrow_id, cancel_secret)
+        ),
     )
     monkeypatch.setattr(settings, "ESCROW_TTL_MINUTES", 90)
     _run(github_settlement._step_create(db, ctx))
     held = str(escrow["status"]).lower() == "held"
-    assert refunded == (["hold-1"] if held and not adopt else [])
+    assert refunded == ([("hold-1", None)] if held and not adopt else [])
     if adopt:
         assert created == []
         assert ctx.settlement.escrow_id == "hold-1"
         assert ctx.settlement.state == "escrow_created"
         assert ctx.settlement.last_error is None
         assert commits == ["escrow_created"]
+        assert getattr(ctx.settlement, "cancel_secret", None) is None
     else:
-        assert created == [
-            {
-                "provider_id": AGENT,
-                "amount": 100,
-                "task_id": f"gh:{ctx.settlement.binding_id}:{ctx.settlement.spec_id}",
-                "ttl_minutes": 90,
-                "idempotency_key": "gh-prefix:create",
-            }
-        ]
+        assert len(created) == 1
+        body = created[0]
+        assert body["provider_id"] == AGENT
+        assert body["amount"] == 100
+        assert body["task_id"] == f"gh:{ctx.settlement.binding_id}:{ctx.settlement.spec_id}"
+        assert body["ttl_minutes"] == 90
+        assert body["idempotency_key"] == "gh-prefix:create"
+        assert ctx.settlement.cancel_secret
+        assert body["cancel_secret_hash"] == hashlib.sha256(
+            ctx.settlement.cancel_secret.encode()
+        ).hexdigest()
         assert ctx.settlement.escrow_id == "esc-new"
         assert ctx.settlement.state == "escrow_created"
 
@@ -1124,10 +1135,11 @@ def test_settlement_without_a_hold_creates_an_escrow(monkeypatch):
         return {"escrow_id": "esc-fresh"}
 
     monkeypatch.setattr(github_settlement.exchange, "get_escrow", get_escrow)
-    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_escrow)
     _run(github_settlement._step_create(db, ctx))
     assert ctx.settlement.escrow_id == "esc-fresh"
     assert ctx.settlement.state == "escrow_created"
+    assert ctx.settlement.cancel_secret
 
 
 def test_settlement_adopts_when_the_hold_is_gone_by_creating(monkeypatch):
@@ -1141,7 +1153,7 @@ def test_settlement_adopts_when_the_hold_is_gone_by_creating(monkeypatch):
         return {"escrow_id": "esc-replacement"}
 
     monkeypatch.setattr(github_settlement.exchange, "get_escrow", get_escrow)
-    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_escrow)
     _run(github_settlement._step_create(db, ctx))
     assert ctx.settlement.escrow_id == "esc-replacement"
 
@@ -1157,7 +1169,7 @@ def test_settlement_does_not_create_a_second_escrow_when_the_hold_lookup_fails(m
         raise AssertionError("create_escrow")
 
     monkeypatch.setattr(github_settlement.exchange, "get_escrow", get_escrow)
-    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_escrow)
     with pytest.raises(httpx.HTTPStatusError):
         _run(github_settlement._step_create(db, ctx))
     assert ctx.settlement.escrow_id is None
@@ -1168,7 +1180,7 @@ def test_settlement_does_not_create_when_the_stale_hold_refund_fails(monkeypatch
     ctx = _settlement_ctx("hold-1")
     db, _commits = _commit_db(ctx.settlement)
 
-    def refund(user, escrow_id, reason=""):
+    def refund(user, escrow_id, reason="", cancel_secret=None):
         raise ConnectionError("reset")
 
     def create_escrow(user, **kwargs):
@@ -1180,7 +1192,7 @@ def test_settlement_does_not_create_when_the_stale_hold_refund_fails(monkeypatch
         lambda user, escrow_id: {"status": "held", "provider_id": "other"},
     )
     monkeypatch.setattr(github_settlement.exchange, "refund_escrow", refund)
-    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_escrow)
     with pytest.raises(ConnectionError):
         _run(github_settlement._step_create(db, ctx))
     assert ctx.settlement.escrow_id is None
@@ -1213,7 +1225,7 @@ def test_refund_resolves_a_pending_hold_then_refunds_it(monkeypatch):
         hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4()
     )
 
-    def refund(user, escrow_id, reason=""):
+    def refund(user, escrow_id, reason="", cancel_secret=None):
         calls["refund"] = escrow_id
 
     db, _funder = _install_refund(
@@ -1372,3 +1384,292 @@ def test_principal_lookup_sends_the_key_as_a_bearer_token():
 
     assert _run(lookup()) == {}
     assert seen == ["Bearer own-key"]
+
+
+def test_legacy_hold_without_a_secret_uses_the_unlocked_create(monkeypatch):
+    def create_escrow(user, **kwargs):
+        return {"escrow_id": "hold-legacy"}
+
+    def locked(*_args, **_kwargs):
+        raise AssertionError("locked create")
+
+    monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(github_leases.exchange, "create_locked_escrow", locked)
+    lease = types.SimpleNamespace(
+        id=uuid.uuid4(),
+        agent_id=AGENT,
+        hold_escrow_id=github_leases.pending_hold_marker(60),
+        hold_cancel_secret=None,
+    )
+    assert _run(github_leases.resolve_hold(object(), lease, 100)) == "hold-legacy"
+
+
+def test_resolve_hold_sends_the_workflow_lock_and_stored_hash(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    secret = "stored-hold-secret"
+    captured = {}
+
+    def post(url, json=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, request=request, json={"escrow_id": "hold-locked"})
+
+    monkeypatch.setattr(httpx, "post", post)
+    funder = types.SimpleNamespace(exchange_api_key="ate_funder_key")
+    lease = types.SimpleNamespace(
+        id=uuid.uuid4(),
+        agent_id=AGENT,
+        hold_escrow_id=github_leases.pending_hold_marker(4321),
+        hold_cancel_secret=secret,
+    )
+    assert _run(github_leases.resolve_hold(funder, lease, 100)) == "hold-locked"
+    digest = hashlib.sha256(secret.encode()).hexdigest()
+    assert captured["json"]["workflow_locked"] is True
+    assert captured["json"]["cancel_secret_hash"] == digest
+    assert captured["json"]["ttl_minutes"] == 4321
+    assert captured["json"]["task_id"] == f"gh-hold:{lease.id}"
+    assert captured["headers"]["Idempotency-Key"] == f"gh-hold:{lease.id}"
+    assert captured["headers"]["Authorization"] == "Bearer ate_funder_key"
+    assert captured["timeout"] == 10
+    assert secret not in str(captured["json"])
+    assert secret not in caplog.text
+    assert "ate_funder_key" not in caplog.text
+
+
+def test_refund_job_passes_the_hold_cancel_secret(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    secret = "hold-secret-value"
+    seen = {}
+
+    def refund(user, escrow_id, reason="", cancel_secret=None):
+        seen["cancel_secret"] = cancel_secret
+        seen["reason"] = reason
+        return {"status": "refunded"}
+
+    lease = _refund_lease(hold_cancel_secret=secret)
+    db, _funder = _install_refund(
+        monkeypatch,
+        lease,
+        get_escrow=lambda user, escrow_id: {"status": "held"},
+        refund=refund,
+    )
+    _run(
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
+    )
+    assert seen == {"cancel_secret": secret, "reason": "lease ended"}
+    assert secret not in caplog.text
+
+
+def test_stale_hold_refund_passes_the_lease_secret(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    ctx = _settlement_ctx("hold-1")
+    ctx.lease.hold_cancel_secret = "stale-secret"
+    db, _commits = _commit_db(ctx.settlement)
+    seen = {}
+
+    def refund(user, escrow_id, reason="", cancel_secret=None):
+        seen["cancel_secret"] = cancel_secret
+        seen["escrow_id"] = escrow_id
+        return {"status": "refunded"}
+
+    monkeypatch.setattr(
+        github_settlement.exchange,
+        "get_escrow",
+        lambda user, escrow_id: {"status": "held", "provider_id": "other"},
+    )
+    monkeypatch.setattr(github_settlement.exchange, "refund_escrow", refund)
+    monkeypatch.setattr(
+        github_settlement.exchange,
+        "create_locked_escrow",
+        lambda user, **kwargs: {"escrow_id": "esc-new"},
+    )
+    monkeypatch.setattr(settings, "ESCROW_TTL_MINUTES", 90)
+    _run(github_settlement._step_create(db, ctx))
+    assert seen == {"cancel_secret": "stale-secret", "escrow_id": "hold-1"}
+    assert "stale-secret" not in caplog.text
+
+
+def test_settlement_persists_cancel_secret_before_locked_create(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    ctx = _settlement_ctx(None)
+    db, commits = _commit_db(ctx.settlement)
+    seen = {}
+
+    def create_locked(user, **kwargs):
+        seen["commits"] = list(commits)
+        seen["secret"] = ctx.settlement.cancel_secret
+        seen["kwargs"] = kwargs
+        return {"escrow_id": "esc-locked"}
+
+    monkeypatch.setattr(github_settlement.exchange, "create_locked_escrow", create_locked)
+    monkeypatch.setattr(settings, "ESCROW_TTL_MINUTES", 90)
+    _run(github_settlement._step_create(db, ctx))
+    secret = seen["secret"]
+    assert seen["commits"] == ["pending"]
+    assert secret
+    assert seen["kwargs"]["cancel_secret_hash"] == hashlib.sha256(secret.encode()).hexdigest()
+    assert seen["kwargs"]["task_id"] == f"gh:{ctx.settlement.binding_id}:{ctx.settlement.spec_id}"
+    assert seen["kwargs"]["idempotency_key"] == "gh-prefix:create"
+    assert seen["kwargs"]["ttl_minutes"] == 90
+    assert ctx.settlement.cancel_secret == secret
+    assert secret not in caplog.text
+
+
+def test_locked_exchange_calls_hide_secrets(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    secret = "cancel-plaintext-secret"
+    api_key = "ate_supersecretkey"
+    digest = hashlib.sha256(secret.encode()).hexdigest()
+    posts = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        posts.append({"url": url, "json": json, "headers": dict(headers or {}), "timeout": timeout})
+        request = httpx.Request("POST", url)
+        if str(url).endswith("/refund"):
+            return httpx.Response(
+                409, request=request, text=f"rejected {api_key} {secret}"
+            )
+        return httpx.Response(200, request=request, json={"escrow_id": "esc-1"})
+
+    monkeypatch.setattr(httpx, "post", post)
+    user = types.SimpleNamespace(exchange_api_key=api_key)
+    created = github_leases.exchange.create_locked_escrow(
+        user,
+        provider_id=AGENT,
+        amount=100,
+        task_id="task-1",
+        ttl_minutes=90,
+        idempotency_key="idem-1",
+        cancel_secret_hash=digest,
+    )
+    assert created == {"escrow_id": "esc-1"}
+    assert posts[0]["json"]["workflow_locked"] is True
+    assert posts[0]["json"]["cancel_secret_hash"] == digest
+    assert posts[0]["headers"]["Authorization"] == f"Bearer {api_key}"
+    assert posts[0]["headers"]["Idempotency-Key"] == "idem-1"
+    assert posts[0]["timeout"] == 10
+    assert posts[0]["url"] == f"{settings.effective_exchange_url}/v1/exchange/escrow"
+    with pytest.raises(Exception) as caught:
+        github_leases.exchange.refund_escrow(user, "esc-9", "lease ended", cancel_secret=secret)
+    err = caught.value
+    assert err.response.status_code == 409
+    assert err.response.text
+    assert api_key not in str(err)
+    assert secret not in str(err)
+    assert api_key not in err.response.text
+    assert secret not in err.response.text
+    assert posts[1]["json"] == {
+        "escrow_id": "esc-9",
+        "reason": "lease ended",
+        "cancel_secret": secret,
+    }
+    assert posts[1]["url"] == f"{settings.effective_exchange_url}/v1/exchange/refund"
+    assert secret not in caplog.text
+    assert api_key not in caplog.text
+
+
+def test_locked_create_status_error_keeps_a_recoverable_body(monkeypatch):
+    api_key = "ate_recover_key"
+
+    def post(url, json=None, headers=None, timeout=None):
+        request = httpx.Request("POST", url)
+        text = "An active escrow already exists for this task_id (escrow_id=abc-123)"
+        return httpx.Response(409, request=request, text=text)
+
+    monkeypatch.setattr(httpx, "post", post)
+    user = types.SimpleNamespace(exchange_api_key=api_key)
+    with pytest.raises(Exception) as caught:
+        github_leases.exchange.create_locked_escrow(
+            user,
+            provider_id=AGENT,
+            amount=1,
+            task_id="t",
+            ttl_minutes=1,
+            idempotency_key="k",
+            cancel_secret_hash="ab" * 32,
+        )
+    assert github_settlement._duplicate_escrow_id(caught.value) == "abc-123"
+    assert api_key not in str(caught.value)
+    assert "ate_recover_key" not in caught.value.response.text
+
+
+def test_refund_without_a_secret_uses_the_sdk(monkeypatch):
+    seen = {}
+
+    class _Client:
+        def refund_escrow(self, escrow_id, reason=""):
+            seen["args"] = (escrow_id, reason)
+            return {"status": "refunded"}
+
+    def post(*_args, **_kwargs):
+        raise AssertionError("httpx post")
+
+    monkeypatch.setattr(github_leases.exchange, "_user_client", lambda user: _Client())
+    monkeypatch.setattr(httpx, "post", post)
+    user = types.SimpleNamespace(exchange_api_key="ate_user")
+    assert github_leases.exchange.refund_escrow(user, "esc-1", "because") == {
+        "status": "refunded"
+    }
+    assert seen["args"] == ("esc-1", "because")
+
+
+def test_house_solver_is_still_refused_for_self_dealing(monkeypatch):
+    world = _Claim()
+    world.lock = True
+    world.install(monkeypatch)
+    world.solver.account_kind = ACCOUNT_KIND_HOUSE
+    world.binding.created_at = datetime.now(timezone.utc)
+    world.link.funder_user_id = world.solver_id
+    result = world.claim()
+    assert result.status_code == 403
+    assert result.body == {"error": "self_dealing"}
+    assert world.db.added == []
+
+
+def _claim_at(monkeypatch, *, kind, age_hours):
+    world = _Claim()
+    world.lock = True
+    world.balance = 500
+    world.install(monkeypatch)
+    world.solver.account_kind = kind
+    opened = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    world.binding.created_at = opened
+    monkeypatch.setattr(github_leases, "_now", lambda: opened + timedelta(hours=age_hours))
+    monkeypatch.setattr(settings, "GITHUB_HOUSE_CLAIM_DELAY_HOURS", 24)
+    return world, opened
+
+
+def test_house_solver_before_the_delay_is_refused(monkeypatch):
+    world, opened = _claim_at(monkeypatch, kind="house", age_hours=23)
+    result = world.claim()
+    assert result.status_code == 409
+    assert result.body["error"] == "house_claim_delay"
+    assert result.body["available_at"] == "2026-06-02T00:00:00Z"
+    assert result.body["available_at"] == github_leases._iso(opened + timedelta(hours=24))
+    assert world.db.added == []
+    assert world.events == []
+
+
+def test_house_solver_claims_once_the_delay_has_elapsed(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    world, _opened = _claim_at(monkeypatch, kind="house", age_hours=24)
+    result = world.claim()
+    assert result.status_code == 201
+    lease = _lease_row(world)
+    assert lease.hold_cancel_secret
+    assert lease.hold_cancel_secret not in caplog.text
+    assert lease.hold_cancel_secret not in str(result.body)
+    assert "create" in world.events
+
+
+@pytest.mark.parametrize("kind", [None, "test"])
+def test_non_house_solver_is_not_delayed(monkeypatch, kind):
+    world, _opened = _claim_at(monkeypatch, kind=kind, age_hours=0)
+    result = world.claim()
+    assert result.status_code == 201
+    assert "create" in world.events

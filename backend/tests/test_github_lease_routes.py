@@ -467,6 +467,40 @@ def test_claim_lease_happy_path(api, monkeypatch):
     assert api.session.rollbacks == 0
 
 
+def test_house_solver_claim_is_delayed_on_the_route(api, monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_HOUSE_CLAIM_DELAY_HOURS", 24)
+    user = api.box["user"]
+    user.account_kind = "house"
+    binding = api.box["binding"]
+    binding.created_at = FIXED - timedelta(hours=1)
+    response = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    body = _error(response, 409, "house_claim_delay")
+    assert body["available_at"] == "2026-06-02T11:00:00Z"
+    assert api.session.commits == 0
+    assert api.session.added == []
+
+    binding.created_at = FIXED - timedelta(hours=24)
+    allowed = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    assert allowed.status_code == 201
+    assert api.session.commits == 1
+
+    user.account_kind = "test"
+    binding.created_at = FIXED
+    api.session.commits = 0
+    api.session.added.clear()
+    ordinary = api.client.post(
+        f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease",
+        headers=_headers(lease_header=False),
+    )
+    assert ordinary.status_code == 201
+
+
 def test_claim_requires_gateway_token(api):
     binding = api.box["binding"]
     path = f"/api/v1/github/bounties/{binding.bounty_id}/claim-lease"

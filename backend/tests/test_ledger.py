@@ -90,6 +90,9 @@ def test_committed_ate_uses_advertised_ledger_amounts():
         pytest.param("funder", "advertised", "pending", (), "settling", id="pending"),
         pytest.param("funder", "advertised", "escrow_created", (), "settling", id="escrow-created"),
         pytest.param("funder", "advertised", "delivered", (), "settling", id="delivered"),
+        pytest.param(
+            "funder", "advertised", "needs_review", (), "settling", id="needs-review"
+        ),
         pytest.param("funder", "advertised", None, (("work", "hold-1"),), "reserved", id="work"),
         pytest.param(
             "funder", "advertised", None, (("submitted", "hold-1"),), "reserved", id="submitted"
@@ -136,6 +139,9 @@ def test_committed_ate_uses_advertised_ledger_amounts():
         pytest.param("solver", "advertised", "released", (), "paid", id="solver-paid"),
         pytest.param("solver", "cancelled", "pending", (), "settling", id="solver-settling"),
         pytest.param("solver", "advertised", None, (), "settling", id="solver-no-settlement"),
+        pytest.param(
+            "solver", "advertised", "needs_review", (), "settling", id="solver-needs-review"
+        ),
     ],
 )
 def test_entry_state(role, binding_state, settlement_state, leases, expected):

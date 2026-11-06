@@ -31,7 +31,7 @@ from app.models.github import (
     LedgerStatus,
     SettlementState,
 )
-from app.models.user import User
+from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_alerts, github_app, github_comments
 from app.services.github_errors import PermanentJobError, RetryableJobError
 
@@ -68,7 +68,8 @@ def next_action(state: str, escrow_status: str | None, delivered: bool | None) -
 
     ``failed`` and ``released`` are decided from local state. ``refunded``,
     ``expired``, and ``disputed`` fail only once an escrow exists. ``pending``
-    ignores the exchange view. Delivery does not change status (it stays
+    ignores the exchange view. ``needs_review`` is paid or failed on the same
+    terms as ``escrow_created``. Delivery does not change status (it stays
     ``held``); ``delivered`` is that separate fact.
     """
     status = escrow_status.lower() if isinstance(escrow_status, str) and escrow_status else None
@@ -76,12 +77,16 @@ def next_action(state: str, escrow_status: str | None, delivered: bool | None) -
         return "noop"
     if state == SettlementState.RELEASED.value:
         return "finalize"
-    if state in (SettlementState.ESCROW_CREATED.value, SettlementState.DELIVERED.value):
+    if state in (
+        SettlementState.ESCROW_CREATED.value,
+        SettlementState.DELIVERED.value,
+        SettlementState.NEEDS_REVIEW.value,
+    ):
         if status in _FAILURE_STATUSES:
             return "fail"
     if state == SettlementState.PENDING.value:
         return "create"
-    if state == SettlementState.ESCROW_CREATED.value:
+    if state in (SettlementState.ESCROW_CREATED.value, SettlementState.NEEDS_REVIEW.value):
         if status == "released" or delivered:
             return "release"
         return "deliver"
@@ -218,7 +223,11 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
 
         escrow_status: str | None = None
         delivered: bool | None = None
-        if state in (SettlementState.ESCROW_CREATED.value, SettlementState.DELIVERED.value):
+        if state in (
+            SettlementState.ESCROW_CREATED.value,
+            SettlementState.DELIVERED.value,
+            SettlementState.NEEDS_REVIEW.value,
+        ):
             if not settlement.escrow_id:
                 await _fail_permanent(db, settlement, "escrow id missing")
             escrow = await _read_escrow(ctx)
@@ -227,25 +236,21 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
 
         action = next_action(state, escrow_status, delivered)
         # Gate deliver and release: the solver can deliver on a hold before the merge.
-        # DELIVERED is only reached after this gate passes.
-        if (
-            state == SettlementState.ESCROW_CREATED.value
-            and action in ("deliver", "release")
-            and _waits_for_alert(ctx)
-        ):
-            gate = await _alert_gate(db, ctx)
-            if gate == "wait":
-                await _schedule_recheck(db, settlement)
+        # DELIVERED is only reached after this gate passes. needs_review always
+        # re-enters the gate, so it cannot pay while the alert is still unverified.
+        if _alert_gate_applies(state, action, ctx):
+            if not await _allow_pay_after_alert_gate(db, ctx):
                 return settlement
-            if gate == "timeout":
-                await _refund_unfixed(db, ctx)
         if action == "create":
             await _step_create(db, ctx)
             continue
         if action == "deliver":
             await _step_deliver(db, ctx)
             continue
-        if action == "release" and state == SettlementState.ESCROW_CREATED.value:
+        if action == "release" and state in (
+            SettlementState.ESCROW_CREATED.value,
+            SettlementState.NEEDS_REVIEW.value,
+        ):
             # Deliver step is already satisfied. Record it before release so a
             # crash cannot call deliver (which has no idempotency key).
             await _mark(db, settlement, SettlementState.DELIVERED.value)
@@ -363,7 +368,11 @@ async def _refund_stale_hold(ctx: SettlementContext, hold_id: str) -> None:
     while this one is still held.
     """
     await asyncio.to_thread(
-        exchange.refund_escrow, ctx.funder, hold_id, "hold not adoptable at settlement"
+        exchange.refund_escrow,
+        ctx.funder,
+        hold_id,
+        "hold not adoptable at settlement",
+        cancel_secret=getattr(ctx.lease, "hold_cancel_secret", None) if ctx.lease else None,
     )
 
 
@@ -378,17 +387,22 @@ async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
         settlement.escrow_id = hold_id
         await _mark(db, settlement, SettlementState.ESCROW_CREATED.value)
         return
+    # Persist the secret before create so a retry sends the same hash.
+    if getattr(settlement, "cancel_secret", None) is None:
+        settlement.cancel_secret, _ = exchange.new_cancel_secret()
+        await db.commit()
     idempotency_key = f"{settlement.idempotency_prefix}:create"
     task_id = f"gh:{settlement.binding_id}:{settlement.spec_id}"
     try:
         result = await asyncio.to_thread(
-            exchange.create_escrow,
+            exchange.create_locked_escrow,
             ctx.funder,
             provider_id=settlement.solver_agent_id,
             amount=ctx.spec.amount_ate,
             task_id=task_id,
             ttl_minutes=_create_ttl_minutes(ctx),
             idempotency_key=idempotency_key,
+            cancel_secret_hash=exchange.cancel_secret_sha256(settlement.cancel_secret),
         )
     except Exception as exc:
         if _missing_exchange_account(exc):
@@ -418,43 +432,129 @@ def _waits_for_alert(ctx: SettlementContext) -> bool:
     return getattr(ctx.spec, "payment_trigger", None) == github_alerts.ALERT_FIXED_TRIGGER
 
 
+def _alert_gate_applies(state: str, action: str, ctx: SettlementContext) -> bool:
+    """True when deliver or release must wait for a ready alert gate."""
+    if action not in ("deliver", "release"):
+        return False
+    if state == SettlementState.NEEDS_REVIEW.value:
+        return True
+    return state == SettlementState.ESCROW_CREATED.value and _waits_for_alert(ctx)
+
+
+def _alert_deadline_passed(settlement: GitHubSettlement) -> bool:
+    started = settlement.created_at or datetime.now(timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    deadline = started + timedelta(hours=settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS)
+    return datetime.now(timezone.utc) >= deadline
+
+
+def _escrow_cancel_secret(ctx: SettlementContext) -> str | None:
+    """Secret for ``ctx.settlement.escrow_id``.
+
+    An adopted lease hold uses the lease secret. An escrow this settlement
+    created uses ``cancel_secret``.
+    """
+    from app.services.github_leases import _hold_adopted_by
+
+    if _hold_adopted_by(ctx.settlement, ctx.lease):
+        return getattr(ctx.lease, "hold_cancel_secret", None)
+    return getattr(ctx.settlement, "cancel_secret", None)
+
+
 async def _alert_gate(db: AsyncSession, ctx: SettlementContext) -> str:
-    """Return ready, wait, or timeout. GitHub errors count as not fixed yet."""
+    """Return ready, confirmed_unfixed, or unavailable.
+
+    A database error from ``dispatch_for_issue`` propagates so the advance stays
+    retryable. A failed or unreadable GitHub lookup is unavailable, not unfixed.
+    """
     binding = ctx.binding
     dispatch = await github_alerts.dispatch_for_issue(
         db, binding.repo_full_name, binding.issue_number
     )
-    state = None
-    if dispatch is not None and ctx.repo_link is not None:
-        kind = getattr(dispatch.alert_kind, "value", dispatch.alert_kind)
-        fetch = (
-            github_app.get_dependabot_alert
-            if kind == "dependabot"
-            else github_app.get_code_scanning_alert
+    if dispatch is None or ctx.repo_link is None:
+        logger.warning(
+            "settlement %s cannot verify the alert (dispatch or repo link missing)",
+            ctx.settlement.id,
         )
-        try:
-            alert = await fetch(
-                ctx.repo_link.installation_id, binding.repo_full_name, dispatch.alert_number
-            )
-            state = alert.get("state") if isinstance(alert, dict) else None
-        except Exception as exc:
-            logger.warning(
-                "alert lookup failed for settlement %s: %s", ctx.settlement.id, _safe_error(exc)
-            )
-        if isinstance(state, str) and state != dispatch.alert_state:
-            dispatch.alert_state = state
-            await db.commit()
-    else:
-        logger.warning("settlement %s waits for an alert with no dispatch row", ctx.settlement.id)
+        return "unavailable"
+    kind = getattr(dispatch.alert_kind, "value", dispatch.alert_kind)
+    fetch = (
+        github_app.get_dependabot_alert
+        if kind == "dependabot"
+        else github_app.get_code_scanning_alert
+    )
+    try:
+        alert = await fetch(
+            ctx.repo_link.installation_id, binding.repo_full_name, dispatch.alert_number
+        )
+    except Exception as exc:
+        logger.warning(
+            "alert lookup failed for settlement %s: %s", ctx.settlement.id, _safe_error(exc)
+        )
+        return "unavailable"
+    if not isinstance(alert, dict):
+        logger.warning("alert lookup for settlement %s returned no object", ctx.settlement.id)
+        return "unavailable"
+    state = alert.get("state")
+    if not isinstance(state, str):
+        logger.warning("alert lookup for settlement %s returned no state", ctx.settlement.id)
+        return "unavailable"
+    if state != dispatch.alert_state:
+        dispatch.alert_state = state
+        await db.commit()
     if state == "fixed":
         return "ready"
-    started = ctx.settlement.created_at or datetime.now(timezone.utc)
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    deadline = started + timedelta(hours=settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS)
-    if datetime.now(timezone.utc) >= deadline:
-        return "timeout"
-    return "wait"
+    return "confirmed_unfixed"
+
+
+async def _allow_pay_after_alert_gate(db: AsyncSession, ctx: SettlementContext) -> bool:
+    """True when the gate is ready and deliver or release may proceed.
+
+    Before the deadline, both non-ready results wait and the escrow stays held.
+    After it, a confirmed unfixed alert is refunded. An unverifiable alert is
+    parked in ``needs_review`` with no refund and, once there, no new recheck.
+    """
+    gate = await _alert_gate(db, ctx)
+    if gate == "ready":
+        return True
+    if (
+        gate == "unavailable"
+        and _state_value(ctx.settlement) == SettlementState.NEEDS_REVIEW.value
+    ):
+        await _mark_needs_review(db, ctx)
+        return False
+    if not _alert_deadline_passed(ctx.settlement):
+        await _schedule_recheck(db, ctx.settlement)
+        return False
+    if gate == "confirmed_unfixed":
+        await _refund_unfixed(db, ctx)
+    await _mark_needs_review(db, ctx)
+    return False
+
+
+async def _mark_needs_review(db: AsyncSession, ctx: SettlementContext) -> None:
+    """Park a locked escrow. Does not refund, deliver, release, or requeue."""
+    settlement = ctx.settlement
+    hours = settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS
+    settlement.state = SettlementState.NEEDS_REVIEW.value
+    settlement.last_error = _safe_error("GitHub alert state could not be verified")
+    if ctx.repo_link is not None:
+        try:
+            await github_app.upsert_sticky_comment(
+                ctx.repo_link.installation_id,
+                ctx.binding.repo_full_name,
+                ctx.binding.issue_number,
+                _ALERT_MARKER,
+                (
+                    "GitHub's alert state could not be verified within "
+                    f"{hours} hours of the merge, so the bounty escrow stays locked "
+                    "pending review."
+                ),
+            )
+        except Exception:
+            logger.exception("alert review comment failed for settlement %s", settlement.id)
+    await db.commit()
 
 
 def _pending_advance_for_settlement(job: GitHubJob, settlement_id: str) -> bool:
@@ -526,6 +626,7 @@ async def _refund_unfixed(db: AsyncSession, ctx: SettlementContext) -> NoReturn:
             ctx.funder,
             settlement.escrow_id,
             f"alert not fixed within {hours}h of merge",
+            cancel_secret=_escrow_cancel_secret(ctx),
         )
     except Exception as exc:
         await _fail_retryable(db, settlement, exc)
@@ -598,6 +699,7 @@ async def _post_paid_comment(db: AsyncSession, ctx: SettlementContext) -> None:
             escrow_id=ctx.settlement.escrow_id,
             amount_ate=ctx.spec.amount_ate,
             fee_ate=fee_ate,
+            house_agent=getattr(ctx.provider, "account_kind", None) == ACCOUNT_KIND_HOUSE,
         )
         comment_id = await github_app.upsert_sticky_comment(
             ctx.repo_link.installation_id,

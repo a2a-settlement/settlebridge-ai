@@ -38,7 +38,7 @@ from app.models.github import (
     JobStatus,
     LeaseStatus,
 )
-from app.models.user import User
+from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_app, github_bounty_service, trust_gateway
 from app.services.github_errors import RetryableJobError
 
@@ -842,16 +842,30 @@ async def resolve_hold(funder, lease, amount_ate: int) -> str:
     key = f"gh-hold:{lease.id}"
     marker = getattr(lease, "hold_escrow_id", None)
     ttl = _pending_ttl(marker) if is_pending_hold(marker) else _hold_ttl_minutes()
+    # The stored secret makes a replay identical: same hash, task id, TTL, and key.
+    secret = getattr(lease, "hold_cancel_secret", None)
     try:
-        result = await asyncio.to_thread(
-            exchange.create_escrow,
-            funder,
-            provider_id=lease.agent_id,
-            amount=int(amount_ate),
-            task_id=key,
-            ttl_minutes=ttl,
-            idempotency_key=key,
-        )
+        if secret:
+            result = await asyncio.to_thread(
+                exchange.create_locked_escrow,
+                funder,
+                provider_id=lease.agent_id,
+                amount=int(amount_ate),
+                task_id=key,
+                ttl_minutes=ttl,
+                idempotency_key=key,
+                cancel_secret_hash=exchange.cancel_secret_sha256(secret),
+            )
+        else:
+            result = await asyncio.to_thread(
+                exchange.create_escrow,
+                funder,
+                provider_id=lease.agent_id,
+                amount=int(amount_ate),
+                task_id=key,
+                ttl_minutes=ttl,
+                idempotency_key=key,
+            )
     except Exception as exc:
         recovered = _duplicate_escrow_id(exc)
         if recovered:
@@ -966,6 +980,13 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     held = await fetch_active_lease_for_binding(db, binding.id)
     if held is not None:
         return _err(409, "lease_held")
+    # House solvers wait out the public claim window. Other checks above still apply.
+    if getattr(user, "account_kind", None) == ACCOUNT_KIND_HOUSE:
+        available_at = _aware(binding.created_at) + timedelta(
+            hours=settings.GITHUB_HOUSE_CLAIM_DELAY_HOURS
+        )
+        if now < available_at:
+            return _err(409, "house_claim_delay", available_at=_iso(available_at))
     # Insert first so the binding unique index picks the race winner before any
     # escrow exists. A losing claim rolls back and never locks the funder's funds.
     lock_funds = bool(settings.GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM)
@@ -974,6 +995,9 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         funder, balance_error = await _funder_for_hold(db, binding, spec.amount_ate)
         if balance_error is not None:
             return balance_error
+    hold_secret = None
+    if lock_funds:
+        hold_secret, _ = exchange.new_cancel_secret()
     token = "sbl_" + secrets.token_urlsafe(32)
     lease = GitHubLease(
         id=uuid.uuid4(),
@@ -989,6 +1013,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         claim_kya=claims.kya_level,
         claim_reputation=claims.reputation,
         hold_escrow_id=pending_hold_marker(_hold_ttl_minutes()) if lock_funds else None,
+        hold_cancel_secret=hold_secret,
         created_at=now,
     )
     db.add(lease)
@@ -1423,6 +1448,7 @@ async def handle_refund_hold(db: AsyncSession, job) -> None:
             funder,
             lease.hold_escrow_id,
             "lease ended",
+            cancel_secret=getattr(lease, "hold_cancel_secret", None),
         )
     except Exception as exc:
         _reraise_refund(exc)

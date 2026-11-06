@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Any
 
@@ -185,9 +187,115 @@ def release_escrow(
     return client.release_escrow(escrow_id=escrow_id, idempotency_key=idempotency_key)
 
 
-def refund_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, Any]:
-    client = _user_client(user)
-    return client.refund_escrow(escrow_id=escrow_id, reason=reason)
+def cancel_secret_sha256(secret: str) -> str:
+    """Lowercase hex sha256 of a workflow-lock cancel secret. The secret stays local."""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def new_cancel_secret() -> tuple[str, str]:
+    """Return ``(plaintext, sha256 hex)``. Store the plaintext; send only the hash."""
+    secret = secrets.token_urlsafe(32)
+    return secret, cancel_secret_sha256(secret)
+
+
+class _DetachedResponse:
+    """Status and body only. The request (API key, cancel secret) is not attached."""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+class _ExchangeStatusError(Exception):
+    """HTTP failure whose message omits credentials and cancel secrets."""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        super().__init__(f"exchange returned HTTP {status_code}")
+        self.response = _DetachedResponse(status_code, text)
+
+
+def _redact(text: str, hidden: tuple[str, ...]) -> str:
+    for item in hidden:
+        if item:
+            text = text.replace(item, "[redacted]")
+    return text
+
+
+def _post_exchange(
+    user: User,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """POST JSON to the exchange. Errors keep ``.response`` and omit secrets."""
+    import httpx
+
+    api_key = getattr(user, "exchange_api_key", None)
+    if not api_key:
+        raise ValueError("User has not linked an exchange account")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    url = f"{settings.effective_exchange_url}/v1/exchange/{path}"
+    hidden = (str(api_key),)
+    cancel_secret = payload.get("cancel_secret")
+    if isinstance(cancel_secret, str):
+        hidden = (*hidden, cancel_secret)
+    response = httpx.post(url, json=payload, headers=headers, timeout=10)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        try:
+            body = response.text
+        except Exception:
+            body = ""
+        if not isinstance(body, str):
+            body = ""
+        raise _ExchangeStatusError(response.status_code, _redact(body, hidden)) from None
+    return response.json()
+
+
+def create_locked_escrow(
+    user: User,
+    *,
+    provider_id: str,
+    amount: int,
+    task_id: str,
+    ttl_minutes: int,
+    idempotency_key: str,
+    cancel_secret_hash: str,
+) -> dict[str, Any]:
+    """Create an escrow that cannot be refunded or TTL-expired without the cancel secret."""
+    return _post_exchange(
+        user,
+        "escrow",
+        {
+            "provider_id": provider_id,
+            "amount": amount,
+            "task_id": task_id,
+            "ttl_minutes": ttl_minutes,
+            "workflow_locked": True,
+            "cancel_secret_hash": cancel_secret_hash,
+        },
+        idempotency_key=idempotency_key,
+    )
+
+
+def refund_escrow(
+    user: User, escrow_id: str, reason: str = "", cancel_secret: str | None = None
+) -> dict[str, Any]:
+    if cancel_secret is None:
+        client = _user_client(user)
+        return client.refund_escrow(escrow_id=escrow_id, reason=reason)
+    return _post_exchange(
+        user,
+        "refund",
+        {"escrow_id": escrow_id, "reason": reason, "cancel_secret": cancel_secret},
+    )
 
 
 def dispute_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, Any]:
