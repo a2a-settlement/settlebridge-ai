@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { CyberTaskListResponse, CyberTaskView } from "@/lib/types";
 
 const api = axios.create({
   baseURL: "/api",
@@ -29,5 +30,20 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+export async function fetchCyberTasks(query: {
+  view: CyberTaskView;
+  page?: number;
+  page_size?: number;
+}): Promise<CyberTaskListResponse> {
+  const { data } = await api.get<CyberTaskListResponse>("/v1/cyber/tasks", {
+    params: {
+      view: query.view,
+      page: query.page ?? 1,
+      page_size: query.page_size ?? 12,
+    },
+  });
+  return data;
+}
 
 export default api;
