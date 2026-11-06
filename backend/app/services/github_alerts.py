@@ -16,6 +16,13 @@ from app.models.github import GitHubAlertDispatch, GitHubJob
 logger = logging.getLogger(__name__)
 
 ALERT_FIXED_TRIGGER = "merged_and_alert_fixed"
+# Mediator rule_severity overrides that make weakening existing tests a violation.
+STRICT_TEST_RULE_SEVERITY = {
+    "test_file_deleted": "violation",
+    "assertion_changed": "violation",
+    "weak_assertion_added": "violation",
+    "test_skip_added": "violation",
+}
 
 
 async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
