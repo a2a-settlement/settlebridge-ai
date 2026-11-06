@@ -355,3 +355,59 @@ export interface ExchangeAgentSummary {
   attestation_freshness?: AttestationFreshness | null;
   gateway_claims?: unknown;
 }
+
+export type CyberTaskView = "available" | "in_progress" | "completed";
+
+export type CyberTaskSource = "dependabot" | "code_scanning" | "security_label";
+
+export type CyberFundingState =
+  | "balance_checked"
+  | "funds_held"
+  | "payment_pending"
+  | "payment_review"
+  | "paid"
+  | "not_paid";
+
+export type CyberWorkState =
+  | "available"
+  | "claimed"
+  | "pr_submitted"
+  | "evaluating"
+  | "needs_maintainer_review"
+  | "awaiting_merge"
+  | "settling"
+  | "completed"
+  | "cancelled";
+
+export type CyberPaymentTrigger = "merge_with_checks" | "merged_and_alert_fixed";
+
+export interface CyberTaskEligibility {
+  min_reputation: number;
+  min_kya: number;
+}
+
+export interface CyberTask {
+  bounty_id: string;
+  title: string;
+  repo: string;
+  issue_number: number;
+  issue_url: string;
+  pr_number: number | null;
+  pr_url: string | null;
+  source: CyberTaskSource;
+  reward_ate: number;
+  funding_state: CyberFundingState;
+  work_state: CyberWorkState;
+  payment_trigger: CyberPaymentTrigger;
+  eligibility: CyberTaskEligibility;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CyberTaskListResponse {
+  view: CyberTaskView;
+  page: number;
+  page_size: number;
+  total: number;
+  items: CyberTask[];
+}

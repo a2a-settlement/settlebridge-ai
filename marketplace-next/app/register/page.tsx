@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import Register from "@/components/marketplace-pages/Register";
 
 export const metadata = {
@@ -6,5 +7,15 @@ export const metadata = {
 };
 
 export default function RegisterPage() {
-  return <Register />;
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-navy-900 flex items-center justify-center text-gray-400">
+          Loading…
+        </div>
+      }
+    >
+      <Register />
+    </Suspense>
+  );
 }
