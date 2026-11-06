@@ -10,6 +10,7 @@ import sys
 import types
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 
@@ -26,6 +27,7 @@ from app.services.github_onboarding import (
     FunderConflictError,
     OnboardExchangeError,
     OnboardGitHubError,
+    STANDARD_LABELS,
     candidate_checks,
     checks_from_protection,
     checks_from_rules,
@@ -34,6 +36,7 @@ from app.services.github_onboarding import (
     paths_for,
     validated_allowed_paths,
 )
+from app.services.github_bounty_service import parse_bounty_labels
 from app.services.github_repo_admin import RepoAdminError
 
 REPO = "acme/widget"
@@ -86,6 +89,9 @@ class FakeGitHub:
             {"name": "tests", "type": "dir"},
             {"name": ".github", "type": "dir"},
         ]
+        self.labels_present: set[str] = set()
+        self.label_calls: list[str] = []
+        self.label_fail: set[str] = set()
         self.subdirs: dict[str, list[dict]] = {}
         self.probed: list[str] = []
         self.record: tuple[str, int | None] = ("admin", 4242)
@@ -115,6 +121,17 @@ class FakeGitHub:
             return self.subdirs.get(path, [])
 
         monkeypatch.setattr(github_app, "list_root_entries", entries)
+
+        async def ensure_label(installation_id, repo, name, color, description):
+            self.label_calls.append(name)
+            if name in self.label_fail:
+                raise github_app.GitHubAPIError("forbidden", 403)
+            if name in self.labels_present:
+                return "exists"
+            self.labels_present.add(name)
+            return "created"
+
+        monkeypatch.setattr(github_app, "ensure_label", ensure_label)
         return self
 
 
@@ -602,19 +619,59 @@ def test_cli_onboard_dry_run_then_apply(engine, gh, balance, monkeypatch, capsys
     payload, status = _split(capsys.readouterr().out)
     assert status == "DRY RUN (use --apply to write)"
     assert payload["changed"] is True
+    assert payload["labels"] is None
+    assert gh.label_calls == []
     assert opened[-1].rollbacks == 1 and opened[-1].commits == 0
 
     assert github_repos.main([*argv, "--apply"]) == 0
     out = capsys.readouterr().out
     payload, status = _split(out)
     assert status == "APPLIED"
+    assert payload["labels"]["created"] == [name for name, _, _ in STANDARD_LABELS]
     assert opened[-1].commits == 1
     assert "exchange-secret-value" not in out and "super-secret-password" not in out
 
     assert github_repos.main([*argv, "--apply"]) == 0
     out = capsys.readouterr().out
-    assert json.loads(out)["changed"] is False
+    payload = json.loads(out)
+    assert payload["changed"] is False
+    assert payload["labels"]["created"] == []
+    assert len(payload["labels"]["existing"]) == len(STANDARD_LABELS)
     assert opened[-1].commits == 0
+
+
+def test_standard_labels_parse_as_bounty_labels():
+    names = [name for name, _, _ in STANDARD_LABELS]
+    assert names == [
+        "bounty: $5",
+        "bounty: $10",
+        "bounty: $25",
+        "bounty: $50",
+        "bounty: $100",
+        "tier: kya-2",
+        "tier: kya-3",
+        "tier: security",
+    ]
+    for usd in (5, 10, 25, 50, 100):
+        assert parse_bounty_labels([f"bounty: ${usd}"]).amount_usd == Decimal(usd)
+    assert parse_bounty_labels(["bounty: $5", "tier: kya-3"]).kya_level == 3
+    assert parse_bounty_labels(["bounty: $5", "tier: security"]).security is True
+    for name, color, description in STANDARD_LABELS:
+        assert len(color) == 6 and len(description) <= 100
+
+
+def test_onboard_reports_label_failures_without_failing(db, gh, balance):
+    user = make_user()
+    db.sync.add(user)
+    seed(db.sync)
+    gh.labels_present = {"bounty: $5"}
+    gh.label_fail = {"tier: security"}
+    result = _run(onboard_repo(db, REPO, funder=user, create_labels=True))
+    assert result["changed"] is True
+    assert result["labels"]["existing"] == ["bounty: $5"]
+    assert result["labels"]["failed"] == [{"name": "tier: security", "status": 403}]
+    assert "bounty: $100" in result["labels"]["created"]
+    assert reload(db).enabled is True
 
 
 def test_cli_onboard_error_exits_2(engine, gh, balance, monkeypatch, capsys):

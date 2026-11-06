@@ -43,6 +43,20 @@ NOT_PACKAGE_DIRS = frozenset(
     {"build", "dist", "doc", "docs", "env", "example", "examples", "node_modules", "scripts", "venv"}
 )
 MAX_PACKAGE_PROBES = 10
+_BOUNTY_COLOR = "0E8A16"
+_TIER_COLOR = "5319E7"
+_SECURITY_COLOR = "B60205"
+STANDARD_LABELS: tuple[tuple[str, str, str], ...] = (
+    *(
+        (f"bounty: ${usd}", _BOUNTY_COLOR, f"SettleBridge bounty, ${usd} USD")
+        for usd in (5, 10, 25, 50, 100)
+    ),
+    *(
+        (f"tier: kya-{level}", _TIER_COLOR, f"SettleBridge: solver needs KYA level {level}+")
+        for level in (2, 3)
+    ),
+    ("tier: security", _SECURITY_COLOR, "SettleBridge: security tier (KYA 2+, EMA 0.85+)"),
+)
 _FORBIDDEN_PROBES = (
     ".github/workflows/ci.yml",
     ".github/actions/setup/action.yml",
@@ -242,6 +256,21 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
     }
 
 
+async def ensure_standard_labels(installation_id: int, repo: str) -> dict:
+    """Create missing ``STANDARD_LABELS``. Failures are reported, not raised."""
+    report: dict[str, list] = {"created": [], "existing": [], "failed": []}
+    for name, color, description in STANDARD_LABELS:
+        try:
+            outcome = await github_app.ensure_label(
+                installation_id, repo, name, color, description
+            )
+        except github_app.GitHubAPIError as exc:
+            report["failed"].append({"name": name, "status": exc.status_code})
+            continue
+        report["created" if outcome == "created" else "existing"].append(name)
+    return report
+
+
 async def _funder_headroom(db: AsyncSession, funder: User) -> int:
     if not funder.exchange_bot_id:
         raise RepoAdminError(f"funder {funder.email} has no exchange account")
@@ -269,8 +298,12 @@ async def onboard_repo(
     allowed_dependency_changes: list | None = None,
     replace_funder: bool = False,
     actor_user_id=None,
+    create_labels: bool = False,
 ) -> dict:
     """Configure and enable ``repo`` for ``funder`` in the caller's transaction.
+
+    With ``create_labels``, also creates any missing ``STANDARD_LABELS`` on GitHub.
+    That write is outside the transaction, so dry runs must leave it off.
 
     Passed values win over detected ones. Running it again with the same inputs
     returns ``changed: False`` and writes nothing.
@@ -330,21 +363,25 @@ async def onboard_repo(
         "funder_headroom_ate": headroom,
         "before": {},
         "after": {},
+        "labels": None,
     }
-    if not changed:
-        return result
-    configured = await configure_repo_link(
-        db,
-        link.repo_full_name,
-        funder_email=funder.email,
-        checks=chosen_checks,
-        allowed_paths=chosen_paths,
-        allowed_dependency_changes=chosen_deps,
-    )
-    enabled = await set_repo_enabled(db, link.repo_full_name, True)
-    link.onboarded_by_user_id = actor_user_id if actor_user_id is not None else funder.id
-    link.onboarded_at = _now()
-    await db.flush()
-    result["before"] = {**configured["before"], **enabled["before"]}
-    result["after"] = {**configured["after"], **enabled["after"]}
+    if changed:
+        configured = await configure_repo_link(
+            db,
+            link.repo_full_name,
+            funder_email=funder.email,
+            checks=chosen_checks,
+            allowed_paths=chosen_paths,
+            allowed_dependency_changes=chosen_deps,
+        )
+        enabled = await set_repo_enabled(db, link.repo_full_name, True)
+        link.onboarded_by_user_id = actor_user_id if actor_user_id is not None else funder.id
+        link.onboarded_at = _now()
+        await db.flush()
+        result["before"] = {**configured["before"], **enabled["before"]}
+        result["after"] = {**configured["after"], **enabled["after"]}
+    if create_labels:
+        result["labels"] = await ensure_standard_labels(
+            int(link.installation_id), link.repo_full_name
+        )
     return result
