@@ -20,6 +20,7 @@ _MAX_PAGES = 10
 _TOKEN_SKEW = timedelta(minutes=5)
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+_PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
 _NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel=("next"|next)(?=[\s,;]|$)', re.IGNORECASE)
 
 # Keyed by installation id. Values are (token, expires_at).
@@ -414,10 +415,17 @@ async def get_branch_rules(installation_id: int, repo: str, branch: str) -> list
     return [item for item in data if isinstance(item, dict)]
 
 
-async def list_root_entries(installation_id: int, repo: str, ref: str) -> list[dict]:
-    """``{"name", "type"}`` for each entry at the repository root on ``ref``."""
+async def list_root_entries(
+    installation_id: int, repo: str, ref: str, path: str = ""
+) -> list[dict]:
+    """``{"name", "type"}`` for each entry in ``path`` (the root by default) on ``ref``."""
     repo = _validate_repo(repo)
-    url = f"{_api_root()}/repos/{repo}/contents?ref={_quoted_ref(ref)}"
+    if path:
+        if _PATH_RE.fullmatch(path) is None or ".." in path.split("/"):
+            raise GitHubAPIError("invalid path")
+        url = f"{_api_root()}/repos/{repo}/contents/{path}?ref={_quoted_ref(ref)}"
+    else:
+        url = f"{_api_root()}/repos/{repo}/contents?ref={_quoted_ref(ref)}"
     data = await _get_json(installation_id, url, missing=[])
     if not isinstance(data, list):
         raise GitHubAPIError("unexpected contents payload")

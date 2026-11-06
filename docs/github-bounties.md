@@ -183,8 +183,9 @@ inputs reports `"changed": false` and writes nothing.
   commit; choose one and pass it as `--check NAME:APP_ID` (15368 is GitHub Actions). A check name alone isn't
   enough, because any app could report a check with that name.
 - **Allowed paths.** These are detected from the repo root: `src/`, `app/`, `lib/`, `tests/` and `test/`
-  for Python repos, and `src/`, `lib/`, `test/` and `tests/` for JavaScript repos. Only directories that
-  exist are included. Pass `--allowed-path GLOB` (repeatable) to replace them. The list can't be empty,
+  for Python repos, plus any other top-level Python package (a directory with an `__init__.py`, up to 10
+  checked), and `src/`, `lib/`, `test/` and `tests/` for JavaScript repos. Only directories that exist are
+  included; hidden directories, `docs/`, `scripts/`, `examples/` and build output are skipped. Pass `--allowed-path GLOB` (repeatable) to replace them. The list can't be empty,
   because the mediator treats an empty list as every path, and no glob may match anything under `.github/`.
 - **Funder.** `onboard` won't replace a different funder already set on the link unless you pass `--replace-funder`.
 

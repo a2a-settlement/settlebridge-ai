@@ -39,6 +39,10 @@ PYTHON_MARKERS = frozenset({"pyproject.toml", "setup.py", "setup.cfg", "pytest.i
 JS_MARKERS = frozenset({"package.json"})
 PYTHON_DIRS = ("src", "app", "lib", "tests", "test")
 JS_DIRS = ("src", "lib", "test", "tests")
+NOT_PACKAGE_DIRS = frozenset(
+    {"build", "dist", "doc", "docs", "env", "example", "examples", "node_modules", "scripts", "venv"}
+)
+MAX_PACKAGE_PROBES = 10
 _FORBIDDEN_PROBES = (
     ".github/workflows/ci.yml",
     ".github/actions/setup/action.yml",
@@ -148,7 +152,20 @@ def paths_for(entries: list[dict]) -> tuple[str | None, list[str]]:
         ecosystem, candidates = "javascript", JS_DIRS
     else:
         return None, []
-    return ecosystem, [f"{name}/*" for name in candidates if name in dirs]
+    return ecosystem, sorted(f"{name}/*" for name in candidates if name in dirs)
+
+
+def package_probe_dirs(entries: list[dict]) -> list[str]:
+    """Root directories worth checking for an ``__init__.py``, at most ``MAX_PACKAGE_PROBES``."""
+    names = sorted(
+        entry["name"]
+        for entry in entries
+        if entry.get("type") == "dir"
+        and entry["name"] not in PYTHON_DIRS
+        and entry["name"] not in NOT_PACKAGE_DIRS
+        and not entry["name"].startswith((".", "_"))
+    )
+    return names[:MAX_PACKAGE_PROBES]
 
 
 def validated_allowed_paths(paths: object) -> list[str]:
@@ -201,6 +218,15 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
         candidates = candidate_checks(runs)
     entries = await _github(github_app.list_root_entries(installation_id, name, branch_name))
     ecosystem, allowed_paths = paths_for(entries)
+    package_dirs: list[str] = []
+    if ecosystem == "python":
+        for directory in package_probe_dirs(entries):
+            children = await _github(
+                github_app.list_root_entries(installation_id, name, branch_name, directory)
+            )
+            if any(c["name"] == "__init__.py" and c["type"] == "file" for c in children):
+                package_dirs.append(directory)
+        allowed_paths = sorted(set(allowed_paths) | {f"{d}/*" for d in package_dirs})
     return {
         "repo": name,
         "installation_id": installation_id,
@@ -211,6 +237,7 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
         "unpinned_required_checks": unpinned,
         "candidate_checks": candidates,
         "ecosystem": ecosystem,
+        "package_dirs": package_dirs,
         "allowed_paths": allowed_paths,
     }
 
@@ -288,7 +315,7 @@ async def onboard_repo(
     changed = (
         link.funder_user_id != funder.id
         or _checks_copy(link.required_checks) != chosen_checks
-        or _plain_list(policy.get("allowed_paths")) != chosen_paths
+        or sorted(map(str, _plain_list(policy.get("allowed_paths")))) != sorted(chosen_paths)
         or (
             chosen_deps is not None
             and _plain_list(policy.get("allowed_dependency_changes")) != chosen_deps
