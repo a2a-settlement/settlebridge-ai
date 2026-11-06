@@ -96,7 +96,15 @@ def github(monkeypatch):
 
 @pytest.fixture()
 def registry(monkeypatch):
-    state = {"calls": [], "fail": False}
+    state = {"calls": [], "fail": False, "deposits": [], "deposit_fail": False}
+
+    def deposit(user, amount, reference):
+        if state["deposit_fail"]:
+            raise RuntimeError("deposit refused")
+        state["deposits"].append((user.exchange_bot_id, amount, reference))
+        return {"new_balance": amount}
+
+    monkeypatch.setattr(exchange, "deposit", deposit)
 
     def register_account(**kwargs):
         state["calls"].append(kwargs)
@@ -152,6 +160,22 @@ def test_new_github_user_gets_a_user_identity_and_exchange_account(db, github, r
     identity = db.sync.execute(select(GitHubIdentity)).scalar_one()
     assert identity.user_id == user.id and identity.github_user_id == 42
     assert registry["calls"][0]["contact_email"] == user.email
+    assert registry["deposits"] == [("acct-1", 1000, "settlebridge-github-signup")]
+
+
+def test_no_starter_deposit_when_funding_is_off(db, github, registry, monkeypatch):
+    monkeypatch.setattr(github_login.settings, "GITHUB_SETUP_FUNDING_ENABLED", False)
+    state, nonce = _start()
+    assert _run(github_login.complete_login(db, CODE, state, nonce))["created"] is True
+    assert registry["calls"] and registry["deposits"] == []
+
+
+def test_starter_deposit_failure_still_signs_in(db, github, registry):
+    registry["deposit_fail"] = True
+    state, nonce = _start()
+    result = _run(github_login.complete_login(db, CODE, state, nonce))
+    assert result["created"] is True
+    assert _users(db)[0].exchange_bot_id == "acct-1"
 
 
 def test_linked_github_account_signs_in_as_its_user(db, github, registry):
@@ -170,7 +194,7 @@ def test_linked_github_account_signs_in_as_its_user(db, github, registry):
     state, nonce = _start()
     result = _run(github_login.complete_login(db, CODE, state, nonce))
     assert result["created"] is False and result["user"].id == existing.id
-    assert len(_users(db)) == 1 and registry["calls"] == []
+    assert len(_users(db)) == 1 and registry["calls"] == [] and registry["deposits"] == []
     db.sync.expire_all()
     assert db.sync.execute(select(GitHubIdentity)).scalar_one().login == "octocat"
 
@@ -181,6 +205,7 @@ def test_exchange_outage_still_creates_the_user(db, github, registry):
     result = _run(github_login.complete_login(db, CODE, state, nonce))
     assert result["created"] is True
     assert _users(db)[0].exchange_bot_id is None
+    assert registry["deposits"] == []
 
 
 @pytest.mark.parametrize(
@@ -302,7 +327,7 @@ def test_add_funds_deposits_the_fixed_amount(db, bank):
     assert bank["deposits"] == [("acct-1", 1000, "settlebridge-github-setup")]
 
 
-def test_add_funds_creates_a_missing_exchange_account(db, bank, registry):
+def test_add_funds_creates_a_missing_exchange_account(db, registry, bank):
     user = _signed_in(db, exchange_account=False)
     response = _client(db, user).post("/api/v1/github/setup/add-funds")
     assert response.status_code == 200

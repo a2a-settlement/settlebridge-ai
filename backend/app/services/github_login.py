@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.github import GitHubIdentity
 from app.models.user import User, UserType
 from app.services import exchange
@@ -148,8 +149,19 @@ async def _create_user(db: AsyncSession, github_user_id: int, login: str) -> Use
         )
     )
     await db.flush()
-    await ensure_exchange_account(db, user)
+    if await ensure_exchange_account(db, user):
+        await _starter_deposit(user)
     return user
+
+
+async def _starter_deposit(user: User) -> None:
+    amount = int(settings.GITHUB_LOGIN_STARTER_ATE)
+    if not settings.GITHUB_SETUP_FUNDING_ENABLED or amount <= 0:
+        return
+    try:
+        await asyncio.to_thread(exchange.deposit, user, amount, "settlebridge-github-signup")
+    except Exception:
+        logger.warning("starter deposit failed for a new GitHub user", exc_info=True)
 
 
 async def complete_login(db: AsyncSession, code: object, state: object, nonce: object) -> dict:

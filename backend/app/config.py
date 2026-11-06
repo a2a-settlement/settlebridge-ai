@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     GITHUB_SETUP_FUNDING_ENABLED: bool = False
     GITHUB_SETUP_FUND_ATE: int = 1000
     GITHUB_SETUP_FUND_MAX_BALANCE_ATE: int = 2000
+    # Test ATE deposited into the exchange account a first GitHub sign-in creates,
+    # when GITHUB_SETUP_FUNDING_ENABLED is on. 0 disables it.
+    GITHUB_LOGIN_STARTER_ATE: int = 1000
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     # Comma-separated owner/repo=ema pairs that replace the default for that repo.
     GITHUB_REPO_REQUIRED_EMA: str = ""
