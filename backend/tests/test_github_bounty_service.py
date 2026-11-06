@@ -11,6 +11,7 @@ import types
 sys.modules.setdefault("asyncpg", types.ModuleType("asyncpg"))
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -45,6 +46,7 @@ from app.services.github_bounty_service import (
     REASON_MERGED_SHA_MISMATCH,
     REASON_NO_LEASE_SUBMISSION,
     REASON_NOT_AWAITING_MERGE,
+    REASON_NOT_PUBLIC,
     REASON_SETTLEMENT_DISABLED,
     REASON_STALE_SPEC,
     REASON_UNLINKED,
@@ -66,6 +68,7 @@ from app.services.github_bounty_service import (
     spec_content_hash,
     sum_advertised_cost,
     usd_to_ate,
+    visibility_from_repository,
 )
 from app.services.github_errors import PermanentJobError, RetryableJobError
 
@@ -148,6 +151,14 @@ def _patch_comments(monkeypatch):
     upsert = AsyncMock(return_value=77)
     monkeypatch.setattr(github_app, "upsert_sticky_comment", upsert)
     return renders, upsert
+
+
+@pytest.fixture(autouse=True)
+def _no_live_repository_read(monkeypatch):
+    async def _forbidden(*_args, **_kwargs):
+        raise AssertionError("unexpected GitHub repository read")
+
+    monkeypatch.setattr(github_app, "get_repository", _forbidden)
 
 
 def _run_check(name="ci", app_id=7, head_sha=HEAD, **overrides):
@@ -596,6 +607,7 @@ def _link(user_id):
         enabled=True,
         default_policy={"deny_paths": ["secrets/"]},
         required_checks=[{"name": "ci", "app_id": 7}],
+        visibility="public",
     )
 
 
@@ -2118,3 +2130,262 @@ def test_advance_settlement_delegates_and_rejects_bad_jobs(monkeypatch):
         _run(db, GitHubJob(kind="not-a-kind", payload={}))
     with pytest.raises(PermanentJobError):
         _run(db, _job(JobKind.CHECKS_COMPLETED, {"installation": {"id": 1}}))
+
+
+def test_visibility_from_repository_prefers_the_named_value():
+    assert visibility_from_repository({"visibility": "public", "private": True}) == "public"
+    assert visibility_from_repository({"visibility": "private", "private": False}) == "private"
+    assert visibility_from_repository({"visibility": "internal", "private": True}) == "internal"
+    assert visibility_from_repository({"private": True}) == "private"
+    assert visibility_from_repository({"private": False}) == "public"
+    assert visibility_from_repository({"visibility": "PUBLIC", "private": True}) == "private"
+    assert visibility_from_repository({"visibility": "", "private": False}) == "public"
+    assert visibility_from_repository({}) is None
+    assert visibility_from_repository({"private": "true"}) is None
+    assert visibility_from_repository(None) is None
+    assert visibility_from_repository(["public"]) is None
+
+
+def _fund(monkeypatch, user):
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.lock_user", AsyncMock(return_value=user)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.sum_advertised_cost", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        exchange, "get_balance_dashboard", MagicMock(return_value={"available": 1_000_000})
+    )
+
+
+def _visibility_job(repository):
+    data = _issue_data([{"name": "bounty: $25"}])
+    data["repository"] = {"full_name": REPO, **repository}
+    return _job(JobKind.ISSUE_LABELED, data)
+
+
+def _install_visibility(
+    monkeypatch, link, *, binding=None, lease=None, payload=None, error=None
+):
+    renders, _upsert = _patch_comments(monkeypatch)
+    seen = []
+
+    async def get_repository(installation_id, repo):
+        seen.append((installation_id, repo))
+        if error is not None:
+            raise error
+        return {} if payload is None else payload
+
+    async def get_link(_db, _repo):
+        return link
+
+    monkeypatch.setattr(github_app, "get_repository", get_repository)
+    monkeypatch.setattr("app.services.github_bounty_service.get_repo_link", get_link)
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_binding_by_issue",
+        AsyncMock(return_value=binding),
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_enabled_funded_repo_link",
+        AsyncMock(return_value=link),
+    )
+    if binding is not None:
+        monkeypatch.setattr(
+            "app.services.github_bounty_service.get_active_lease",
+            AsyncMock(return_value=lease),
+        )
+    return renders, seen
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        {"visibility": "private", "private": True},
+        {"visibility": "internal", "private": True},
+    ],
+)
+def test_non_public_labeled_issue_is_not_advertised(monkeypatch, repository):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    renders, seen = _install_visibility(
+        monkeypatch,
+        link,
+        payload=repository,
+    )
+    monkeypatch.setattr(
+        exchange,
+        "get_balance_dashboard",
+        MagicMock(side_effect=AssertionError("balance read")),
+    )
+    db = _db()
+    _run(db, _visibility_job(repository))
+    assert db.add.call_count == 0
+    assert renders["render_not_advertised"].call_args.kwargs["reason"] == REASON_NOT_PUBLIC
+    assert renders["render_advertised"].call_count == 0
+    assert link.visibility == repository["visibility"]
+    assert seen == [(42, REPO)]
+
+
+def test_unknown_visibility_refreshes_then_advertises_a_public_repo(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    link.visibility = None
+    renders, seen = _install_visibility(
+        monkeypatch, link, payload={"visibility": "public", "private": False, "token": "ghs_secret"}
+    )
+    _fund(monkeypatch, user)
+    db = _db()
+    _run(db, _visibility_job({}))
+    assert any(isinstance(row, Bounty) for row in _added(db))
+    assert renders["render_advertised"].called
+    assert renders["render_not_advertised"].call_count == 0
+    assert link.visibility == "public"
+    assert seen == [(42, REPO)]
+
+
+def test_unknown_visibility_refresh_to_private_advertises_nothing(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    link.visibility = None
+    renders, seen = _install_visibility(
+        monkeypatch, link, payload={"private": True, "token": "ghs_secret"}
+    )
+    monkeypatch.setattr(
+        exchange,
+        "get_balance_dashboard",
+        MagicMock(side_effect=AssertionError("balance read")),
+    )
+    db = _db()
+    _run(db, _visibility_job({}))
+    assert db.add.call_count == 0
+    assert renders["render_not_advertised"].call_args.kwargs["reason"] == REASON_NOT_PUBLIC
+    assert link.visibility == "private"
+    assert seen == [(42, REPO)]
+
+
+def test_visibility_refresh_failure_is_retryable_and_advertises_nothing(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    link.visibility = None
+    renders, seen = _install_visibility(
+        monkeypatch,
+        link,
+        error=github_app.GitHubAPIError("unavailable ghs_secret", 503),
+    )
+    db = _db()
+    with pytest.raises(RetryableJobError):
+        _run(db, _visibility_job({}))
+    assert db.add.call_count == 0
+    assert renders["render_not_advertised"].call_count == 0
+    assert renders["render_advertised"].call_count == 0
+    assert seen == [(42, REPO)]
+    assert link.visibility is None
+
+
+def test_public_webhook_advertises_without_a_refresh(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    link.visibility = None
+    renders, seen = _install_visibility(
+        monkeypatch,
+        link,
+        error=AssertionError("refreshed a public repository"),
+    )
+    _fund(monkeypatch, user)
+    db = _db()
+    _run(db, _visibility_job({"visibility": "public", "private": False}))
+    assert any(isinstance(row, Bounty) for row in _added(db))
+    assert renders["render_advertised"].called
+    assert seen == []
+    assert link.visibility == "public"
+
+
+@pytest.mark.parametrize("status", ["work", "submitted"])
+def test_private_repo_with_an_active_lease_is_left_in_place(monkeypatch, caplog, status):
+    caplog.set_level(logging.INFO, logger="app.services.github_bounty_service")
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    binding = _binding()
+    lease = SimpleNamespace(status=status, release_reason=None, pr_number=4)
+    renders, _seen = _install_visibility(
+        monkeypatch,
+        link,
+        binding=binding,
+        lease=lease,
+        payload={"visibility": "private", "private": True},
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.lock_user",
+        AsyncMock(side_effect=AssertionError("terms updated")),
+    )
+    db = _db()
+    _run(db, _visibility_job({"visibility": "private", "private": True}))
+    assert binding.state == BindingState.ADVERTISED.value
+    assert lease.status == status
+    assert lease.release_reason is None
+    assert renders["render_cancelled"].call_count == 0
+    assert renders["render_not_advertised"].call_count == 0
+    assert "not public" in caplog.text
+    assert "lease is active" in caplog.text
+
+
+def test_private_repo_cancels_an_advertised_binding_without_a_lease(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4(), exchange_bot_id="bot-1")
+    link = _link(user.id)
+    binding = _binding()
+    ledger = SimpleNamespace(status=LedgerStatus.ADVERTISED.value, amount_ate=2500)
+    bounty = SimpleNamespace(status=BountyStatus.OPEN)
+    renders, _seen = _install_visibility(
+        monkeypatch,
+        link,
+        binding=binding,
+        payload={"visibility": "internal", "private": True},
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_ledger_entry", AsyncMock(return_value=ledger)
+    )
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_bounty", AsyncMock(return_value=bounty)
+    )
+    db = _db()
+    _run(db, _visibility_job({"visibility": "internal", "private": True}))
+    assert binding.state == BindingState.CANCELLED.value
+    assert ledger.status == LedgerStatus.RELEASED.value
+    assert bounty.status == BountyStatus.CANCELLED
+    assert renders["render_cancelled"].call_args.kwargs["reason"] == REASON_NOT_PUBLIC
+    assert renders["render_not_advertised"].call_count == 0
+    assert link.visibility == "internal"
+
+
+def test_installation_records_repository_visibility(monkeypatch):
+    db = _db()
+    kept = SimpleNamespace(
+        enabled=False, repo_full_name="acme/old", installation_id=3, visibility="public"
+    )
+    seen = {"acme/old": kept}
+
+    async def _get_link(_db, full_name):
+        return seen.get(full_name)
+
+    monkeypatch.setattr(
+        "app.services.github_bounty_service.get_installation", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("app.services.github_bounty_service.get_repo_link", _get_link)
+    created = {
+        "installation": {"id": 9, "account": {"login": "acme"}},
+        "repositories": [
+            {"full_name": "acme/old", "private": True},
+            {"full_name": "acme/pub", "private": False},
+            {"full_name": "acme/sec", "visibility": "internal", "private": True},
+            {"full_name": "acme/hid", "private": True},
+        ],
+    }
+    _run(db, _job(JobKind.INSTALLATION, created, event="installation", action="created"))
+    rows = {
+        row.repo_full_name: row.visibility
+        for row in _added(db)
+        if isinstance(row, GitHubRepoLink)
+    }
+    assert rows == {"acme/pub": "public", "acme/sec": "internal", "acme/hid": "private"}
+    assert kept.installation_id == 9
+    assert kept.visibility == "private"

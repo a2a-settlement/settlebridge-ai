@@ -134,6 +134,7 @@ def _link(installation_id: int, repo: str = REPO, **overrides) -> GitHubRepoLink
         "enabled": False,
         "default_policy": _policy(),
         "required_checks": [],
+        "visibility": "public",
     }
     values.update(overrides)
     return GitHubRepoLink(**values)
@@ -164,6 +165,7 @@ def _ready(db: _Bridge, repo: str = REPO, installation_id: int = 10, **flags) ->
             funder_user_id=user.id if flags.get("funder", True) else None,
             required_checks=[{"name": "ci", "app_id": 7}] if flags.get("checks", True) else [],
             enabled=flags.get("enabled", False),
+            visibility=flags.get("visibility", "public"),
         )
     )
     _add(db, *objects)
@@ -945,3 +947,49 @@ def test_cli_apply_persists_strict_tests_and_auto_flags(engine, monkeypatch, cap
     assert stored["auto_merge_acceptable"] is False
     assert stored["auto_dispatch_alerts"] is False
     _assert_no_secrets(out + err)
+
+
+def test_enable_refuses_a_repo_that_is_not_public(db):
+    _ready(db, visibility="private")
+    with pytest.raises(RepoAdminError, match="not public"):
+        _run(set_repo_enabled(db, "acme/widget", True))
+    assert _run(_reload(db, REPO)).enabled is False
+
+
+def test_enable_refuses_unknown_visibility(db):
+    _ready(db, visibility=None)
+    with pytest.raises(RepoAdminError, match="not public"):
+        _run(set_repo_enabled(db, REPO, True))
+    assert _run(_reload(db, REPO)).enabled is False
+
+
+def test_disable_allows_a_repo_that_is_not_public(db):
+    _ready(db, visibility="internal", enabled=True)
+    result = _run(set_repo_enabled(db, REPO, False))
+    assert result["after"]["enabled"] is False
+    assert _run(_reload(db, REPO)).enabled is False
+    assert _run(_reload(db, REPO)).visibility == "internal"
+
+
+def test_auto_dispatch_refuses_a_repo_that_is_not_public(db):
+    _add(db, _installation(10), _link(10, visibility="private"))
+    with pytest.raises(RepoAdminError, match="not public"):
+        _run(
+            configure_repo_link(
+                db, REPO, auto_dispatch_alerts=True, allowed_paths=["keep/*"]
+            )
+        )
+    row = _run(_reload(db, REPO))
+    assert row.auto_dispatch_alerts is False
+    assert row.default_policy["allowed_paths"] == ["old/*"]
+
+
+def test_auto_dispatch_can_be_turned_off_on_a_private_repo(db):
+    _add(
+        db,
+        _installation(10),
+        _link(10, visibility="private", auto_dispatch_alerts=True),
+    )
+    result = _run(configure_repo_link(db, REPO, auto_dispatch_alerts=False))
+    assert result["after"]["auto_dispatch_alerts"] is False
+    assert _run(_reload(db, REPO)).auto_dispatch_alerts is False

@@ -37,6 +37,7 @@ from app.models.github import (
     LeaseStatus,
     LedgerStatus,
     SettlementState,
+    is_public_visibility,
 )
 from app.models.user import User
 from app.services import exchange, github_app, github_comments, github_settlement, mediator
@@ -80,6 +81,8 @@ REASON_CHECKS_NOT_PASSING = (
     "required checks are not passing on the pull request's head commit"
 )
 REASON_SETTLEMENT_DISABLED = "settlement disabled"
+REASON_NOT_PUBLIC = "repository is not public"
+_REPOSITORY_VISIBILITIES = frozenset({"public", "private", "internal"})
 _WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 _SETTLED_STATES = frozenset(
     {BindingState.SETTLEMENT_PENDING.value, BindingState.PAID.value}
@@ -541,16 +544,69 @@ def _label_names(issue: dict) -> list[str]:
     return names
 
 
-def _repo_names(entries: object) -> list[str]:
+def visibility_from_repository(repository: object) -> str | None:
+    """Visibility from a GitHub repository object.
+
+    ``visibility`` wins when it is public, private, or internal. Otherwise the
+    boolean ``private`` flag is used. Internal repositories report ``private: true``.
+    """
+    if not isinstance(repository, dict):
+        return None
+    visibility = repository.get("visibility")
+    if isinstance(visibility, str) and visibility in _REPOSITORY_VISIBILITIES:
+        return visibility
+    private = repository.get("private")
+    if private is True:
+        return "private"
+    if private is False:
+        return "public"
+    return None
+
+
+def _apply_known_visibility(link, repository: object) -> None:
+    if link is None:
+        return
+    visibility = visibility_from_repository(repository)
+    if visibility is not None:
+        link.visibility = visibility
+
+
+async def _record_repository_visibility(
+    db: AsyncSession, repo: str, repository: object
+) -> None:
+    """Store visibility from a webhook repository object when it names one."""
+    if visibility_from_repository(repository) is None:
+        return
+    _apply_known_visibility(await get_repo_link(db, repo), repository)
+
+
+async def _ensure_public_repository(link, installation_id: int, repo: str) -> bool:
+    """Refresh a non-public link once. True only when the stored visibility is public.
+
+    A GitHub outage raises the retryable job error from ``_reraise_external`` and
+    leaves the bounty unadvertised.
+    """
+    if is_public_visibility(getattr(link, "visibility", None)):
+        return True
+    payload = await _github_call(github_app.get_repository(installation_id, repo))
+    link.visibility = visibility_from_repository(payload)
+    return is_public_visibility(getattr(link, "visibility", None))
+
+
+def _repo_records(entries: object) -> list[tuple[str, dict | None]]:
     if not isinstance(entries, list):
         return []
-    names: list[str] = []
+    records: list[tuple[str, dict | None]] = []
     for entry in entries:
         if isinstance(entry, str) and "/" in entry:
-            names.append(entry)
+            records.append((entry, None))
         elif isinstance(entry, dict) and isinstance(entry.get("full_name"), str):
-            names.append(entry["full_name"])
-    return names
+            records.append((entry["full_name"], entry))
+    return records
+
+
+def _repo_names(entries: object) -> list[str]:
+    return [full_name for full_name, _repository in _repo_records(entries)]
 
 
 def _account_login(data: dict) -> str:
@@ -1158,6 +1214,7 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
     repo = _repository_full_name(data)
     issue_number = _positive_int(issue.get("number"), "issue.number")
     installation_id = _installation_id(data)
+    await _record_repository_visibility(db, repo, data.get("repository"))
     labels = _label_names(issue)
     parsed = parse_bounty_labels(labels)
     binding = await get_binding_by_issue(db, repo, issue_number)
@@ -1190,6 +1247,23 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
             binding=binding,
         )
         await _flush(db)
+        return
+    _apply_known_visibility(link, data.get("repository"))
+    if not await _ensure_public_repository(link, installation_id, repo):
+        if binding is None:
+            await _comment_not_advertised(
+                installation_id, repo, issue_number, REASON_NOT_PUBLIC
+            )
+            await _flush(db)
+            return
+        if await get_active_lease(db, binding.id) is not None:
+            logger.info(
+                "leaving %s#%s in place; repository is not public and a lease is active",
+                repo,
+                issue_number,
+            )
+            return
+        await _cancel_binding(db, binding, installation_id, REASON_NOT_PUBLIC)
         return
     from app.services import github_alerts
 
@@ -1227,9 +1301,9 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
     )
 
 
-async def _link_repos(db: AsyncSession, installation_id: int, full_names: list[str]) -> None:
+async def _link_repos(db: AsyncSession, installation_id: int, entries: object) -> None:
     """Create a disabled link per repo, or move an existing link to this installation."""
-    for full_name in full_names:
+    for full_name, repository in _repo_records(entries):
         link = await get_repo_link(db, full_name)
         if link is None:
             db.add(
@@ -1241,10 +1315,13 @@ async def _link_repos(db: AsyncSession, installation_id: int, full_names: list[s
                     enabled=False,
                     default_policy={},
                     required_checks=[],
+                    visibility=visibility_from_repository(repository),
                 )
             )
-        elif link.installation_id != installation_id:
-            link.installation_id = installation_id
+        else:
+            if link.installation_id != installation_id:
+                link.installation_id = installation_id
+            _apply_known_visibility(link, repository)
     await _flush(db)
 
 
@@ -1268,7 +1345,7 @@ async def handle_installation(db: AsyncSession, job: GitHubJob) -> None:
         await _flush(db)
         # A new installation lists its repositories here; GitHub sends no
         # installation_repositories event for them.
-        await _link_repos(db, installation_id, _repo_names(data.get("repositories")))
+        await _link_repos(db, installation_id, data.get("repositories"))
         return
     if event == "installation" and action == "deleted":
         existing = await get_installation(db, installation_id)
@@ -1279,7 +1356,7 @@ async def handle_installation(db: AsyncSession, job: GitHubJob) -> None:
         await _flush(db)
         return
     if event == "installation_repositories" and action == "added":
-        await _link_repos(db, installation_id, _repo_names(data.get("repositories_added")))
+        await _link_repos(db, installation_id, data.get("repositories_added"))
         return
     if event == "installation_repositories" and action == "removed":
         for full_name in _repo_names(data.get("repositories_removed")):

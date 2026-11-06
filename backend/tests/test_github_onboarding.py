@@ -83,7 +83,11 @@ class Bridge:
 
 class FakeGitHub:
     def __init__(self):
-        self.repository = {"default_branch": "main"}
+        self.repository = {
+            "default_branch": "main",
+            "visibility": "public",
+            "private": False,
+        }
         self.branch = {"name": "main", "commit": {"sha": HEAD}}
         self.rules: list[dict] = [_rules_check("test", ACTIONS)]
         self.runs: list[dict] = []
@@ -771,3 +775,31 @@ def test_cli_onboard_error_exits_2(engine, gh, balance, monkeypatch, capsys):
     code = github_repos.main(["onboard", "--repo", REPO, "--funder-email", "pat@example.com"])
     assert code == 2
     assert "pass --check NAME:APP_ID" in capsys.readouterr().err
+
+
+def test_detect_records_public_visibility(db, gh):
+    seed(db.sync)
+    _run(detect_defaults(db, REPO))
+    assert reload(db).visibility == "public"
+
+
+@pytest.mark.parametrize(
+    ("visibility", "private"),
+    [("private", True), ("internal", True)],
+)
+def test_onboard_refuses_a_repo_that_is_not_public(db, gh, balance, visibility, private):
+    user = make_user()
+    db.sync.add(user)
+    seed(db.sync)
+    gh.repository = {
+        "default_branch": "main",
+        "visibility": visibility,
+        "private": private,
+    }
+    with pytest.raises(RepoAdminError, match="not public"):
+        _run(onboard_repo(db, REPO, funder=user, auto_dispatch_alerts=True))
+    link = reload(db)
+    assert link.enabled is False
+    assert link.funder_user_id is None
+    assert link.visibility == visibility
+    assert link.auto_dispatch_alerts is False
