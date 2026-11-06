@@ -31,14 +31,17 @@ def _agent_claims(authorization: str | None):
         return JSONResponse(status_code=401, content={"error": "invalid_token"})
 
 
-def _require_financial_scope(claims) -> JSONResponse | None:
-    if trust_gateway.FINANCIAL_SCOPE in claims.scopes:
+def _require_read_scope(claims) -> JSONResponse | None:
+    # These calls do not spend the solver's funds. mcp:read is enough, and a
+    # token that still carries only the old financial scope is accepted.
+    scopes = claims.scopes
+    if trust_gateway.READ_SCOPE in scopes or trust_gateway.FINANCIAL_SCOPE in scopes:
         return None
     return JSONResponse(
         status_code=403,
         content={
             "error": "insufficient_scope",
-            "required_scope": trust_gateway.FINANCIAL_SCOPE,
+            "required_scope": trust_gateway.READ_SCOPE,
         },
     )
 
@@ -72,7 +75,7 @@ async def claim_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
-    denied = _require_financial_scope(claims)
+    denied = _require_read_scope(claims)
     if denied is not None:
         return denied
     return _response(await github_leases.claim_lease(db, bounty_id, claims))
@@ -88,7 +91,7 @@ async def renew_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
-    denied = _require_financial_scope(claims)
+    denied = _require_read_scope(claims)
     if denied is not None:
         return denied
     result = await github_leases.renew_lease(db, lease_id, claims, x_lease_token)
@@ -105,7 +108,7 @@ async def release_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
-    denied = _require_financial_scope(claims)
+    denied = _require_read_scope(claims)
     if denied is not None:
         return denied
     result = await github_leases.release_lease(db, lease_id, claims, x_lease_token)
@@ -123,7 +126,7 @@ async def submit_bounty_lease(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
-    denied = _require_financial_scope(claims)
+    denied = _require_read_scope(claims)
     if denied is not None:
         return denied
     body = await _json_body(request)
@@ -150,7 +153,7 @@ async def worker_heartbeat(
     claims = _agent_claims(authorization)
     if isinstance(claims, JSONResponse):
         return claims
-    denied = _require_financial_scope(claims)
+    denied = _require_read_scope(claims)
     if denied is not None:
         return denied
     body = await _json_body(request)

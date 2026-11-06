@@ -113,7 +113,6 @@ def _next_steps(
     *,
     account_id: str | None,
     linked: bool,
-    scope: str,
     reputation: float | None,
     funds: bool,
 ) -> list[dict]:
@@ -134,15 +133,6 @@ def _next_steps(
                 "Link the GitHub account that will open your pull requests.",
                 blocking=True,
                 url=_LINK_GITHUB,
-            )
-        )
-    if scope == "denied":
-        steps.append(
-            _step(
-                "financial_scope_denied",
-                "This exchange key was refused the mcp:read mcp:tool:financial scope.",
-                blocking=True,
-                url=None,
             )
         )
     default_ema = settings.GITHUB_DEFAULT_REQUIRED_EMA
@@ -200,7 +190,6 @@ async def setup_status(db: AsyncSession, user: User) -> dict:
     steps = _next_steps(
         account_id=account_id,
         linked=identity is not None,
-        scope=scope,
         reputation=reputation,
         funds=funds,
     )

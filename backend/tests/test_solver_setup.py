@@ -223,9 +223,10 @@ def _get(world):
 def test_route_is_unprefixed_setup_status():
     assert router.prefix == ""
     matches = [route for route in router.routes if isinstance(route, APIRoute)]
-    assert [route.path for route in matches] == ["/solver/setup-status"]
-    assert matches[0].methods == {"GET"}
-    calls = {dep.call for dep in matches[0].dependant.dependencies}
+    by_path = {route.path: route for route in matches}
+    assert set(by_path) == {"/solver/setup-status", "/solver/agent-config"}
+    assert by_path["/solver/setup-status"].methods == {"GET"}
+    calls = {dep.call for dep in by_path["/solver/setup-status"].dependant.dependencies}
     assert get_current_user in calls
     assert get_db in calls
 
@@ -378,18 +379,18 @@ def test_steps_are_ordered(world, monkeypatch):
     response, body = _get(world)
     assert _codes(body) == [
         "github_not_linked",
-        "financial_scope_denied",
         "reputation_below_most_repos",
         "funds_own_repos",
     ]
-    assert [step["blocking"] for step in body["next_steps"]] == [True, True, False, False]
+    assert [step["blocking"] for step in body["next_steps"]] == [True, False, False]
     assert [step["url"] for step in body["next_steps"]] == [
         "/dashboard/settings/github",
         None,
         None,
-        None,
     ]
+    assert body["financial_scope"] == "denied"
     assert body["ready"] is False
+    assert "financial_scope_denied" not in response.text
     assert "tok_hidden" not in response.text
 
 
@@ -441,14 +442,10 @@ def test_probe_denied(world, monkeypatch, caplog, status_code):
     )
     response, body = _get(world)
     assert body["financial_scope"] == "denied"
-    assert _codes(body) == ["financial_scope_denied"]
-    step = body["next_steps"][0]
-    assert step["blocking"] is True
-    assert step["url"] is None
-    assert step["message"] == (
-        "This exchange key was refused the mcp:read mcp:tool:financial scope."
-    )
-    assert body["ready"] is False
+    assert _codes(body) == []
+    assert body["ready"] is True
+    assert "financial_scope_denied" not in response.text
+    assert "refused the mcp:read" not in response.text
     assert "tok_hidden" not in response.text
     assert "tok_hidden" not in caplog.text
     assert "ate_secret" not in caplog.text
