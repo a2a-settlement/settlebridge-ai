@@ -349,18 +349,30 @@ without the operator:
 
 - `GET /api/v1/github/repos/{owner}/{name}/setup-status` lists every step still needed, as `next_steps`
   with a stable `code`, a message, and a link where one helps. `ready` is true when `onboard` would succeed.
+  When the caller has linked a GitHub account it adds a non-blocking `funder_cannot_solve` step: pull
+  requests from that account cannot claim bounties on a repo they fund. With repo access the response
+  also includes the current `auto_dispatch_alerts`, `auto_merge_acceptable` and `strict_tests` values.
 - `GET /api/v1/github/setup/installations/{installation_id}/repos` lists the repos in an installation
   where the caller's linked GitHub account is an admin. The setup page uses it after GitHub redirects there.
 - `GET /api/v1/github/setup/info` returns the install link and the Add funds settings.
 - `POST /api/v1/github/setup/add-funds` deposits `GITHUB_SETUP_FUND_ATE` into the caller's own exchange
   account, creating the account first if needed. It returns `409 balance_sufficient` once the available
   balance reaches `GITHUB_SETUP_FUND_MAX_BALANCE_ATE`, and 404 unless `GITHUB_SETUP_FUNDING_ENABLED` is on.
-- `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects.
+- `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects, the same three options,
+  and `funder_cannot_solve: true` when the caller has linked GitHub.
 - `POST /api/v1/github/repos/{owner}/{name}/onboard` with `{"checks": [{"name": "test", "app_id": 15368}]}`,
-  plus optional `allowed_paths`, `allowed_dependency_changes` and `dry_run`, configures and enables the repo.
-  Unless it's a dry run, it also creates the standard labels.
+  plus optional `allowed_paths`, `allowed_dependency_changes`, `dry_run`, `auto_dispatch_alerts`,
+  `auto_merge_acceptable` and `strict_tests`, configures and enables the repo. Omit an option to leave it
+  unchanged. `strict_tests` true merges the rules that make weakening existing tests a violation into
+  `default_policy.rule_severity` and keeps every other severity entry; false removes exactly those rules.
+  Alert bounties and auto-merge also need the operator to enable `GITHUB_AUTO_DISPATCH_ALERTS` and
+  `GITHUB_AUTO_MERGE_ACCEPTABLE`. Unless it's a dry run, the request also creates the standard labels.
 
-The caller always becomes the funder. Their linked GitHub account must have `admin` permission on the repo,
+The caller always becomes the funder. A claim is refused when the solver is the funder by SettleBridge
+user, GitHub account, or exchange principal, so the funder's own pull requests cannot claim the repo's
+bounties; `funder_cannot_solve` warns about this without blocking onboarding. To solve bounties yourself,
+have a different account onboard and fund the repo. The funder's linked GitHub account must have `admin`
+permission on the repo,
 which SettleBridge checks by GitHub user ID, not only by login. The App must be installed, and the repo must not
 already have a different funder. Required checks must always be sent explicitly. Each repo records
 who onboarded it and when.

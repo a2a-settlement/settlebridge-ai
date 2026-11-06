@@ -46,6 +46,9 @@ interface SetupStatus {
   repo_access: boolean;
   funder: { exchange_account: boolean; headroom_ate: number | null; minimum_ate: number } | null;
   detected: Detected | null;
+  auto_dispatch_alerts: boolean | null;
+  auto_merge_acceptable: boolean | null;
+  strict_tests: boolean | null;
   next_steps: Step[];
   urls: { install_app: string; link_github: string; setup_page: string };
 }
@@ -116,6 +119,9 @@ export default function GitHubSetup() {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [chosenCheck, setChosenCheck] = useState("");
   const [pathsText, setPathsText] = useState("");
+  const [autoDispatchAlerts, setAutoDispatchAlerts] = useState(false);
+  const [autoMergeAcceptable, setAutoMergeAcceptable] = useState(false);
+  const [strictTests, setStrictTests] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<OnboardResult | null>(null);
   const [error, setError] = useState("");
@@ -184,6 +190,9 @@ export default function GitHubSetup() {
         setChosenCheck(first ? checkKey(first) : "");
         setPathsText(detected.allowed_paths.join(", "));
       }
+      setAutoDispatchAlerts(data.auto_dispatch_alerts === true);
+      setAutoMergeAcceptable(data.auto_merge_acceptable === true);
+      setStrictTests(data.strict_tests === true);
     } catch (err: unknown) {
       setStatus(null);
       if (statusOf(err) === 404) setUnavailable(true);
@@ -215,7 +224,13 @@ export default function GitHubSetup() {
     try {
       const { data } = await api.post<OnboardResult>(
         `/v1/github/repos/${status.repo}/onboard`,
-        { checks: pinned.length > 0 ? pinned : [chosen], allowed_paths: paths }
+        {
+          checks: pinned.length > 0 ? pinned : [chosen],
+          allowed_paths: paths,
+          auto_dispatch_alerts: autoDispatchAlerts,
+          auto_merge_acceptable: autoMergeAcceptable,
+          strict_tests: strictTests,
+        }
       );
       setResult(data);
       await loadStatus(status.repo);
@@ -477,6 +492,55 @@ export default function GitHubSetup() {
                 <p className="text-xs text-gray-400 mt-1">
                   Comma-separated globs. Changes under .github/ are never allowed.
                 </p>
+              </div>
+              <div className="space-y-3">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoDispatchAlerts}
+                    onChange={(e) => setAutoDispatchAlerts(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-navy-600 focus:ring-navy-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-700">Alert bounties</span>
+                    <span className="block text-xs text-gray-400 mt-0.5">
+                      Open a bounty for a new Dependabot or code-scanning alert. Also requires
+                      the operator to enable it.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoMergeAcceptable}
+                    onChange={(e) => setAutoMergeAcceptable(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-navy-600 focus:ring-navy-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-700">
+                      Auto-merge acceptable pull requests
+                    </span>
+                    <span className="block text-xs text-gray-400 mt-0.5">
+                      Merge a pull request the mediator marks acceptable. Also requires the
+                      operator to enable it.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={strictTests}
+                    onChange={(e) => setStrictTests(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-navy-600 focus:ring-navy-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-700">Strict tests</span>
+                    <span className="block text-xs text-gray-400 mt-0.5">
+                      Treat deleting a test, changing an assertion, or skipping a test as a
+                      violation.
+                    </span>
+                  </span>
+                </label>
               </div>
               <button
                 type="button"
