@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.middleware.auth import (
     _get_or_create_exchange_user,
@@ -24,6 +26,7 @@ from app.schemas.user import (
     UserResponse,
 )
 from app.services import exchange as exchange_svc
+from app.services import github_login
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -79,6 +82,57 @@ async def exchange_login(body: ExchangeLoginRequest, db: AsyncSession = Depends(
         )
     token = create_access_token(user.id)
     return TokenResponse(access_token=token)
+
+
+class GitHubLoginStart(BaseModel):
+    next: str | None = None
+
+
+class GitHubLoginCallback(BaseModel):
+    code: str = ""
+    state: str = ""
+    nonce: str = ""
+
+
+def _require_github_login() -> None:
+    if not settings.GITHUB_LOGIN_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+
+@router.post("/github/start")
+async def github_login_start(body: GitHubLoginStart) -> dict:
+    """An authorize URL and a one-time nonce the browser must send back with the code."""
+    _require_github_login()
+    try:
+        authorize_url, nonce = github_login.build_login_url(body.next)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="GitHub sign-in is not configured",
+        ) from None
+    return {"authorize_url": authorize_url, "nonce": nonce}
+
+
+@router.post("/github/callback")
+async def github_login_callback(
+    body: GitHubLoginCallback, db: AsyncSession = Depends(get_db)
+) -> dict:
+    _require_github_login()
+    try:
+        result = await github_login.complete_login(db, body.code, body.state, body.nonce)
+    except ValueError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GitHub sign-in failed. Start again from the sign-in page.",
+        ) from None
+    return {
+        "access_token": create_access_token(result["user"].id),
+        "token_type": "bearer",
+        "login": result["login"],
+        "created": result["created"],
+        "next": result["next"],
+    }
 
 
 @router.post("/link-exchange", response_model=UserResponse)

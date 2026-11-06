@@ -62,6 +62,9 @@ class Bridge:
     async def execute(self, statement, *args, **kwargs):
         return self.sync.execute(statement, *args, **kwargs)
 
+    def add(self, obj):
+        self.sync.add(obj)
+
     async def flush(self):
         self.sync.flush()
 

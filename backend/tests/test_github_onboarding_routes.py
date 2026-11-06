@@ -323,6 +323,20 @@ def test_setup_status_asks_for_a_check_and_funding(db, gh, monkeypatch):
     assert payload["ready"] is False
 
 
+def test_setup_status_points_funding_steps_at_add_funds(db, gh, monkeypatch):
+    from app.services import github_onboarding
+
+    user = _setup(db)
+    monkeypatch.setattr(github_onboarding.settings, "GITHUB_SETUP_FUNDING_ENABLED", True)
+    monkeypatch.setattr(
+        github_onboarding.exchange, "get_balance_dashboard", lambda account_id: {"available": 10}
+    )
+    payload = _client(db, user).get(STATUS_URL).json()
+    (low,) = [step for step in payload["next_steps"] if step["code"] == "funder_low_balance"]
+    assert low["action"] == "add_funds" and "Add funds" in low["message"]
+    assert low["url"].endswith("/dashboard/github/setup")
+
+
 def test_setup_status_reports_another_funder(db, gh):
     user = _setup(db)
     other = make_user("owner@example.com")

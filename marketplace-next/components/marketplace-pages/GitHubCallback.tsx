@@ -6,9 +6,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import axios from "axios";
 import { AlertCircle, ArrowLeft, CheckCircle, Link as LinkIcon } from "lucide-react";
 import api from "@/services/api";
+import { useAuth } from "@/hooks/useAuth";
+import { isGitHubLoginState, takeGitHubLoginNonce } from "@/lib/githubLogin";
 import { takeReturnPath } from "@/lib/returnTo";
 
-type Phase = "working" | "linked" | "unavailable" | "failed";
+type Phase = "working" | "linked" | "signed_in" | "unavailable" | "failed";
 
 const UNAVAILABLE = "GitHub linking isn't available yet.";
 
@@ -43,6 +45,8 @@ export default function GitHubCallback() {
   const code = searchParams.get("code");
   const state = searchParams.get("state");
   const oauthError = searchParams.get("error");
+  const { githubLogin } = useAuth();
+  const signingIn = isGitHubLoginState(state);
   // The authorization code is single-use. Strict Mode runs this effect twice.
   const posted = useRef(false);
 
@@ -69,6 +73,32 @@ export default function GitHubCallback() {
     const authorizationCode = code;
     const authorizationState = state;
 
+    if (signingIn) {
+      const nonce = takeGitHubLoginNonce();
+      if (!nonce) {
+        setPhase("failed");
+        setMessage("Sign-in was started in a different tab or browser. Start again from the sign-in page.");
+        return;
+      }
+      void (async () => {
+        try {
+          const result = await githubLogin(authorizationCode, authorizationState, nonce);
+          setLogin(result.login);
+          setPhase("signed_in");
+          router.replace(result.next ?? next ?? "/dashboard");
+        } catch (err: unknown) {
+          const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+          setPhase(status === 404 || status === 503 ? "unavailable" : "failed");
+          setMessage(
+            status === 404 || status === 503
+              ? "Sign in with GitHub isn't available yet."
+              : "GitHub sign-in failed. Start again from the sign-in page."
+          );
+        }
+      })();
+      return;
+    }
+
     void (async () => {
       try {
         const { data } = await api.post<{ login?: string | null }>(
@@ -83,6 +113,11 @@ export default function GitHubCallback() {
         if (status === 503) {
           setPhase("unavailable");
           setMessage(UNAVAILABLE);
+          return;
+        }
+        if (status === 401) {
+          setPhase("failed");
+          setMessage("Sign in to SettleBridge first, then link GitHub again.");
           return;
         }
         if (status === 409) {
@@ -103,7 +138,7 @@ export default function GitHubCallback() {
         setMessage("Couldn't finish linking GitHub.");
       }
     })();
-  }, [code, oauthError, router, state]);
+  }, [code, githubLogin, oauthError, router, signingIn, state]);
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -112,11 +147,15 @@ export default function GitHubCallback() {
           <div className="w-10 h-10 rounded-xl bg-navy-900 flex items-center justify-center">
             <LinkIcon className="w-5 h-5 text-money" />
           </div>
-          <h1 className="font-semibold text-navy-900">Link GitHub</h1>
+          <h1 className="font-semibold text-navy-900">
+            {signingIn ? "Sign in with GitHub" : "Link GitHub"}
+          </h1>
         </div>
 
         {phase === "working" && (
-          <p className="text-sm text-gray-600">Linking your GitHub account...</p>
+          <p className="text-sm text-gray-600">
+            {signingIn ? "Signing you in..." : "Linking your GitHub account..."}
+          </p>
         )}
 
         {phase === "linked" && (
@@ -126,8 +165,15 @@ export default function GitHubCallback() {
           </div>
         )}
 
+        {phase === "signed_in" && (
+          <div className="bg-green-50 text-green-700 rounded-lg p-3 flex items-center gap-2 text-sm">
+            <CheckCircle className="w-4 h-4 flex-shrink-0" />
+            <span>{login ? `Signed in as @${login}` : "Signed in."}</span>
+          </div>
+        )}
+
         {phase === "unavailable" && (
-          <p className="text-sm text-gray-600">{UNAVAILABLE}</p>
+          <p className="text-sm text-gray-600">{message || UNAVAILABLE}</p>
         )}
 
         {phase === "failed" && (
@@ -137,7 +183,16 @@ export default function GitHubCallback() {
           </div>
         )}
 
-        {phase !== "working" && (
+        {phase === "failed" && signingIn && (
+          <Link
+            href="/login"
+            className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-navy-700 mt-4"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back to sign in
+          </Link>
+        )}
+
+        {phase !== "working" && phase !== "signed_in" && !(phase === "failed" && signingIn) && (
           <Link
             href={returnPath ?? "/dashboard/settings"}
             className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-navy-700 mt-4"
