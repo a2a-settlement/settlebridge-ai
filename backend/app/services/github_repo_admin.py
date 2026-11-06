@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.github import GitHubInstallation, GitHubRepoLink
 from app.models.user import User
+from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
 
 
 class RepoAdminError(Exception):
@@ -30,6 +31,36 @@ def _policy_dict(value: object) -> dict:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _require_bool(value: object, label: str) -> None:
+    if value is not None and not isinstance(value, bool):
+        raise RepoAdminError(f"{label} must be true or false")
+
+
+def _strict_tests_enabled(policy: dict) -> bool:
+    severity = policy.get("rule_severity")
+    if not isinstance(severity, dict):
+        return False
+    return all(severity.get(rule) == level for rule, level in STRICT_TEST_RULE_SEVERITY.items())
+
+
+def _apply_strict_tests(policy: dict, enabled: bool) -> None:
+    severity = policy.get("rule_severity")
+    current = dict(severity) if isinstance(severity, dict) else {}
+    if enabled:
+        current.update(STRICT_TEST_RULE_SEVERITY)
+        policy["rule_severity"] = current
+        return
+    if not isinstance(severity, dict):
+        return
+    for rule in STRICT_TEST_RULE_SEVERITY:
+        current.pop(rule, None)
+    if current:
+        policy["rule_severity"] = current
+    else:
+        # Those four rules were the whole map, so the empty key goes away.
+        policy.pop("rule_severity", None)
 
 
 def _plain_list(value: object) -> list:
@@ -158,6 +189,9 @@ async def list_repo_links(db: AsyncSession) -> list[dict]:
                 "installation_removed": installation is None
                 or installation.removed_at is not None,
                 "enabled": bool(link.enabled),
+                "strict_tests": _strict_tests_enabled(policy),
+                "auto_merge_acceptable": bool(link.auto_merge_acceptable),
+                "auto_dispatch_alerts": bool(link.auto_dispatch_alerts),
                 "funder_email": user.email if user is not None else None,
                 "required_checks": _checks_copy(link.required_checks),
                 "allowed_paths": _plain_list(policy.get("allowed_paths")),
@@ -181,17 +215,25 @@ async def configure_repo_link(
     checks: list | None = None,
     allowed_paths: list | None = None,
     allowed_dependency_changes: list | None = None,
+    strict_tests: bool | None = None,
+    auto_merge_acceptable: bool | None = None,
+    auto_dispatch_alerts: bool | None = None,
 ) -> dict:
     """Update only the arguments that are not None.
 
     ``allowed_paths`` and ``allowed_dependency_changes`` replace those keys on
-    ``default_policy`` and leave every other key in place. Does not commit.
+    ``default_policy`` and leave every other key in place. ``strict_tests``
+    merges or removes the rules that make weakening existing tests a violation.
+    Does not commit.
     """
     if (
         funder_email is None
         and checks is None
         and allowed_paths is None
         and allowed_dependency_changes is None
+        and strict_tests is None
+        and auto_merge_acceptable is None
+        and auto_dispatch_alerts is None
     ):
         raise RepoAdminError("nothing to change")
     link = await _require_link(db, repo)
@@ -205,6 +247,9 @@ async def configure_repo_link(
         if allowed_dependency_changes is not None
         else None
     )
+    _require_bool(strict_tests, "strict_tests")
+    _require_bool(auto_merge_acceptable, "auto_merge_acceptable")
+    _require_bool(auto_dispatch_alerts, "auto_dispatch_alerts")
 
     before: dict = {}
     after: dict = {}
@@ -216,7 +261,7 @@ async def configure_repo_link(
         before["required_checks"] = _checks_copy(link.required_checks)
         link.required_checks = new_checks
         after["required_checks"] = _checks_copy(new_checks)
-    if new_paths is not None or new_deps is not None:
+    if new_paths is not None or new_deps is not None or strict_tests is not None:
         policy = _policy_dict(link.default_policy)
         if new_paths is not None:
             before["allowed_paths"] = _plain_list(policy.get("allowed_paths"))
@@ -228,7 +273,19 @@ async def configure_repo_link(
             )
             policy["allowed_dependency_changes"] = new_deps
             after["allowed_dependency_changes"] = list(new_deps)
+        if strict_tests is not None:
+            before["strict_tests"] = _strict_tests_enabled(policy)
+            _apply_strict_tests(policy, strict_tests)
+            after["strict_tests"] = strict_tests
         link.default_policy = policy
+    if auto_merge_acceptable is not None:
+        before["auto_merge_acceptable"] = bool(link.auto_merge_acceptable)
+        link.auto_merge_acceptable = auto_merge_acceptable
+        after["auto_merge_acceptable"] = auto_merge_acceptable
+    if auto_dispatch_alerts is not None:
+        before["auto_dispatch_alerts"] = bool(link.auto_dispatch_alerts)
+        link.auto_dispatch_alerts = auto_dispatch_alerts
+        after["auto_dispatch_alerts"] = auto_dispatch_alerts
     await db.flush()
     return {"repo": link.repo_full_name, "before": before, "after": after}
 

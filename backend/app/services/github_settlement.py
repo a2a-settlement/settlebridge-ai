@@ -8,7 +8,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import NoReturn
 
 from sqlalchemy import select
@@ -21,15 +21,18 @@ from app.models.github import (
     BindingState,
     FunderLedgerEntry,
     GitHubBountyBinding,
+    GitHubJob,
     GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
+    JobKind,
+    JobStatus,
     LeaseStatus,
     LedgerStatus,
     SettlementState,
 )
 from app.models.user import User
-from app.services import exchange, github_app, github_comments
+from app.services import exchange, github_alerts, github_app, github_comments
 from app.services.github_errors import PermanentJobError, RetryableJobError
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,8 @@ _SECRET_RE = re.compile(
 )
 _ERROR_LIMIT = 500
 _MAX_TRANSITIONS = 6
+_ALERT_POLL = timedelta(minutes=15)
+_ALERT_MARKER = "<!-- settlebridge:alert-fixed -->"
 
 
 @dataclass
@@ -225,6 +230,19 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
             delivered = escrow_already_delivered(escrow)
 
         action = next_action(state, escrow_status, delivered)
+        # Gate deliver and release: the solver can deliver on a hold before the merge.
+        # DELIVERED is only reached after this gate passes.
+        if (
+            state == SettlementState.ESCROW_CREATED.value
+            and action in ("deliver", "release")
+            and _waits_for_alert(ctx)
+        ):
+            gate = await _alert_gate(db, ctx)
+            if gate == "wait":
+                await _schedule_recheck(db, settlement)
+                return settlement
+            if gate == "timeout":
+                await _refund_unfixed(db, ctx)
         if action == "create":
             await _step_create(db, ctx)
             continue
@@ -250,11 +268,120 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
     raise RuntimeError("settlement exceeded transition budget")
 
 
+def _status_code(exc: BaseException) -> int | None:
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code
+    return None
+
+
+def _present(payload: dict, *keys: str):
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return None
+
+
+def _plain_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        try:
+            truncated = int(value)
+        except (ValueError, OverflowError):
+            return None
+        if truncated != value:
+            return None
+        return truncated
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _hold_matches(escrow: dict, ctx: SettlementContext) -> bool:
+    """Held, and provider/amount match when the exchange included those fields."""
+    status = str(escrow.get("status") or "").strip().lower()
+    if status != "held":
+        return False
+    provider = _present(escrow, "provider_id", "provider")
+    amount = _present(escrow, "amount", "amount_ate")
+    solver = ctx.settlement.solver_agent_id
+    if provider is not None and str(provider) != str(solver):
+        return False
+    if amount is None:
+        return True
+    parsed = _plain_int(amount)
+    return parsed is not None and parsed == int(ctx.spec.amount_ate)
+
+
+async def _adopted_hold_id(ctx: SettlementContext) -> str | None:
+    """Reuse the lease hold when it is still held for this solver and amount.
+
+    A missing escrow (404) falls through to create. Any other lookup failure is
+    re-raised so a blip cannot lock a second escrow while the hold is still open.
+    """
+    from app.services import github_leases
+
+    lease = ctx.lease
+    hold_id = getattr(lease, "hold_escrow_id", None) if lease is not None else None
+    if not hold_id:
+        return None
+    if github_leases.is_pending_hold(hold_id):
+        try:
+            hold_id = await github_leases.resolve_hold(ctx.funder, lease, ctx.spec.amount_ate)
+        except github_leases.HoldRejected:
+            return None
+        lease.hold_escrow_id = hold_id
+    try:
+        escrow = await asyncio.to_thread(exchange.get_escrow, ctx.funder, hold_id)
+    except Exception as exc:
+        if _status_code(exc) == 404:
+            logger.info(
+                "hold escrow %s is gone; settlement %s will create one",
+                hold_id,
+                ctx.settlement.id,
+            )
+            return None
+        raise
+    if not isinstance(escrow, dict) or not _hold_matches(escrow, ctx):
+        logger.info("hold escrow %s not adoptable for settlement %s", hold_id, ctx.settlement.id)
+        if isinstance(escrow, dict) and _status_of(escrow) == "held":
+            await _refund_stale_hold(ctx, hold_id)
+        return None
+    return str(hold_id)
+
+
+async def _refund_stale_hold(ctx: SettlementContext, hold_id: str) -> None:
+    """The lease is SETTLED, so handle_refund_hold skips it; settlement returns it.
+
+    A failed refund propagates (retryable) so a second escrow is never locked
+    while this one is still held.
+    """
+    await asyncio.to_thread(
+        exchange.refund_escrow, ctx.funder, hold_id, "hold not adoptable at settlement"
+    )
+
+
 async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
     settlement = ctx.settlement
     # Deliver needs the solver's key; failing after create would strand funds in escrow.
     if ctx.provider is None or not getattr(ctx.provider, "exchange_api_key", None):
         raise ValueError("Solver has not linked an exchange account")
+    # Create stays first. A later alert-fixed wait belongs after this step.
+    hold_id = await _adopted_hold_id(ctx)
+    if hold_id:
+        settlement.escrow_id = hold_id
+        await _mark(db, settlement, SettlementState.ESCROW_CREATED.value)
+        return
     idempotency_key = f"{settlement.idempotency_prefix}:create"
     task_id = f"gh:{settlement.binding_id}:{settlement.spec_id}"
     try:
@@ -264,7 +391,7 @@ async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
             provider_id=settlement.solver_agent_id,
             amount=ctx.spec.amount_ate,
             task_id=task_id,
-            ttl_minutes=settings.ESCROW_TTL_MINUTES,
+            ttl_minutes=_create_ttl_minutes(ctx),
             idempotency_key=idempotency_key,
         )
     except Exception as exc:
@@ -281,6 +408,99 @@ async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:
         raise RuntimeError("create_escrow returned no escrow id")
     settlement.escrow_id = escrow_id
     await _mark(db, settlement, SettlementState.ESCROW_CREATED.value)
+
+
+def _create_ttl_minutes(ctx: SettlementContext) -> int:
+    if not _waits_for_alert(ctx):
+        return settings.ESCROW_TTL_MINUTES
+    # The escrow must outlive the alert-fixed wait.
+    wait = settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS * 60 + settings.GITHUB_HOLD_TTL_MARGIN_MINUTES
+    return max(settings.ESCROW_TTL_MINUTES, wait)
+
+
+def _waits_for_alert(ctx: SettlementContext) -> bool:
+    return getattr(ctx.spec, "payment_trigger", None) == github_alerts.ALERT_FIXED_TRIGGER
+
+
+async def _alert_gate(db: AsyncSession, ctx: SettlementContext) -> str:
+    """Return ready, wait, or timeout. GitHub errors count as not fixed yet."""
+    binding = ctx.binding
+    dispatch = await github_alerts.dispatch_for_issue(
+        db, binding.repo_full_name, binding.issue_number
+    )
+    state = None
+    if dispatch is not None and ctx.repo_link is not None:
+        kind = getattr(dispatch.alert_kind, "value", dispatch.alert_kind)
+        fetch = (
+            github_app.get_dependabot_alert
+            if kind == "dependabot"
+            else github_app.get_code_scanning_alert
+        )
+        try:
+            alert = await fetch(
+                ctx.repo_link.installation_id, binding.repo_full_name, dispatch.alert_number
+            )
+            state = alert.get("state") if isinstance(alert, dict) else None
+        except Exception as exc:
+            logger.warning(
+                "alert lookup failed for settlement %s: %s", ctx.settlement.id, _safe_error(exc)
+            )
+        if isinstance(state, str) and state != dispatch.alert_state:
+            dispatch.alert_state = state
+            await db.commit()
+    else:
+        logger.warning("settlement %s waits for an alert with no dispatch row", ctx.settlement.id)
+    if state == "fixed":
+        return "ready"
+    started = ctx.settlement.created_at or datetime.now(timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    deadline = started + timedelta(hours=settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS)
+    if datetime.now(timezone.utc) >= deadline:
+        return "timeout"
+    return "wait"
+
+
+async def _schedule_recheck(db: AsyncSession, settlement: GitHubSettlement) -> None:
+    """A pending job also stops enqueue_pending_settlements from adding another."""
+    db.add(
+        GitHubJob(
+            id=uuid.uuid4(),
+            kind=JobKind.ADVANCE_SETTLEMENT.value,
+            payload={"settlement_id": str(settlement.id)},
+            status=JobStatus.PENDING.value,
+            next_run_at=datetime.now(timezone.utc) + _ALERT_POLL,
+        )
+    )
+    await db.commit()
+    logger.info("settlement %s waiting for the alert to be fixed", settlement.id)
+
+
+async def _refund_unfixed(db: AsyncSession, ctx: SettlementContext) -> NoReturn:
+    settlement = ctx.settlement
+    hours = settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS
+    try:
+        await asyncio.to_thread(
+            exchange.refund_escrow,
+            ctx.funder,
+            settlement.escrow_id,
+            f"alert not fixed within {hours}h of merge",
+        )
+    except Exception as exc:
+        await _fail_retryable(db, settlement, exc)
+    if ctx.repo_link is not None:
+        try:
+            await github_app.upsert_sticky_comment(
+                ctx.repo_link.installation_id,
+                ctx.binding.repo_full_name,
+                ctx.binding.issue_number,
+                _ALERT_MARKER,
+                f"GitHub did not mark the security alert fixed within {hours} hours of the "
+                "merge, so the bounty escrow was refunded to the funder.",
+            )
+        except Exception:
+            logger.exception("alert timeout comment failed for settlement %s", settlement.id)
+    await _fail_permanent(db, settlement, f"alert not fixed within {hours}h; escrow refunded")
 
 
 async def _step_deliver(db: AsyncSession, ctx: SettlementContext) -> None:

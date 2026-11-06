@@ -59,6 +59,8 @@ class JobKind(str, enum.Enum):
     CHECKS_COMPLETED = "checks_completed"
     REVIEW_CLEAR_COMMENT = "review_clear_comment"
     ADVANCE_SETTLEMENT = "advance_settlement"
+    SECURITY_ALERT = "security_alert"
+    REFUND_HOLD = "refund_hold"
 
 
 class SettlementState(str, enum.Enum):
@@ -130,6 +132,11 @@ class GitHubLease(Base):
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     otel_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Escrow created from the funder at claim time (GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM).
+    hold_escrow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Trust claims seen at claim, refreshed at submit; used by auto-merge.
+    claim_kya: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claim_reputation: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -173,7 +180,47 @@ class GitHubRepoLink(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     onboarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_dispatch_alerts: Mapped[bool] = mapped_column(
+        default=False, server_default=text("false"), nullable=False
+    )
+    auto_merge_acceptable: Mapped[bool] = mapped_column(
+        default=False, server_default=text("false"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AlertKind(str, enum.Enum):
+    DEPENDABOT = "dependabot"
+    CODE_SCANNING = "code_scanning"
+
+
+class GitHubAlertDispatch(Base):
+    """A security alert turned into a bounty issue.
+
+    ``policy_overrides`` merges into the repo's ``default_policy`` for that issue's specs.
+    ``alert_state`` mirrors GitHub's alert state once settlement starts polling it.
+    """
+
+    __tablename__ = "github_alert_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "repo_full_name", "alert_kind", "alert_number", name="uq_github_alert_dispatch"
+        ),
+        Index("ix_github_alert_dispatches_repo_issue", "repo_full_name", "issue_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    alert_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    alert_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount_ate: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    policy_overrides: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    alert_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class GitHubBountyBinding(Base):

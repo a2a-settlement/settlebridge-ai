@@ -7,7 +7,7 @@ import json
 import sys
 import types
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -706,3 +706,107 @@ def test_loader_without_settled_lease_has_no_provider(monkeypatch):
     assert len(executed) == 8
     user_stmts = [stmt for stmt in executed if stmt.column_descriptions[0]["entity"] is User]
     assert len(user_stmts) == 1
+
+
+def _alert_world(monkeypatch, alert_state, *, age_hours=1.0, kind="dependabot"):
+    world = _world(monkeypatch)
+    world.spec.payment_trigger = settlement_mod.github_alerts.ALERT_FIXED_TRIGGER
+    world.settlement.created_at = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+    settlement_mod.settings.GITHUB_ALERT_FIXED_TIMEOUT_HOURS = 24
+    settlement_mod.settings.GITHUB_HOLD_TTL_MARGIN_MINUTES = 360
+    world.dispatch = SimpleNamespace(alert_kind=kind, alert_number=7, alert_state="open")
+    world.dispatch_lookup = AsyncMock(return_value=world.dispatch)
+    world.alert = AsyncMock(return_value={"state": alert_state})
+    world.refund = MagicMock(return_value={"status": "refunded"})
+    world.added = []
+    world.db.add = world.added.append
+    monkeypatch.setattr(
+        settlement_mod.github_alerts, "dispatch_for_issue", world.dispatch_lookup
+    )
+    name = "get_dependabot_alert" if kind == "dependabot" else "get_code_scanning_alert"
+    monkeypatch.setattr(settlement_mod.github_app, name, world.alert)
+    monkeypatch.setattr(settlement_mod.exchange, "refund_escrow", world.refund)
+    return world
+
+
+def test_alert_fixed_pays_and_records_state(monkeypatch):
+    world = _alert_world(monkeypatch, "fixed")
+    _run(world)
+    assert world.settlement.state == "released"
+    assert world.dispatch.alert_state == "fixed"
+    world.alert.assert_awaited_once_with(99, "octo/hello", 7)
+    assert world.create.call_args.kwargs["ttl_minutes"] == 24 * 60 + 360
+    assert world.refund.call_count == 0
+
+
+def test_alert_open_locks_escrow_and_schedules_recheck(monkeypatch):
+    world = _alert_world(monkeypatch, "open", kind="code_scanning")
+    _run(world)
+    assert world.settlement.state == "escrow_created"
+    assert world.create.call_count == 1
+    assert world.deliver.call_count == 0
+    assert world.release.call_count == 0
+    (job,) = world.added
+    assert job.kind == "advance_settlement"
+    assert job.payload == {"settlement_id": str(_SETTLEMENT_ID)}
+    assert job.next_run_at > datetime.now(timezone.utc) + timedelta(minutes=14)
+
+
+def test_alert_lookup_error_waits(monkeypatch):
+    world = _alert_world(monkeypatch, "fixed")
+    world.alert.side_effect = RuntimeError("boom")
+    _run(world)
+    assert world.settlement.state == "escrow_created"
+    assert world.deliver.call_count == 0
+    assert len(world.added) == 1
+
+
+def test_alert_not_fixed_after_timeout_refunds_and_fails(monkeypatch):
+    world = _alert_world(monkeypatch, "dismissed", age_hours=25)
+    with pytest.raises(PermanentJobError):
+        _run(world)
+    assert world.settlement.state == "failed"
+    assert world.refund.call_args.args[:2] == (world.funder, "esc-1")
+    assert world.deliver.call_count == 0
+    assert world.release.call_count == 0
+    assert world.comment.await_args.args[3] == "<!-- settlebridge:alert-fixed -->"
+    assert world.added == []
+
+
+def test_alert_timeout_refund_error_is_retryable(monkeypatch):
+    world = _alert_world(monkeypatch, "open", age_hours=25)
+    world.refund.side_effect = RuntimeError("exchange down")
+    with pytest.raises(RetryableJobError):
+        _run(world)
+    assert world.settlement.state == "escrow_created"
+
+
+def test_merge_with_checks_trigger_skips_alert_gate(monkeypatch):
+    world = _alert_world(monkeypatch, "open")
+    world.spec.payment_trigger = "merge_with_checks"
+    _run(world)
+    assert world.settlement.state == "released"
+    assert world.dispatch_lookup.await_count == 0
+    assert world.create.call_args.kwargs["ttl_minutes"] == 90
+
+
+def test_unadoptable_held_hold_is_refunded_before_create(monkeypatch):
+    world = _world(monkeypatch)
+    world.lease.hold_escrow_id = "hold-1"
+    world.get_escrow.return_value = {"status": "held", "provider_id": "someone-else"}
+    refund = MagicMock(return_value={"status": "refunded"})
+    monkeypatch.setattr(settlement_mod.exchange, "refund_escrow", refund)
+    _run(world)
+    assert refund.call_args.args[:2] == (world.funder, "hold-1")
+    assert world.settlement.escrow_id == "esc-1"
+
+
+def test_alert_gate_blocks_release_when_the_solver_delivered_early(monkeypatch):
+    world = _alert_world(monkeypatch, "open")
+    world.settlement.state = "escrow_created"
+    world.settlement.escrow_id = "hold-1"
+    world.get_escrow.return_value = {"status": "held", "delivered_at": "2026-06-01T00:00:00Z"}
+    _run(world)
+    assert world.release.call_count == 0
+    assert world.settlement.state == "escrow_created"
+    assert len(world.added) == 1

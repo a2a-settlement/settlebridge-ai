@@ -420,6 +420,85 @@ async def _get_json(installation_id: int, url: str, *, missing: Any = None) -> A
     return _read_json(response)
 
 
+async def create_issue(
+    installation_id: int, repo: str, title: str, body: str, labels: list[str]
+) -> int:
+    """Open an issue. Returns its number."""
+    repo = _validate_repo(repo)
+    if not isinstance(title, str) or not title.strip() or any(c in title for c in "\r\n"):
+        raise GitHubAPIError("invalid issue title")
+    token = await installation_token(installation_id)
+    payload = {"title": title[:256], "body": body, "labels": list(labels)}
+    async with _client() as client:
+        response = await _send(
+            client, "POST", f"{_api_root()}/repos/{repo}/issues", token, json_body=payload
+        )
+    _ensure_ok(response)
+    data = _read_json(response)
+    number = data.get("number") if isinstance(data, dict) else None
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise GitHubAPIError("unexpected issue payload", response.status_code)
+    return number
+
+
+async def get_issue(installation_id: int, repo: str, issue_number: int) -> dict:
+    repo = _validate_repo(repo)
+    data = await _get_json(installation_id, f"{_api_root()}/repos/{repo}/issues/{int(issue_number)}")
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected issue payload")
+    return data
+
+
+async def merge_pull_request(
+    installation_id: int, repo: str, pr_number: int, sha: str, merge_method: str = "merge"
+) -> dict:
+    """Merge only if the head is still ``sha``. Returns ``{merged, sha, merge_method}``.
+
+    A 405 for ``merge`` is retried once as ``squash``, for repos that allow only
+    squash merges. Other refusals (branch protection, a moved head) raise.
+    """
+    repo = _validate_repo(repo)
+    sha = _validate_sha(sha)
+    token = await installation_token(installation_id)
+    url = f"{_api_root()}/repos/{repo}/pulls/{pr_number}/merge"
+    methods = [merge_method] + (["squash"] if merge_method == "merge" else [])
+    async with _client() as client:
+        for index, method in enumerate(methods):
+            response = await _send(
+                client, "PUT", url, token, json_body={"sha": sha, "merge_method": method}
+            )
+            if response.status_code == 405 and index + 1 < len(methods):
+                continue
+            _ensure_ok(response)
+            data = _read_json(response)
+            if not isinstance(data, dict):
+                raise GitHubAPIError("unexpected merge payload", response.status_code)
+            return {
+                "merged": data.get("merged") is True,
+                "sha": data.get("sha"),
+                "merge_method": method,
+            }
+    raise GitHubAPIError("merge was not attempted")
+
+
+async def get_dependabot_alert(installation_id: int, repo: str, alert_number: int) -> dict:
+    repo = _validate_repo(repo)
+    url = f"{_api_root()}/repos/{repo}/dependabot/alerts/{int(alert_number)}"
+    data = await _get_json(installation_id, url)
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected dependabot alert payload")
+    return data
+
+
+async def get_code_scanning_alert(installation_id: int, repo: str, alert_number: int) -> dict:
+    repo = _validate_repo(repo)
+    url = f"{_api_root()}/repos/{repo}/code-scanning/alerts/{int(alert_number)}"
+    data = await _get_json(installation_id, url)
+    if not isinstance(data, dict):
+        raise GitHubAPIError("unexpected code scanning alert payload")
+    return data
+
+
 async def get_repository(installation_id: int, repo: str) -> dict:
     repo = _validate_repo(repo)
     data = await _get_json(installation_id, f"{_api_root()}/repos/{repo}")
