@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     configure = sub.add_parser(
         "configure",
         parents=[write_flags],
-        help="Set the funder, required checks, or policy allow-lists on an existing link.",
+        help="Set the funder, checks, allow-lists, strict tests, or auto-merge and alert flags.",
     )
     configure.add_argument("--repo", required=True, help="GitHub repo as OWNER/NAME")
     configure.add_argument("--funder-email", help="User who funds bounties on this repo.")
@@ -139,6 +139,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PKG",
         help="Replace allowed_dependency_changes. Repeat to add another package.",
+    )
+    configure.add_argument(
+        "--strict-tests",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Make weakening existing tests a mediator violation.",
+    )
+    configure.add_argument(
+        "--auto-merge",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="auto_merge_acceptable",
+        help="Merge ACCEPTABLE pull requests when the global switch is also on.",
+    )
+    configure.add_argument(
+        "--auto-dispatch-alerts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Open bounty issues for Dependabot and code-scanning alerts.",
     )
 
     enable = sub.add_parser(
@@ -181,6 +200,9 @@ async def _invoke(db, args: argparse.Namespace) -> tuple[object, bool]:
             checks=args.check,
             allowed_paths=args.allowed_path,
             allowed_dependency_changes=args.allowed_dependency,
+            strict_tests=args.strict_tests,
+            auto_merge_acceptable=args.auto_merge_acceptable,
+            auto_dispatch_alerts=args.auto_dispatch_alerts,
         )
         return payload, True
     if args.command == "enable":
