@@ -220,6 +220,12 @@ Submitting a pull request is not payment. Payment happens only after the merge a
 | `GITHUB_SETUP_FUNDING_ENABLED` | SettleBridge `.env` | Enables the setup page's **Add funds** button and the sign-up deposit (off by default). |
 | `GITHUB_LOGIN_STARTER_ATE` | SettleBridge `.env` | Test ATE deposited into the exchange account a first GitHub sign-in creates (default 1000; 0 turns it off). Needs `GITHUB_SETUP_FUNDING_ENABLED`. |
 | `GITHUB_SETUP_FUND_ATE` / `GITHUB_SETUP_FUND_MAX_BALANCE_ATE` | SettleBridge `.env` | ATE added per click (default 1000), and the available balance at which the button stops (default 2000). |
+| `GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM` | SettleBridge `.env` | Locks the funder's escrow when a lease is claimed and refunds it if the lease ends unpaid (off by default). See [Security alerts, holds and auto-merge](#security-alerts-holds-and-auto-merge). |
+| `GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION` | SettleBridge `.env` | Refuses a lease to the repo's own funder: same user, same GitHub account, or same exchange principal (on by default). |
+| `GITHUB_AUTO_DISPATCH_ALERTS` | SettleBridge `.env` | Global switch for opening bounty issues from Dependabot and code-scanning alerts (off by default). Each repo must also opt in. |
+| `GITHUB_AUTO_BOUNTY_DEPENDABOT_USD` / `GITHUB_AUTO_BOUNTY_CODEQL_USD` / `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE` | SettleBridge `.env` | Bounty sizes for alert issues (defaults $15 and $25) and the per-repo weekly cap on alert bounties (default 10000 ATE). |
+| `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` | SettleBridge `.env` | How long after the merge an alert bounty waits for GitHub to mark the alert fixed before refunding (default 24). |
+| `GITHUB_AUTO_MERGE_ACCEPTABLE` / `GITHUB_AUTO_MERGE_MIN_EMA` / `GITHUB_AUTO_MERGE_MIN_KYA` / `GITHUB_AUTO_MERGE_MAX_DIFF_LINES` | SettleBridge `.env` | Global auto-merge switch (off by default) and its minimum solver reputation (0.90), KYA level (2) and diff size (100 lines). Each repo must also opt in. |
 
 ### Adding a repo
 
@@ -265,6 +271,45 @@ PYTHONPATH=. .venv/bin/python -m app.cli.github_repos disable --repo OWNER/NAME
 
 To enable a link it needs a funder, at least one required check, and a live installation. Existing
 leases keep the acceptance spec they claimed under.
+
+### Security alerts, holds and auto-merge
+
+Each feature is off until both its global setting and the repo's own flag are on. Set the repo flags with `configure`:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAME \
+  --strict-tests --auto-dispatch-alerts --auto-merge
+```
+
+- **Strict tests** (`--strict-tests`). Deleting a test file, changing an assertion, adding a weak assertion,
+  or skipping a test becomes a violation instead of a finding for review.
+- **Alert bounties** (`--auto-dispatch-alerts`). A new Dependabot alert for a pip or npm package with a
+  patched version opens an issue labelled `bounty: $15`. The issue's reproduce command checks the
+  installed version, and only the manifest, its lockfiles and that one package may change. Weakening
+  tests is always a violation for these bounties. A code-scanning alert opens a `bounty: $25` issue, with
+  `tier: security` when the rule has a security severity. Security-severity alerts are never posted on
+  public repos. Each alert opens at most one issue, and alert bounties stop for the week once a repo
+  reaches `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE`. Payment for an alert bounty waits after the merge until
+  GitHub marks the alert fixed. The escrow is locked at the merge, and if the alert isn't fixed within
+  `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` it is refunded and the issue gets a comment.
+- **Auto-merge** (`--auto-merge`). The App merges a pull request only when all of these hold:
+  - the outcome is ACCEPTABLE with no findings and no maintainer override;
+  - the solver's KYA and reputation at claim meet the minimums;
+  - the pull request targets the default branch and has at most 100 changed lines;
+  - its head is still the evaluated commit.
+
+  Issues labelled `tier: security` and code-scanning bounties always need a human merge, while
+  Dependabot bounties can auto-merge. If branch protection blocks the merge, the pull request gets a
+  comment and a maintainer merges it normally. Settlement then runs as for any merge.
+- **Claim-time holds** (`GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM`). A claim is refused with `409
+  funder_insufficient` when the funder can't cover the bounty plus fee. Otherwise the funder's escrow is
+  locked for the lease, and the claim response has `funds_reserved: true`. A lease that is released,
+  expires, or whose pull request closes unmerged gets its escrow refunded. A merged lease's escrow is the
+  one that pays.
+
+Alert bounties need these GitHub App permissions: Dependabot alerts (read), Code scanning alerts
+(read) and Contents (read and write, for auto-merge). They also need the `dependabot_alert` and
+`code_scanning_alert` webhook events.
 
 ### Self-serve onboarding
 
