@@ -42,6 +42,7 @@ class UserResponse(BaseModel):
     exchange_bot_id: str | None = None
     exchange_balance_cached: float | None = None
     managed_developer_id: str | None = None
+    account_kind: str | None = None
     bio: str | None = None
     created_at: datetime
 

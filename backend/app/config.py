@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     GITHUB_HOLD_TTL_MARGIN_MINUTES: int = 360
     # Refuse leases where the solver is the funder, by user, GitHub account or exchange principal.
     GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION: bool = True
+    # A house solver may claim a bounty only after it has been advertised this long.
+    GITHUB_HOUSE_CLAIM_DELAY_HOURS: int = 24
     GITHUB_DEFAULT_REQUIRED_EMA: float = 0.75
     # Comma-separated owner/repo=ema pairs that replace the default for that repo.
     GITHUB_REPO_REQUIRED_EMA: str = ""
