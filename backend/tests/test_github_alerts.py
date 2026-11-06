@@ -949,6 +949,29 @@ def test_fixed_alert_leaves_other_settlement_states_alone(db, configured, github
     assert db.commits == 0
 
 
+def test_fixed_alert_queues_an_advance_for_needs_review(db, configured, github):
+    _prior(db, amount=1500, age_days=0, number=1)
+    settlement, job = _waiting(db, state=SettlementState.NEEDS_REVIEW.value)
+    db.sync.delete(db.sync.get(GitHubJob, job.id))
+    db.sync.commit()
+    before = datetime.now(timezone.utc)
+    _dispatch(db, _fixed(1))
+    db.sync.expire_all()
+    jobs = db.sync.execute(select(GitHubJob)).scalars().all()
+    advances = [j for j in jobs if j.kind == JobKind.ADVANCE_SETTLEMENT.value]
+    assert len(advances) == 1
+    assert advances[0].payload == {"settlement_id": str(settlement.id)}
+    assert advances[0].status == JobStatus.PENDING.value
+    assert github_alerts._as_utc(advances[0].next_run_at) <= datetime.now(timezone.utc)
+    assert github_alerts._as_utc(advances[0].next_run_at) >= before - timedelta(seconds=1)
+    assert db.commits == 1
+
+    _dispatch(db, _fixed(1))
+    db.sync.expire_all()
+    jobs = db.sync.execute(select(GitHubJob)).scalars().all()
+    assert len([j for j in jobs if j.kind == JobKind.ADVANCE_SETTLEMENT.value]) == 1
+
+
 def test_fixed_alert_without_a_dispatch_does_nothing(db, configured, github):
     _prior(db, amount=1500, age_days=0, number=1)
     _, job = _waiting(db)

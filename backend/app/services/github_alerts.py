@@ -165,7 +165,8 @@ async def _wake_settlement(db: AsyncSession, event: str, data: dict) -> None:
             )
         )
     ).scalar_one_or_none()
-    if settlement is None or settlement.state != SettlementState.ESCROW_CREATED.value:
+    waiting = (SettlementState.ESCROW_CREATED.value, SettlementState.NEEDS_REVIEW.value)
+    if settlement is None or settlement.state not in waiting:
         return
     now = datetime.now(timezone.utc)
     jobs = (
@@ -181,14 +182,28 @@ async def _wake_settlement(db: AsyncSession, event: str, data: dict) -> None:
         .all()
     )
     woken = 0
+    queued = False
     for pending in jobs:
         payload = pending.payload if isinstance(pending.payload, dict) else {}
         if payload.get("settlement_id") != str(settlement.id):
             continue
+        queued = True
         due = _as_utc(pending.next_run_at)
         if due is not None and due > now:
             pending.next_run_at = now
             woken += 1
+    # needs_review has no recheck job; the fixed webhook is what re-enters the gate.
+    if not queued and settlement.state == SettlementState.NEEDS_REVIEW.value:
+        db.add(
+            GitHubJob(
+                id=uuid.uuid4(),
+                kind=JobKind.ADVANCE_SETTLEMENT.value,
+                payload={"settlement_id": str(settlement.id)},
+                status=JobStatus.PENDING.value,
+                next_run_at=now,
+            )
+        )
+        woken += 1
     if woken:
         await db.commit()
         logger.info(
