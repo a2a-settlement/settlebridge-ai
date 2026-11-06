@@ -82,6 +82,8 @@ _LOCK_MANIFEST = {
     "pnpm-lock.yaml": "package.json",
 }
 _WEEK = timedelta(days=7)
+_DISPATCH_GRACE = timedelta(minutes=10)
+_MARKER_SINCE_SKEW = timedelta(minutes=5)
 _MAX_NAME_LEN = 214
 _MAX_PATH_LEN = 400
 
@@ -378,6 +380,10 @@ def _fit_title(text: str) -> str:
     return flat[:240].rstrip()
 
 
+def _alert_marker(kind: str, number: int) -> str:
+    return f"<!-- settlebridge:alert:{kind}:{number} -->"
+
+
 def _dependabot_body(
     alert: dict, number: int, patched: str, command: str, label: str | None, link: str | None
 ) -> str:
@@ -409,7 +415,7 @@ def _dependabot_body(
         "The fix must keep the test suite green and may only change the manifest and lockfile."
     )
     lines.append("")
-    lines.append(f"<!-- settlebridge:alert:dependabot:{number} -->")
+    lines.append(_alert_marker(AlertKind.DEPENDABOT.value, number))
     return "\n".join(lines) + "\n"
 
 
@@ -518,7 +524,7 @@ def _code_scanning_plan(data: dict, repo: str) -> _AlertPlan | None:
     lines.append("")
     lines.append(f"Location: {_finding_location(alert) or 'unknown'}")
     lines.append("")
-    lines.append(f"<!-- settlebridge:alert:code_scanning:{number} -->")
+    lines.append(_alert_marker(AlertKind.CODE_SCANNING.value, number))
     usd = int(settings.GITHUB_AUTO_BOUNTY_CODEQL_USD)
     labels = [f"bounty: ${usd}"]
     if level:
@@ -596,6 +602,60 @@ def _issues_job(data: dict, issue_number: int, plan: _AlertPlan) -> SimpleNamesp
     )
 
 
+async def _reconcile_stuck_dispatch(
+    db: AsyncSession,
+    data: dict,
+    repo: str,
+    installation_id: int,
+    plan: _AlertPlan,
+    existing: GitHubAlertDispatch,
+) -> bool:
+    """Adopt the issue for a stuck reservation, or drop an orphan.
+
+    True means the row was removed and the caller should open an issue.
+    A search failure leaves the row in place and raises.
+    """
+    from app.services import github_app, github_bounty_service
+
+    created = _as_utc(existing.created_at)
+    # GitHub may still be finishing the create that just timed out.
+    if created is None or datetime.now(timezone.utc) - created < _DISPATCH_GRACE:
+        logger.info(
+            "alert dispatch %s %s#%s has no issue; not opening another",
+            plan.kind,
+            repo,
+            plan.number,
+        )
+        return False
+    try:
+        # The issue can be timestamped slightly before the reservation commit.
+        found = await github_app.find_issue_with_marker(
+            installation_id,
+            repo,
+            _alert_marker(plan.kind, plan.number),
+            since=created - _MARKER_SINCE_SKEW,
+        )
+    except Exception as exc:
+        github_bounty_service._reraise_external(exc)
+        raise
+    if found is not None:
+        existing.issue_number = int(found)
+        await db.commit()
+        logger.info(
+            "recovered issue #%s for %s alert %s#%s",
+            found,
+            plan.kind,
+            repo,
+            plan.number,
+        )
+        await github_bounty_service._sync_issue_terms(db, _issues_job(data, int(found), plan))
+        return False
+    await db.delete(existing)
+    await db.commit()
+    logger.info("dropped orphaned alert dispatch %s %s#%s", plan.kind, repo, plan.number)
+    return True
+
+
 async def _open_dispatch(
     db: AsyncSession, data: dict, repo: str, installation_id: int, plan: _AlertPlan
 ) -> None:
@@ -603,14 +663,11 @@ async def _open_dispatch(
 
     existing = await _find_dispatch(db, repo, plan.kind, plan.number)
     if existing is not None:
-        if existing.issue_number is None:
-            logger.info(
-                "alert dispatch %s %s#%s has no issue; not opening another",
-                plan.kind,
-                repo,
-                plan.number,
-            )
-        return
+        if existing.issue_number is not None:
+            return
+        orphaned = await _reconcile_stuck_dispatch(db, data, repo, installation_id, plan, existing)
+        if not orphaned:
+            return
     amount_ate = github_bounty_service.usd_to_ate(Decimal(plan.usd))
     now = datetime.now(timezone.utc)
     # Serialize budget checks per repo; the lock is held until the reservation commits.

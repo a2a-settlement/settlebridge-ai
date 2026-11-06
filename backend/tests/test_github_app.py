@@ -490,6 +490,9 @@ def test_invalid_repo_and_sha_rejected(monkeypatch: pytest.MonkeyPatch):
         github_app.list_root_entries(1, REPO, "main", "pkg/../x"),
         github_app.list_root_entries(1, REPO, "main", "/abs"),
         github_app.list_root_entries(1, REPO, "main", "a b"),
+        github_app.find_issue_with_marker(
+            1, "not a repo", "<!-- settlebridge:alert:dependabot:1 -->"
+        ),
     ]
     for call in calls:
         with pytest.raises(GitHubAPIError):
@@ -658,3 +661,121 @@ def test_get_collaborator_record(monkeypatch: pytest.MonkeyPatch, status, payloa
     response = httpx.Response(status, json=payload) if payload is not None else httpx.Response(status)
     _routes(monkeypatch, {"/repos/acme/widgets/collaborators/octo/permission": response})
     assert asyncio.run(github_app.get_collaborator_record(3, REPO, "octo")) == expected
+
+
+def test_find_issue_with_marker_reads_later_page_and_skips_pull_requests(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    marker = "<!-- settlebridge:alert:dependabot:7 -->"
+    since = datetime(2026, 11, 4, 14, 50, tzinfo=timezone.utc)
+    _configure(monkeypatch, _PRIVATE_PEM)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        assert request.method == "GET"
+        assert request.url.path == "/repos/acme/widgets/issues"
+        assert request.url.params["state"] == "all"
+        assert request.url.params["per_page"] == "100"
+        assert request.headers["accept"] == "application/vnd.github+json"
+        assert request.headers["authorization"] == "Bearer ghs_5"
+        page = request.url.params.get("page", "1")
+        if page == "1":
+            assert request.url.params["since"] == "2026-11-04T14:50:00Z"
+            nxt = f"{API}/repos/acme/widgets/issues?state=all&per_page=100&page=2"
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "number": 4,
+                        "body": f"pull {marker}",
+                        "pull_request": {"url": f"{API}/repos/acme/widgets/pulls/4"},
+                    },
+                    {"number": 5, "body": "unrelated"},
+                ],
+                headers={"Link": f'<{nxt}>; rel="next"'},
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {"number": 9, "body": None},
+                {"number": 11, "body": f"prefix\n{marker}\n"},
+                {"number": 12, "body": f"later {marker}"},
+            ],
+        )
+
+    _install(monkeypatch, handler)
+    found = asyncio.run(github_app.find_issue_with_marker(5, REPO, marker, since=since))
+    assert found == 11
+    pages = [
+        request.url.params.get("page") for request in seen if request.url.path.endswith("/issues")
+    ]
+    assert pages == [None, "2"]
+
+
+def test_find_issue_with_marker_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch):
+    marker = "<!-- settlebridge:alert:dependabot:7 -->"
+    _configure(monkeypatch, _PRIVATE_PEM)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        assert "since" not in request.url.params
+        assert request.url.params["state"] == "all"
+        assert request.url.params["per_page"] == "100"
+        return httpx.Response(
+            200,
+            json=[
+                {"number": 3, "body": "<!-- settlebridge:alert:dependabot:8 -->"},
+                {"number": 4, "body": marker, "pull_request": {}},
+                {"number": True, "body": "not the marker"},
+            ],
+        )
+
+    _install(monkeypatch, handler)
+    found = asyncio.run(github_app.find_issue_with_marker(5, REPO, marker, since=None))
+    assert found is None
+
+
+def test_find_issue_with_marker_raises_on_server_error(monkeypatch: pytest.MonkeyPatch):
+    _configure(monkeypatch, _PRIVATE_PEM)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        return httpx.Response(503, json={"message": "unavailable"})
+
+    _install(monkeypatch, handler)
+    with pytest.raises(GitHubAPIError) as caught:
+        asyncio.run(
+            github_app.find_issue_with_marker(
+                5, REPO, "<!-- settlebridge:alert:code_scanning:4 -->"
+            )
+        )
+    assert caught.value.status_code == 503
+    assert "ghs_" not in str(caught.value)
+
+
+def test_find_issue_with_marker_raises_after_five_pages(monkeypatch: pytest.MonkeyPatch):
+    marker = "<!-- settlebridge:alert:code_scanning:4 -->"
+    _configure(monkeypatch, _PRIVATE_PEM)
+    pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        page = int(request.url.params.get("page", "1"))
+        pages.append(page)
+        nxt = f"{API}/repos/acme/widgets/issues?state=all&per_page=100&page={page + 1}"
+        return httpx.Response(
+            200,
+            json=[{"number": page, "body": "no marker"}],
+            headers={"Link": f'<{nxt}>; rel="next"'},
+        )
+
+    _install(monkeypatch, handler)
+    with pytest.raises(github_app.GitHubAPIError, match="page limit"):
+        asyncio.run(github_app.find_issue_with_marker(5, REPO, marker))
+    assert pages == [1, 2, 3, 4, 5]
