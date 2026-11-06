@@ -551,6 +551,19 @@ async def fetch_settlement(db: AsyncSession, binding_id: uuid.UUID):
     return result.scalar_one_or_none()
 
 
+async def fetch_settled_lease(db: AsyncSession, binding_id: uuid.UUID):
+    stmt = (
+        select(GitHubLease)
+        .where(
+            GitHubLease.binding_id == binding_id,
+            GitHubLease.status == LeaseStatus.SETTLED.value,
+        )
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def fetch_agent_work_leases(db: AsyncSession, agent_id: str) -> list:
     stmt = (
         select(GitHubLease)
@@ -619,7 +632,9 @@ def pending_hold_marker(ttl_minutes: int) -> str:
 
 
 def is_pending_hold(value) -> bool:
-    return isinstance(value, str) and (value == HOLD_PENDING or value.startswith(HOLD_PENDING + ":"))
+    return isinstance(value, str) and (
+        value == HOLD_PENDING or value.startswith(HOLD_PENDING + ":")
+    )
 
 
 def _pending_ttl(value) -> int:
@@ -730,7 +745,9 @@ def _own_key(user, agent_id) -> str | None:
     return getattr(user, "exchange_api_key", None) or None
 
 
-async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims) -> APIResult | None:
+async def _self_dealing_denial(
+    db, binding, solver, github_user_id: int, claims
+) -> APIResult | None:
     """403 when the solver is a funder by user, GitHub account, or exchange principal.
 
     Checks the bounty's requester and the repo link's funder. Fails closed: a
@@ -1278,6 +1295,51 @@ async def heartbeat(db, claims, body) -> APIResult:
     )
 
 
+def _same_settlement_party(settlement, lease) -> bool:
+    """True when the settlement was opened for this lease's spec and solver."""
+    spec_id = getattr(settlement, "spec_id", None)
+    solver = getattr(settlement, "solver_agent_id", None)
+    if spec_id is None or solver is None:
+        return False
+    return spec_id == getattr(lease, "spec_id", None) and solver == getattr(lease, "agent_id", None)
+
+
+def _hold_adopted_by(settlement, lease) -> bool:
+    """True when the settlement's escrow is this lease's funder hold."""
+    if settlement is None:
+        return False
+    escrow_id = getattr(settlement, "escrow_id", None)
+    hold_id = getattr(lease, "hold_escrow_id", None)
+    if not escrow_id or not hold_id:
+        return False
+    return str(escrow_id) == str(hold_id)
+
+
+async def _resolve_submitted_hold(db, lease) -> None:
+    """Settle a lease the settlement owns; otherwise expire it. Does not unbind.
+
+    Settlement pays the newest settled lease and only adopts or refunds a hold
+    before its escrow exists, so a party match settles the lease only while no
+    escrow is set and no other lease is already settled for the binding.
+    """
+    settlement = await fetch_settlement(db, lease.binding_id)
+    if _hold_adopted_by(settlement, lease):
+        lease.status = LeaseStatus.SETTLED.value
+        return
+    if (
+        settlement is not None
+        and not getattr(settlement, "escrow_id", None)
+        and _same_settlement_party(settlement, lease)
+        and await fetch_settled_lease(db, lease.binding_id) is None
+    ):
+        lease.status = LeaseStatus.SETTLED.value
+        return
+    lease.status = LeaseStatus.EXPIRED.value
+    lease.release_reason = "submitted_hold_elapsed"
+    if not _hold_adopted_by(settlement, lease):
+        enqueue_hold_refund(db, lease)
+
+
 async def expire_stale_leases(db: AsyncSession) -> int:
     """Expire work leases past their window and submitted holds past their hold. Commits."""
     now = _now()
@@ -1288,8 +1350,10 @@ async def expire_stale_leases(db: AsyncSession) -> int:
         if reason is None:
             continue
         if reason == "submitted_hold_elapsed":
-            binding = await db.get(GitHubBountyBinding, lease.binding_id)
+            binding = await fetch_binding(db, lease.binding_id)
             if binding is not None and _text(binding.state) in _SETTLEMENT_STATES:
+                await _resolve_submitted_hold(db, lease)
+                expired += 1
                 continue
             if binding is not None:
                 _unbind_binding(binding)
