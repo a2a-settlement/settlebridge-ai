@@ -669,14 +669,18 @@ class _PrincipalUnavailable(Exception):
 _PRINCIPAL_MIN_CONFIDENCE = 0.5
 
 
-async def _principal_links(client: httpx.AsyncClient, agent_id: str) -> dict[str, float]:
+async def _principal_links(
+    client: httpx.AsyncClient, agent_id: str, api_key: str | None
+) -> dict[str, float]:
     """Every principal linked to the account, with its confidence. Empty when none.
 
     Raises when the exchange can't say. A link without a confidence counts as certain.
     """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         resp = await client.get(
             f"{settings.effective_exchange_url}/v1/accounts/{agent_id}/principal",
+            headers=headers,
             timeout=10.0,
         )
     except Exception as exc:
@@ -698,20 +702,32 @@ async def _principal_links(client: httpx.AsyncClient, agent_id: str) -> dict[str
         raise _PrincipalUnavailable("malformed principal response") from exc
 
 
-async def _shares_principal(funder_agent: str, solver_agent: str) -> bool:
-    headers: dict[str, str] = {}
-    # Same client the principal sync job uses. The value is a credential; never log it.
-    gateway_api_key = settings.GATEWAY_EXCHANGE_API_KEY or settings.GATEWAY_EXCHANGE_URL
-    if gateway_api_key:
-        headers["Authorization"] = f"Bearer {gateway_api_key}"
-    async with httpx.AsyncClient(headers=headers) as client:
-        funder_links = await _principal_links(client, funder_agent)
-        solver_links = await _principal_links(client, solver_agent)
+async def _shares_principal(
+    funder_agent: str,
+    solver_agent: str,
+    funder_key: str | None = None,
+    solver_key: str | None = None,
+) -> bool:
+    """The exchange shows principal links only to the account itself or an operator,
+    so each side is read with its own key; the gateway key is the fallback.
+    Keys are credentials; never log them.
+    """
+    fallback = settings.GATEWAY_EXCHANGE_API_KEY or None
+    async with httpx.AsyncClient() as client:
+        funder_links = await _principal_links(client, funder_agent, funder_key or fallback)
+        solver_links = await _principal_links(client, solver_agent, solver_key or fallback)
     return any(
         min(confidence, solver_links[principal]) >= _PRINCIPAL_MIN_CONFIDENCE
         for principal, confidence in funder_links.items()
         if principal in solver_links
     )
+
+
+def _own_key(user, agent_id) -> str | None:
+    """The user's exchange key, only when it belongs to ``agent_id``."""
+    if str(getattr(user, "exchange_bot_id", None) or "") != str(agent_id):
+        return None
+    return getattr(user, "exchange_api_key", None) or None
 
 
 async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims) -> APIResult | None:
@@ -753,7 +769,12 @@ async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims)
         if str(funder_agent) == str(solver_agent):
             return _err(403, "self_dealing")
         try:
-            shared = await _shares_principal(str(funder_agent), str(solver_agent))
+            shared = await _shares_principal(
+                str(funder_agent),
+                str(solver_agent),
+                getattr(funder, "exchange_api_key", None),
+                _own_key(solver, solver_agent),
+            )
         except _PrincipalUnavailable as exc:
             logger.info("principal lookup failed (%s); refusing claim", exc)
             return _err(502, "exchange_unavailable")

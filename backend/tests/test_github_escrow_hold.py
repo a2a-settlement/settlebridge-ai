@@ -140,11 +140,13 @@ class _Claim:
             required_ema=0.0,
             amount_ate=100,
         )
-        self.solver = types.SimpleNamespace(id=self.solver_id, exchange_bot_id=AGENT)
+        self.solver = types.SimpleNamespace(
+            id=self.solver_id, exchange_bot_id=AGENT, exchange_api_key="solver-key"
+        )
         self.funder = types.SimpleNamespace(
             id=self.funder_id,
             exchange_bot_id=FUNDER_AGENT,
-            exchange_api_key="set",
+            exchange_api_key="funder-key",
         )
         self.link = types.SimpleNamespace(
             repo_full_name=REPO,
@@ -166,6 +168,7 @@ class _Claim:
         self.principals = {FUNDER_AGENT: "principal-funder", AGENT: "principal-solver"}
         self.events: list[str] = []
         self.principal_calls: list[str] = []
+        self.principal_keys: list[str | None] = []
         self.create_user = None
         self.create_kwargs = None
         self.db = None
@@ -240,8 +243,9 @@ class _Claim:
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-        async def fetch_principal(client, agent_id):
+        async def fetch_principal(client, agent_id, api_key):
             world.principal_calls.append(agent_id)
+            world.principal_keys.append(api_key)
             if world.principal_error is not None:
                 raise github_leases._PrincipalUnavailable(str(world.principal_error))
             found = world.principals.get(agent_id)
@@ -1251,7 +1255,7 @@ def test_principal_lookup_separates_no_principal_from_an_outage(status, body, ex
 
     async def lookup():
         async with httpx.AsyncClient(transport=transport) as client:
-            return await github_leases._principal_links(client, "agent-1")
+            return await github_leases._principal_links(client, "agent-1", "key-1")
 
     if expected == "raise":
         with pytest.raises(github_leases._PrincipalUnavailable):
@@ -1302,3 +1306,37 @@ def test_an_unrecovered_409_is_not_proof_that_no_hold_exists(monkeypatch):
     )
     with pytest.raises(httpx.HTTPStatusError):
         _run(github_leases.resolve_hold(object(), lease, 100))
+
+
+def test_principal_lookups_use_each_accounts_own_key(monkeypatch):
+    world = _Claim()
+    world.install(monkeypatch)
+    monkeypatch.setattr(settings, "GATEWAY_EXCHANGE_API_KEY", "gateway-key")
+    assert world.claim().status_code == 201
+    assert world.principal_calls == [FUNDER_AGENT, AGENT]
+    assert world.principal_keys == ["funder-key", "solver-key"]
+
+
+def test_principal_lookup_falls_back_to_the_gateway_key(monkeypatch):
+    world = _Claim()
+    world.solver.exchange_api_key = None
+    world.funder.exchange_api_key = None
+    world.install(monkeypatch)
+    monkeypatch.setattr(settings, "GATEWAY_EXCHANGE_API_KEY", "gateway-key")
+    assert world.claim().status_code == 201
+    assert world.principal_keys == ["gateway-key", "gateway-key"]
+
+
+def test_principal_lookup_sends_the_key_as_a_bearer_token():
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"links": []})
+
+    async def lookup():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await github_leases._principal_links(client, "agent-1", "own-key")
+
+    assert _run(lookup()) == {}
+    assert seen == ["Bearer own-key"]
