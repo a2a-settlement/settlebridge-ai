@@ -89,12 +89,18 @@ class GitHubBox:
     def __init__(self):
         self.calls: list[dict] = []
         self.syncs: list[object] = []
+        self.searches: list[dict] = []
         self.number = 101
         self.error: Exception | None = None
+        self.search_error: Exception | None = None
+        self.found: int | None = None
         self.db: Bridge | None = None
 
     def install(self, monkeypatch, db: Bridge):
         self.db = db
+
+        def orphan_dropped() -> bool:
+            return bool(self.searches) and self.found is None and self.search_error is None
 
         async def create_issue(installation_id, repo, title, body, labels):
             if self.error is not None:
@@ -105,7 +111,7 @@ class GitHubBox:
                 if row.issue_number is None
             ]
             assert len(pending) == 1
-            assert db.commits == 1
+            assert db.commits == 1 + int(orphan_dropped())
             self.calls.append(
                 {
                     "installation_id": installation_id,
@@ -117,18 +123,38 @@ class GitHubBox:
             )
             return self.number
 
+        async def find_issue_with_marker(installation_id, repo, marker, since=None):
+            self.searches.append(
+                {
+                    "installation_id": installation_id,
+                    "repo": repo,
+                    "marker": marker,
+                    "since": since,
+                }
+            )
+            if self.search_error is not None:
+                raise self.search_error
+            return self.found
+
         async def sync(session, job):
             assert session is db
+            if self.calls:
+                expected_number = self.number
+                expected_commits = 2 + int(orphan_dropped())
+            else:
+                expected_number = self.found
+                expected_commits = 1
             opened = [
                 row
                 for row in (await session.execute(select(GitHubAlertDispatch))).scalars().all()
-                if row.issue_number == self.number
+                if row.issue_number == expected_number
             ]
             assert len(opened) == 1
-            assert session.commits == 2
+            assert session.commits == expected_commits
             self.syncs.append(job)
 
         monkeypatch.setattr(github_app, "create_issue", create_issue)
+        monkeypatch.setattr(github_app, "find_issue_with_marker", find_issue_with_marker)
         monkeypatch.setattr(github_bounty_service, "_sync_issue_terms", sync)
         return self
 
@@ -313,6 +339,31 @@ async def _rows(db: Bridge) -> list[GitHubAlertDispatch]:
 
 def _dispatch(db: Bridge, job: GitHubJob) -> None:
     _run(github_alerts.handle_security_alert(db, job))
+
+
+def _stuck(
+    db: Bridge,
+    *,
+    age: timedelta,
+    number: int = 7,
+    amount: int = 1500,
+) -> GitHubAlertDispatch:
+    now = datetime.now(timezone.utc)
+    row = GitHubAlertDispatch(
+        id=uuid.uuid4(),
+        repo_full_name=REPO,
+        alert_kind=AlertKind.DEPENDABOT.value,
+        alert_number=number,
+        issue_number=None,
+        amount_ate=amount,
+        policy_overrides={"allowed_paths": ["pyproject.toml"]},
+        alert_state="open",
+        created_at=now - age,
+        updated_at=now,
+    )
+    db.sync.add(row)
+    db.sync.commit()
+    return row
 
 
 def _prior(
@@ -678,27 +729,108 @@ def test_weekly_budget_allows_an_exact_fit_and_ignores_old_and_other_repos(
 def test_stuck_dispatch_does_not_open_another_issue(db, configured, github, caplog):
     caplog.set_level(logging.INFO, logger="app.services.github_alerts")
     _seed(db)
-    now = datetime.now(timezone.utc)
-    db.sync.add(
-        GitHubAlertDispatch(
-            id=uuid.uuid4(),
-            repo_full_name=REPO,
-            alert_kind=AlertKind.DEPENDABOT.value,
-            alert_number=7,
-            issue_number=None,
-            amount_ate=1500,
-            policy_overrides={"allowed_paths": ["pyproject.toml"]},
-            alert_state="open",
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.sync.commit()
+    github.found = 77
+    _stuck(db, age=timedelta(0))
     _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
     assert github.calls == []
+    assert github.searches == []
     assert github.syncs == []
     assert _run(_rows(db))[0].issue_number is None
     assert "not opening another" in caplog.text
+
+
+def test_old_stuck_dispatch_adopts_the_issue_with_its_marker(db, configured, github, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.github_alerts")
+    _seed(db)
+    row = _stuck(db, age=github_alerts._DISPATCH_GRACE + timedelta(minutes=1))
+    github.found = 77
+    data = _envelope(_dependabot())
+    _dispatch(db, _job("dependabot_alert", data))
+    assert github.calls == []
+    assert len(github.searches) == 1
+    search = github.searches[0]
+    assert search["installation_id"] == INSTALLATION_ID
+    assert search["repo"] == REPO
+    assert search["marker"] == "<!-- settlebridge:alert:dependabot:7 -->"
+    created = github_alerts._as_utc(row.created_at)
+    assert search["since"] == created - github_alerts._MARKER_SINCE_SKEW
+    assert created - search["since"] >= timedelta(minutes=1)
+    kept = _run(_rows(db))
+    assert len(kept) == 1
+    assert kept[0].id == row.id
+    assert kept[0].issue_number == 77
+    assert kept[0].amount_ate == 1500
+    assert db.commits == 1
+    assert len(github.syncs) == 1
+    event, action, payload = github_bounty_service._webhook_parts(github.syncs[0])
+    assert (event, action) == ("issues", "labeled")
+    assert payload["issue"]["number"] == 77
+    assert "<!-- settlebridge:alert:dependabot:7 -->" in payload["issue"]["body"]
+    assert "recovered issue #77" in caplog.text
+    assert "not opening another" not in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_old_stuck_dispatch_without_a_marker_opens_once(db, configured, github, monkeypatch):
+    monkeypatch.setattr(settings, "GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE", 1500)
+    _seed(db)
+    row = _stuck(db, age=github_alerts._DISPATCH_GRACE + timedelta(minutes=1))
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
+    assert len(github.searches) == 1
+    assert len(github.calls) == 1
+    assert github.calls[0]["repo"] == REPO
+    marker = "<!-- settlebridge:alert:dependabot:7 -->"
+    assert marker in github.calls[0]["body"]
+    rows = _run(_rows(db))
+    assert len(rows) == 1
+    assert rows[0].id != row.id
+    assert rows[0].issue_number == github.number
+    assert rows[0].amount_ate == 1500
+    assert len(github.syncs) == 1
+    issue = github_bounty_service._webhook_parts(github.syncs[0])[2]["issue"]
+    assert issue["number"] == github.number
+    assert db.commits == 3
+
+
+def test_orphaned_dispatch_still_respects_the_weekly_budget(
+    db, configured, github, monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.services.github_alerts")
+    monkeypatch.setattr(settings, "GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE", 1500)
+    _seed(db)
+    _prior(db, amount=1500, age_days=1, number=1)
+    stuck = _stuck(db, age=github_alerts._DISPATCH_GRACE + timedelta(minutes=1))
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
+    assert github.calls == []
+    assert github.syncs == []
+    assert len(github.searches) == 1
+    rows = _run(_rows(db))
+    assert [row.alert_number for row in rows] == [1]
+    assert rows[0].issue_number == 50
+    assert stuck.id not in {row.id for row in rows}
+    assert "weekly auto-bounty budget" in caplog.text
+
+
+def test_stuck_dispatch_search_failure_keeps_the_row(db, configured, github):
+    _seed(db)
+    row = _stuck(db, age=github_alerts._DISPATCH_GRACE + timedelta(minutes=1))
+    github.search_error = github_app.GitHubAPIError("unavailable", 503)
+    with pytest.raises(RetryableJobError):
+        _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
+    assert github.calls == []
+    assert github.syncs == []
+    assert len(github.searches) == 1
+    kept = _run(_rows(db))
+    assert len(kept) == 1
+    assert kept[0].id == row.id
+    assert kept[0].issue_number is None
+    assert kept[0].amount_ate == 1500
+    assert db.commits == 0
+    github.search_error = None
+    github.found = 77
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
+    assert github.calls == []
+    assert _run(_rows(db))[0].issue_number == 77
 
 
 def test_github_outage_reserves_the_row_and_a_retry_does_not_open_a_second_issue(
@@ -715,6 +847,7 @@ def test_github_outage_reserves_the_row_and_a_retry_does_not_open_a_second_issue
     github.error = None
     _dispatch(db, _job("dependabot_alert", _envelope(_dependabot())))
     assert github.calls == []
+    assert github.searches == []
     assert _run(_rows(db))[0].issue_number is None
 
 
