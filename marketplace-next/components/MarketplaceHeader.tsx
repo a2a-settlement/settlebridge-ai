@@ -9,12 +9,16 @@ import NotificationBell from "@/components/NotificationBell";
 import WalletWidget from "@/components/WalletWidget";
 
 const NAV = [
+  { href: "/cyber", label: "Cyber" },
   { href: "/bounties", label: "Bounties" },
   { href: "/agents", label: "Agents" },
   { href: "/contracts", label: "Contracts" },
   { href: "/developers", label: "Developers" },
   { href: "/demo", label: "Demo" },
 ];
+
+const focusRing =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-money";
 
 export default function MarketplaceHeader() {
   const { user, logout } = useAuth();
@@ -40,7 +44,8 @@ export default function MarketplaceHeader() {
                 <Link
                   key={href}
                   href={href}
-                  className={`px-3 py-1.5 rounded-md transition ${
+                  aria-current={isActive(href) ? "page" : undefined}
+                  className={`px-3 py-1.5 rounded-md transition ${focusRing} ${
                     isActive(href)
                       ? "bg-white/10 text-white"
                       : "text-gray-400 hover:text-white hover:bg-white/5"
@@ -59,7 +64,8 @@ export default function MarketplaceHeader() {
                 <NotificationBell />
                 <Link
                   href="/dashboard"
-                  className={`px-3 py-1.5 rounded-md text-sm transition ${
+                  aria-current={isActive("/dashboard") ? "page" : undefined}
+                  className={`px-3 py-1.5 rounded-md text-sm transition ${focusRing} ${
                     isActive("/dashboard")
                       ? "bg-white/10 text-white"
                       : "text-gray-400 hover:text-white hover:bg-white/5"
@@ -97,9 +103,11 @@ export default function MarketplaceHeader() {
             )}
             <button
               type="button"
-              className="md:hidden text-gray-400"
+              className={`md:hidden text-gray-400 rounded-md ${focusRing}`}
               onClick={() => setMobileOpen(!mobileOpen)}
               aria-label="Menu"
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-nav"
             >
               {mobileOpen ? <X /> : <Menu />}
             </button>
@@ -107,33 +115,37 @@ export default function MarketplaceHeader() {
         </div>
       </div>
 
-      {mobileOpen && (
-        <nav className="md:hidden border-t border-navy-800 px-4 py-3 space-y-1">
-          {user && (
-            <Link
-              href="/dashboard"
-              className={`block py-2 px-2 rounded-md text-sm ${
-                isActive("/dashboard") ? "bg-white/10 text-white" : "text-gray-300"
-              }`}
-              onClick={() => setMobileOpen(false)}
-            >
-              Dashboard
-            </Link>
-          )}
-          {NAV.map(({ href, label }) => (
-            <Link
-              key={href}
-              href={href}
-              className={`block py-2 px-2 rounded-md text-sm ${
-                isActive(href) ? "bg-white/10 text-white" : "text-gray-300"
-              }`}
-              onClick={() => setMobileOpen(false)}
-            >
-              {label}
-            </Link>
-          ))}
-        </nav>
-      )}
+      <nav
+        id="mobile-nav"
+        hidden={!mobileOpen}
+        className="md:hidden border-t border-navy-800 px-4 py-3 space-y-1"
+      >
+        {user && (
+          <Link
+            href="/dashboard"
+            aria-current={isActive("/dashboard") ? "page" : undefined}
+            className={`block py-2 px-2 rounded-md text-sm ${focusRing} ${
+              isActive("/dashboard") ? "bg-white/10 text-white" : "text-gray-300"
+            }`}
+            onClick={() => setMobileOpen(false)}
+          >
+            Dashboard
+          </Link>
+        )}
+        {NAV.map(({ href, label }) => (
+          <Link
+            key={href}
+            href={href}
+            aria-current={isActive(href) ? "page" : undefined}
+            className={`block py-2 px-2 rounded-md text-sm ${focusRing} ${
+              isActive(href) ? "bg-white/10 text-white" : "text-gray-300"
+            }`}
+            onClick={() => setMobileOpen(false)}
+          >
+            {label}
+          </Link>
+        ))}
+      </nav>
     </header>
   );
 }
