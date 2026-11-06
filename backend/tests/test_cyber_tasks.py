@@ -834,7 +834,6 @@ def test_queries_stay_batched(world, empty):
 @pytest.mark.parametrize(
     "params",
     [
-        {},
         {"view": "nope"},
         {"view": "AVAILABLE"},
         {"view": "cancelled"},
@@ -846,6 +845,12 @@ def test_queries_stay_batched(world, empty):
 def test_invalid_query_is_422(world, params):
     response = world["client"].get("/api/v1/cyber/tasks", params=params)
     assert response.status_code == 422
+
+
+def test_view_defaults_to_available(world):
+    response = world["client"].get("/api/v1/cyber/tasks")
+    assert response.status_code == 200
+    assert response.json()["view"] == "available"
 
 
 @pytest.mark.parametrize(
