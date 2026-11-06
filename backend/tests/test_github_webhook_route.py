@@ -20,8 +20,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 from app.database import Base, get_db
-from app.models.github import GitHubJob, GitHubWebhookDelivery
-from app.routes.github import router
+from app.models.github import GitHubJob, GitHubWebhookDelivery, JobKind
+from app.routes.github import job_kind_for, router
 
 SECRET = "test-webhook-secret"
 
@@ -106,6 +106,15 @@ def _jobs(session: FakeSession) -> list[GitHubJob]:
 
 def _deliveries(session: FakeSession) -> list[GitHubWebhookDelivery]:
     return [obj for obj in session.added if isinstance(obj, GitHubWebhookDelivery)]
+
+
+@pytest.mark.parametrize("event", ["dependabot_alert", "code_scanning_alert"])
+@pytest.mark.parametrize(
+    ("action", "kind"),
+    [("created", JobKind.SECURITY_ALERT), ("fixed", JobKind.SECURITY_ALERT), ("dismissed", None)],
+)
+def test_alert_actions_that_queue_a_job(event, action, kind):
+    assert job_kind_for(event, action, {}) is kind
 
 
 def test_bad_signature_is_401():

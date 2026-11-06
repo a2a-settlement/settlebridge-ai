@@ -105,7 +105,7 @@ def job_kind_for(event: str, action: str | None, data: object) -> JobKind | None
         return JobKind.CHECKS_COMPLETED
     if event == "issue_comment" and action == "created" and _is_clear_comment(data):
         return JobKind.REVIEW_CLEAR_COMMENT
-    if event in ("dependabot_alert", "code_scanning_alert") and action == "created":
+    if event in ("dependabot_alert", "code_scanning_alert") and action in ("created", "fixed"):
         return JobKind.SECURITY_ALERT
     return None
 
