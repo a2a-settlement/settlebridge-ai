@@ -711,7 +711,9 @@ def test_preempt_enqueues_a_refund_for_held_work_leases(monkeypatch):
     monkeypatch.setattr(github_leases, "_redis", lambda: _Redis())
     monkeypatch.setattr(github_leases, "_now", lambda: FIXED)
     result = _run(
-        github_leases.heartbeat(db, types.SimpleNamespace(agent_id=AGENT), {"status": "BUSY_PREEMPTED"})
+        github_leases.heartbeat(
+            db, types.SimpleNamespace(agent_id=AGENT), {"status": "BUSY_PREEMPTED"}
+        )
     )
     assert result.status_code == 200
     assert held.status == "released"
@@ -723,7 +725,7 @@ def test_preempt_enqueues_a_refund_for_held_work_leases(monkeypatch):
     assert db.commits == 1
 
 
-def test_expiry_enqueues_a_refund_and_skips_settlement(monkeypatch):
+def test_expiry_enqueues_a_refund_and_settles_an_adopted_hold(monkeypatch):
     now = FIXED
     monkeypatch.setattr(github_leases, "_now", lambda: now)
     expired = types.SimpleNamespace(
@@ -767,13 +769,21 @@ def test_expiry_enqueues_a_refund_and_skips_settlement(monkeypatch):
         last_assessment=None,
         review_cleared_by=None,
     )
+    settlement = types.SimpleNamespace(
+        binding_id=binding.id, spec_id=uuid.uuid4(), solver_agent_id=AGENT, escrow_id="hold-keep"
+    )
+
+    async def fetch_settlement(db, binding_id):
+        return settlement if binding_id == binding.id else None
+
+    monkeypatch.setattr(github_leases, "fetch_settlement", fetch_settlement)
     db = _Sweep([expired, plain, kept], {binding.id: binding})
-    assert _run(github_leases.expire_stale_leases(db)) == 2
+    assert _run(github_leases.expire_stale_leases(db)) == 3
     assert db.committed is True
     assert expired.status == "expired"
     assert expired.release_reason == "work_window_elapsed"
     assert plain.status == "expired"
-    assert kept.status == "submitted"
+    assert kept.status == "settled"
     assert binding.pr_number == 8
     jobs = _jobs(db.added)
     assert [job.payload["lease_id"] for job in jobs] == [str(expired.id)]
@@ -793,7 +803,9 @@ def _refund_lease(**overrides):
 
 def _install_refund(monkeypatch, lease, *, settlement=None, get_escrow=None, refund=None):
     funder_id = uuid.uuid4()
-    funder = types.SimpleNamespace(id=funder_id, exchange_bot_id=FUNDER_AGENT, exchange_api_key="set")
+    funder = types.SimpleNamespace(
+        id=funder_id, exchange_bot_id=FUNDER_AGENT, exchange_api_key="set"
+    )
     binding_id = lease.binding_id if lease is not None else uuid.uuid4()
     bounty_id = uuid.uuid4()
     binding = types.SimpleNamespace(id=binding_id, repo_full_name=REPO, bounty_id=bounty_id)
@@ -927,7 +939,9 @@ def test_refund_returns_a_held_escrow_to_the_funder(monkeypatch):
         monkeypatch, lease, settlement=other, get_escrow=get_escrow, refund=refund
     )
     _run(
-        github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)}))
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
     )
     assert calls["get"] == (funder, "hold-1")
     assert calls["refund"] == (funder, "hold-1", "lease ended")
@@ -943,7 +957,9 @@ def test_refund_treats_an_already_final_client_error_as_done(monkeypatch):
     lease = _refund_lease()
     db, _funder = _install_refund(monkeypatch, lease, get_escrow=get_escrow, refund=refund)
     _run(
-        github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)}))
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
     )
 
 
@@ -966,9 +982,7 @@ def test_refund_retries_transient_exchange_errors(monkeypatch):
     def refund_down(user, escrow_id, reason=""):
         raise ConnectionError("reset")
 
-    retry_db, _funder = _install_refund(
-        monkeypatch, lease, get_escrow=get_held, refund=refund_down
-    )
+    retry_db, _funder = _install_refund(monkeypatch, lease, get_escrow=get_held, refund=refund_down)
     with pytest.raises(RetryableJobError, match="exchange unavailable"):
         _run(
             github_leases.handle_refund_hold(
@@ -987,7 +1001,9 @@ def test_refund_ignores_a_missing_escrow(monkeypatch):
     lease = _refund_lease()
     db, _funder = _install_refund(monkeypatch, lease, get_escrow=get_missing, refund=refund)
     _run(
-        github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)}))
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
     )
 
 
@@ -1005,7 +1021,9 @@ def _settlement_ctx(hold_id):
         last_error="stale",
         attempts=0,
     )
-    funder = types.SimpleNamespace(id=uuid.uuid4(), exchange_bot_id=FUNDER_AGENT, exchange_api_key="set")
+    funder = types.SimpleNamespace(
+        id=uuid.uuid4(), exchange_bot_id=FUNDER_AGENT, exchange_api_key="set"
+    )
     provider = types.SimpleNamespace(id=uuid.uuid4(), exchange_bot_id=AGENT, exchange_api_key="set")
     lease = types.SimpleNamespace(
         id=uuid.uuid4(),
@@ -1191,7 +1209,9 @@ def test_settlement_resolves_a_pending_hold_by_replaying_the_create(monkeypatch)
 
 def test_refund_resolves_a_pending_hold_then_refunds_it(monkeypatch):
     calls = {}
-    lease = _refund_lease(hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4())
+    lease = _refund_lease(
+        hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4()
+    )
 
     def refund(user, escrow_id, reason=""):
         calls["refund"] = escrow_id
@@ -1210,13 +1230,19 @@ def test_refund_resolves_a_pending_hold_then_refunds_it(monkeypatch):
     monkeypatch.setattr(
         github_leases.exchange, "create_escrow", lambda user, **kw: {"escrow_id": "hold-late"}
     )
-    _run(github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})))
+    _run(
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
+    )
     assert lease.hold_escrow_id == "hold-late"
     assert calls["refund"] == "hold-late"
 
 
 def test_refund_of_a_pending_hold_the_exchange_refuses_is_done(monkeypatch):
-    lease = _refund_lease(hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4())
+    lease = _refund_lease(
+        hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4()
+    )
 
     def forbid(*_args, **_kwargs):
         raise AssertionError("no escrow to read or refund")
@@ -1231,7 +1257,11 @@ def test_refund_of_a_pending_hold_the_exchange_refuses_is_done(monkeypatch):
 
     monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
     monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
-    _run(github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})))
+    _run(
+        github_leases.handle_refund_hold(
+            db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})
+        )
+    )
     assert lease.hold_escrow_id is None
 
 
@@ -1272,7 +1302,9 @@ def test_principal_lookup_separates_no_principal_from_an_outage(status, body, ex
         ({"p-main": 0.9}, {"p-solver": 0.9}, False),
     ],
 )
-def test_self_dealing_compares_every_principal_link(monkeypatch, funder_links, solver_links, refused):
+def test_self_dealing_compares_every_principal_link(
+    monkeypatch, funder_links, solver_links, refused
+):
     world = _Claim()
     world.principals = {FUNDER_AGENT: funder_links, AGENT: solver_links}
     world.install(monkeypatch)

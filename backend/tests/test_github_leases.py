@@ -80,7 +80,9 @@ class _SweepDB:
         self.bindings = bindings or {}
         self.stmt = None
         self.committed = False
+        self.commits = 0
         self.gets: list = []
+        self.added: list = []
 
     async def execute(self, stmt):
         self.stmt = stmt
@@ -91,7 +93,11 @@ class _SweepDB:
         return self.bindings.get(pk)
 
     async def commit(self):
+        self.commits += 1
         self.committed = True
+
+    def add(self, obj):
+        self.added.append(obj)
 
 
 def _lease(**overrides):
@@ -322,20 +328,92 @@ def test_expire_submitted_hold_unbinds(monkeypatch, state, expected_state):
     assert binding.review_cleared_by is None
 
 
+def _settlement_row(lease, **overrides):
+    data = {
+        "binding_id": lease.binding_id,
+        "spec_id": uuid.uuid4(),
+        "solver_agent_id": "other-solver",
+        "escrow_id": None,
+    }
+    data.update(overrides)
+    return types.SimpleNamespace(**data)
+
+
 @pytest.mark.parametrize("state", ["settlement_pending", "paid"])
-def test_expire_skips_submitted_hold_during_settlement(monkeypatch, state):
+@pytest.mark.parametrize(
+    ("case", "status", "reason", "refunds"),
+    [
+        ("own", "settled", None, False),
+        ("foreign", "expired", "submitted_hold_elapsed", True),
+        ("adopted", "settled", None, False),
+        ("absent", "expired", "submitted_hold_elapsed", True),
+        ("own_escrow_set", "expired", "submitted_hold_elapsed", True),
+        ("own_other_settled", "expired", "submitted_hold_elapsed", True),
+    ],
+)
+def test_expire_submitted_hold_during_settlement(monkeypatch, state, case, status, reason, refunds):
     now = FIXED
     monkeypatch.setattr(github_leases, "_now", lambda: now)
-    lease = _lease(status="submitted", hold_expires_at=now - timedelta(hours=1), pr_number=8)
+    spec_id = uuid.uuid4()
+    lease = _lease(
+        status="submitted",
+        hold_expires_at=now - timedelta(hours=1),
+        pr_number=8,
+        spec_id=spec_id,
+        agent_id="solver-1",
+        hold_escrow_id="hold-1",
+    )
     binding = _binding(lease, state=state)
+    other_settled = None
+    if case in ("own", "own_other_settled"):
+        settlement = _settlement_row(
+            lease, spec_id=spec_id, solver_agent_id="solver-1", escrow_id=None
+        )
+        if case == "own_other_settled":
+            other_settled = _lease(status="settled")
+    elif case == "own_escrow_set":
+        settlement = _settlement_row(
+            lease, spec_id=spec_id, solver_agent_id="solver-1", escrow_id="escrow-new"
+        )
+    elif case == "foreign":
+        settlement = _settlement_row(lease, escrow_id="escrow-other")
+    elif case == "adopted":
+        settlement = _settlement_row(lease, escrow_id="hold-1")
+    else:
+        settlement = None
+    seen = {}
+
+    async def fetch_settlement(db, binding_id):
+        seen["binding_id"] = binding_id
+        return settlement
+
+    async def fetch_settled_lease(db, binding_id):
+        return other_settled
+
+    monkeypatch.setattr(github_leases, "fetch_settlement", fetch_settlement)
+    monkeypatch.setattr(github_leases, "fetch_settled_lease", fetch_settled_lease)
     db = _SweepDB([lease], {binding.id: binding})
-    assert _run(github_leases.expire_stale_leases(db)) == 0
-    assert lease.status == "submitted"
-    assert lease.release_reason is None
+    assert _run(github_leases.expire_stale_leases(db)) == 1
+    assert db.commits == 1
+    assert seen["binding_id"] == lease.binding_id
+    assert db.gets == [(GitHubBountyBinding, lease.binding_id)]
+    assert lease.status == status
+    assert lease.release_reason == reason
+    assert lease.hold_escrow_id == "hold-1"
+    assert binding.state == state
     assert binding.pr_number == 8
     assert binding.lease_holder_agent_id == "bot-1"
     assert binding.evaluated_head_sha == "abc"
-    assert binding.state == state
+    assert binding.evaluated_spec_id is not None
+    assert binding.last_assessment is not None
+    assert binding.review_cleared_by == "octocat"
+    jobs = [row for row in db.added if getattr(row, "kind", None) == "refund_hold"]
+    if refunds:
+        assert [(job.payload, job.status) for job in jobs] == [
+            ({"lease_id": str(lease.id)}, "pending")
+        ]
+    else:
+        assert jobs == []
 
 
 def test_expire_leaves_submitted_hold_that_has_not_elapsed(monkeypatch):
