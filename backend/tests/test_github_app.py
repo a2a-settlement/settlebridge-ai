@@ -486,6 +486,10 @@ def test_invalid_repo_and_sha_rejected(monkeypatch: pytest.MonkeyPatch):
         github_app.get_branch(1, REPO, "has space"),
         github_app.get_branch_rules(1, REPO, ""),
         github_app.list_root_entries(1, REPO, "main\n"),
+        github_app.list_root_entries(1, REPO, "main", "../secrets"),
+        github_app.list_root_entries(1, REPO, "main", "pkg/../x"),
+        github_app.list_root_entries(1, REPO, "main", "/abs"),
+        github_app.list_root_entries(1, REPO, "main", "a b"),
     ]
     for call in calls:
         with pytest.raises(GitHubAPIError):
@@ -559,6 +563,21 @@ def test_list_root_entries_keeps_name_and_type(monkeypatch: pytest.MonkeyPatch):
         {"name": "src", "type": "dir"},
         {"name": "pyproject.toml", "type": "file"},
     ]
+
+
+def test_list_root_entries_reads_a_subdirectory(monkeypatch: pytest.MonkeyPatch):
+    seen = _routes(
+        monkeypatch,
+        {
+            "/repos/acme/widgets/contents/pilot?ref=main": httpx.Response(
+                200, json=[{"name": "__init__.py", "type": "file"}]
+            )
+        },
+    )
+    assert asyncio.run(github_app.list_root_entries(3, REPO, "main", "pilot")) == [
+        {"name": "__init__.py", "type": "file"}
+    ]
+    assert seen == ["/repos/acme/widgets/contents/pilot?ref=main"]
 
 
 def test_get_branch_error_is_raised(monkeypatch: pytest.MonkeyPatch):

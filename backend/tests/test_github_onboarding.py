@@ -86,6 +86,8 @@ class FakeGitHub:
             {"name": "tests", "type": "dir"},
             {"name": ".github", "type": "dir"},
         ]
+        self.subdirs: dict[str, list[dict]] = {}
+        self.probed: list[str] = []
         self.record: tuple[str, int | None] = ("admin", 4242)
         self.fail: str | None = None
 
@@ -102,8 +104,17 @@ class FakeGitHub:
         make("get_branch", lambda: self.branch)
         make("get_branch_rules", lambda: self.rules)
         make("list_check_runs", lambda: self.runs)
-        make("list_root_entries", lambda: self.entries)
         make("get_collaborator_record", lambda: self.record)
+
+        async def entries(installation_id, repo, ref, path=""):
+            if self.fail == "list_root_entries":
+                raise github_app.GitHubAPIError("boom", 503)
+            if not path:
+                return self.entries
+            self.probed.append(path)
+            return self.subdirs.get(path, [])
+
+        monkeypatch.setattr(github_app, "list_root_entries", entries)
         return self
 
 
@@ -313,8 +324,60 @@ def test_detect_prefers_branch_rules(db, gh):
         "unpinned_required_checks": [],
         "candidate_checks": [{"name": "test", "app_id": ACTIONS}],
         "ecosystem": "python",
+        "package_dirs": [],
         "allowed_paths": ["src/*", "tests/*"],
     }
+
+
+def test_detect_adds_python_package_directories(db, gh):
+    seed(db.sync)
+    gh.entries = [
+        {"name": "pyproject.toml", "type": "file"},
+        {"name": "pilot", "type": "dir"},
+        {"name": "tools", "type": "dir"},
+        {"name": "tests", "type": "dir"},
+        {"name": "docs", "type": "dir"},
+        {"name": ".github", "type": "dir"},
+        {"name": "__pycache__", "type": "dir"},
+    ]
+    gh.subdirs = {
+        "pilot": [{"name": "__init__.py", "type": "file"}, {"name": "text.py", "type": "file"}],
+        "tools": [{"name": "run.py", "type": "file"}, {"name": "__init__.py", "type": "dir"}],
+    }
+    detected = _run(detect_defaults(db, REPO))
+    assert gh.probed == ["pilot", "tools"]
+    assert detected["package_dirs"] == ["pilot"]
+    assert detected["allowed_paths"] == ["pilot/*", "tests/*"]
+
+
+def test_detect_probes_at_most_ten_directories(db, gh):
+    seed(db.sync)
+    gh.entries = [{"name": "setup.py", "type": "file"}] + [
+        {"name": f"pkg{i:02d}", "type": "dir"} for i in range(15)
+    ]
+    _run(detect_defaults(db, REPO))
+    assert gh.probed == [f"pkg{i:02d}" for i in range(10)]
+
+
+def test_detect_does_not_probe_javascript_repos(db, gh):
+    seed(db.sync)
+    gh.entries = [{"name": "package.json", "type": "file"}, {"name": "widget", "type": "dir"}]
+    detected = _run(detect_defaults(db, REPO))
+    assert gh.probed == []
+    assert detected["package_dirs"] == [] and detected["allowed_paths"] == []
+
+
+def test_onboard_ignores_allowed_path_order(db, gh, balance):
+    user = make_user()
+    db.sync.add(user)
+    seed(
+        db.sync,
+        funder_user_id=user.id,
+        enabled=True,
+        required_checks=[{"name": "test", "app_id": ACTIONS}],
+        default_policy={"allowed_paths": ["tests/*", "src/*"]},
+    )
+    assert _run(onboard_repo(db, REPO, funder=user))["changed"] is False
 
 
 def test_detect_falls_back_to_branch_protection(db, gh):
