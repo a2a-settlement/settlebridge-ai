@@ -22,7 +22,8 @@ api.interceptors.response.use(
       const hadToken = !!localStorage.getItem("sb_token");
       localStorage.removeItem("sb_token");
       if (hadToken) {
-        window.location.href = "/login";
+        const next = `${window.location.pathname}${window.location.search}`;
+        window.location.href = `/login?next=${encodeURIComponent(next)}`;
       }
     }
     return Promise.reject(error);

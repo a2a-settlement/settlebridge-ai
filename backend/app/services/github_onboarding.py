@@ -65,16 +65,42 @@ _FORBIDDEN_PROBES = (
 )
 
 
-class OnboardGitHubError(RepoAdminError):
+class OnboardError(RepoAdminError):
+    """Onboarding cannot go ahead. ``code`` is stable for API clients; ``data`` adds detail."""
+
+    code = "invalid_request"
+
+    def __init__(self, message: str, *, code: str | None = None, **data):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+        self.data = data
+
+
+class OnboardGitHubError(OnboardError):
     """GitHub could not be read while detecting the repo's defaults."""
 
+    code = "github_unavailable"
 
-class OnboardExchangeError(RepoAdminError):
+
+class OnboardExchangeError(OnboardError):
     """The funder's exchange balance could not be read."""
 
+    code = "exchange_unavailable"
 
-class FunderConflictError(RepoAdminError):
+
+class FunderConflictError(OnboardError):
     """The repo is already funded by a different user."""
+
+    code = "funded_by_other"
+
+
+def error_code(exc: RepoAdminError) -> str:
+    return getattr(exc, "code", "invalid_request")
+
+
+def error_data(exc: RepoAdminError) -> dict:
+    return dict(getattr(exc, "data", {}))
 
 
 def _now() -> datetime:
@@ -186,12 +212,17 @@ def validated_allowed_paths(paths: object) -> list[str]:
     """Non-empty globs that cannot match CI configuration under ``.github/``."""
     cleaned = _validated_strings(paths, "allowed path")
     if not cleaned:
-        raise RepoAdminError(
-            "at least one allowed path is required; an empty list allows every path"
+        raise OnboardError(
+            "at least one allowed path is required; an empty list allows every path",
+            code="needs_allowed_path",
         )
     for glob in cleaned:
         if any(fnmatch.fnmatch(probe, glob) for probe in _FORBIDDEN_PROBES):
-            raise RepoAdminError(f"allowed path {glob!r} would allow changes under .github/")
+            raise OnboardError(
+                f"allowed path {glob!r} would allow changes under .github/",
+                code="forbidden_path",
+                path=glob,
+            )
     return cleaned
 
 
@@ -207,7 +238,10 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
     link = await _require_link(db, repo)
     installation = await _installation_row(db, int(link.installation_id))
     if installation is None or installation.removed_at is not None:
-        raise RepoAdminError(f"the GitHub App installation for {link.repo_full_name} is removed")
+        raise OnboardError(
+            f"the GitHub App installation for {link.repo_full_name} is removed",
+            code="app_not_installed",
+        )
     installation_id = int(link.installation_id)
     name = link.repo_full_name
     repository = await _github(github_app.get_repository(installation_id, name))
@@ -271,9 +305,17 @@ async def ensure_standard_labels(installation_id: int, repo: str) -> dict:
     return report
 
 
-async def _funder_headroom(db: AsyncSession, funder: User) -> int:
+def minimum_headroom() -> int:
+    """ATE a funder needs free before onboarding: the escrow cost of a $1 bounty."""
+    return escrow_cost(int(settings.GITHUB_ATE_PER_USD))
+
+
+async def funder_headroom(db: AsyncSession, funder: User) -> int:
+    """Free exchange balance after the funder's open bounties."""
     if not funder.exchange_bot_id:
-        raise RepoAdminError(f"funder {funder.email} has no exchange account")
+        raise OnboardError(
+            f"funder {funder.email} has no exchange account", code="funder_no_exchange"
+        )
     try:
         dashboard = await asyncio.to_thread(
             exchange.get_balance_dashboard, funder.exchange_bot_id
@@ -322,10 +364,12 @@ async def onboard_repo(
     else:
         chosen_checks = list(detected["required_checks"])
     if not chosen_checks:
-        raise RepoAdminError(
+        raise OnboardError(
             f"no required check is pinned to an app on {detected['default_branch']}; "
             "pass --check NAME:APP_ID. Successful checks on the latest commit: "
-            f"{_format_checks(detected['candidate_checks'])}"
+            f"{_format_checks(detected['candidate_checks'])}",
+            code="no_pinned_check",
+            candidates=detected["candidate_checks"],
         )
     chosen_paths = validated_allowed_paths(
         allowed_paths if allowed_paths is not None else detected["allowed_paths"]
@@ -336,12 +380,15 @@ async def onboard_repo(
         else None
     )
 
-    headroom = await _funder_headroom(db, funder)
-    minimum = escrow_cost(int(settings.GITHUB_ATE_PER_USD))
+    headroom = await funder_headroom(db, funder)
+    minimum = minimum_headroom()
     if headroom < minimum:
-        raise RepoAdminError(
+        raise OnboardError(
             f"funder {funder.email} has {headroom} ATE free after open bounties; "
-            f"a $1 bounty needs {minimum} ATE"
+            f"a $1 bounty needs {minimum} ATE",
+            code="funder_low_balance",
+            headroom_ate=headroom,
+            minimum_ate=minimum,
         )
 
     policy = _policy_dict(link.default_policy)

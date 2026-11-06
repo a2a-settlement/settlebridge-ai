@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import axios from "axios";
 import { AlertCircle, ArrowLeft, CheckCircle, Link as LinkIcon } from "lucide-react";
 import api from "@/services/api";
+import { takeReturnPath } from "@/lib/returnTo";
 
 type Phase = "working" | "linked" | "unavailable" | "failed";
 
@@ -38,6 +39,7 @@ function stripOAuthParams() {
 
 export default function GitHubCallback() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const code = searchParams.get("code");
   const state = searchParams.get("state");
   const oauthError = searchParams.get("error");
@@ -49,11 +51,14 @@ export default function GitHubCallback() {
   );
   const [message, setMessage] = useState(() => failureMessage(oauthError, code, state));
   const [login, setLogin] = useState<string | null>(null);
+  const [returnPath, setReturnPath] = useState<string | null>(null);
 
   useEffect(() => {
     stripOAuthParams();
     if (posted.current) return;
     posted.current = true;
+    const next = takeReturnPath();
+    setReturnPath(next);
 
     if (oauthError || !code || !state) {
       setPhase("failed");
@@ -72,6 +77,7 @@ export default function GitHubCallback() {
         );
         setLogin(typeof data.login === "string" ? data.login : null);
         setPhase("linked");
+        if (next) router.replace(next);
       } catch (err: unknown) {
         const status = axios.isAxiosError(err) ? err.response?.status : undefined;
         if (status === 503) {
@@ -97,7 +103,7 @@ export default function GitHubCallback() {
         setMessage("Couldn't finish linking GitHub.");
       }
     })();
-  }, [code, oauthError, state]);
+  }, [code, oauthError, router, state]);
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -133,10 +139,10 @@ export default function GitHubCallback() {
 
         {phase !== "working" && (
           <Link
-            href="/dashboard/settings"
+            href={returnPath ?? "/dashboard/settings"}
             className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-navy-700 mt-4"
           >
-            <ArrowLeft className="w-4 h-4" /> Back to settings
+            <ArrowLeft className="w-4 h-4" /> {returnPath ? "Continue" : "Back to settings"}
           </Link>
         )}
       </div>
