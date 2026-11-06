@@ -124,8 +124,13 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
     repo = github_bounty_service._repository_full_name(data)
     if _REPO_RE.fullmatch(repo) is None:
         raise PermanentJobError("webhook repository.full_name is invalid")
+    await github_bounty_service._record_repository_visibility(db, repo, data.get("repository"))
     link = await github_bounty_service.get_enabled_funded_repo_link(db, repo)
     if link is None or not link.auto_dispatch_alerts:
+        return
+    installation_id = github_bounty_service._installation_id(data)
+    if not await github_bounty_service._ensure_public_repository(link, installation_id, repo):
+        logger.info("skipping %s alert on %s: repository is not public", event, repo)
         return
     if event == "dependabot_alert":
         plan = _dependabot_plan(data, repo)
@@ -133,7 +138,6 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
         plan = _code_scanning_plan(data, repo)
     if plan is None:
         return
-    installation_id = github_bounty_service._installation_id(data)
     await _open_dispatch(db, data, repo, installation_id, plan)
 
 
@@ -503,10 +507,9 @@ def _code_scanning_plan(data: dict, repo: str) -> _AlertPlan | None:
     if not isinstance(rule, dict):
         raise PermanentJobError("code scanning alert is missing rule")
     level = rule.get("security_severity_level")
-    repository = data.get("repository")
-    private = isinstance(repository, dict) and repository.get("private") is True
     # A public repo must not receive an issue that publishes an undisclosed security finding.
-    if not private and level:
+    # Private and internal repos are refused before a plan is built.
+    if level:
         logger.info(
             "skipping public code scanning alert %s#%s with a security severity",
             repo,
