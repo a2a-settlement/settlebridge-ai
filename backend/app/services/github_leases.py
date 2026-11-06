@@ -613,6 +613,20 @@ def _exception_text(exc: BaseException) -> str:
 HOLD_PENDING = "pending"
 
 
+def pending_hold_marker(ttl_minutes: int) -> str:
+    """Pending marker that keeps the TTL, so a replayed create sends the same request."""
+    return f"{HOLD_PENDING}:{int(ttl_minutes)}"
+
+
+def is_pending_hold(value) -> bool:
+    return isinstance(value, str) and (value == HOLD_PENDING or value.startswith(HOLD_PENDING + ":"))
+
+
+def _pending_ttl(value) -> int:
+    _, _, raw = str(value).partition(":")
+    return int(raw) if raw.isdigit() else _hold_ttl_minutes()
+
+
 def _hold_ttl_minutes() -> int:
     """Cover the work cap, submitted hold, alert-fixed wait, and a margin."""
     return (
@@ -652,8 +666,14 @@ class _PrincipalUnavailable(Exception):
     pass
 
 
-async def _principal_id(client: httpx.AsyncClient, agent_id: str) -> str | None:
-    """None when the account has no principal. Raises when the exchange can't say."""
+_PRINCIPAL_MIN_CONFIDENCE = 0.5
+
+
+async def _principal_links(client: httpx.AsyncClient, agent_id: str) -> dict[str, float]:
+    """Every principal linked to the account, with its confidence. Empty when none.
+
+    Raises when the exchange can't say. A link without a confidence counts as certain.
+    """
     try:
         resp = await client.get(
             f"{settings.effective_exchange_url}/v1/accounts/{agent_id}/principal",
@@ -662,26 +682,36 @@ async def _principal_id(client: httpx.AsyncClient, agent_id: str) -> str | None:
     except Exception as exc:
         raise _PrincipalUnavailable(type(exc).__name__) from exc
     if resp.status_code == 404:
-        return None
+        return {}
     if resp.status_code != 200:
         raise _PrincipalUnavailable(f"status {resp.status_code}")
     try:
         links = resp.json().get("links") or []
-        return str(links[0]["principal_id"]) if links else None
+        found: dict[str, float] = {}
+        for link in links:
+            principal = str(link["principal_id"])
+            raw = link.get("confidence")
+            confidence = 1.0 if raw is None else float(raw)
+            found[principal] = max(confidence, found.get(principal, 0.0))
+        return found
     except Exception as exc:
         raise _PrincipalUnavailable("malformed principal response") from exc
 
 
-async def _principal_pair(funder_agent: str, solver_agent: str) -> tuple[object, object]:
+async def _shares_principal(funder_agent: str, solver_agent: str) -> bool:
     headers: dict[str, str] = {}
     # Same client the principal sync job uses. The value is a credential; never log it.
     gateway_api_key = settings.GATEWAY_EXCHANGE_API_KEY or settings.GATEWAY_EXCHANGE_URL
     if gateway_api_key:
         headers["Authorization"] = f"Bearer {gateway_api_key}"
     async with httpx.AsyncClient(headers=headers) as client:
-        funder_principal = await _principal_id(client, funder_agent)
-        solver_principal = await _principal_id(client, solver_agent)
-    return funder_principal, solver_principal
+        funder_links = await _principal_links(client, funder_agent)
+        solver_links = await _principal_links(client, solver_agent)
+    return any(
+        min(confidence, solver_links[principal]) >= _PRINCIPAL_MIN_CONFIDENCE
+        for principal, confidence in funder_links.items()
+        if principal in solver_links
+    )
 
 
 async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims) -> APIResult | None:
@@ -723,12 +753,11 @@ async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims)
         if str(funder_agent) == str(solver_agent):
             return _err(403, "self_dealing")
         try:
-            pair = await _principal_pair(str(funder_agent), str(solver_agent))
+            shared = await _shares_principal(str(funder_agent), str(solver_agent))
         except _PrincipalUnavailable as exc:
             logger.info("principal lookup failed (%s); refusing claim", exc)
             return _err(502, "exchange_unavailable")
-        funder_principal, solver_principal = pair
-        if funder_principal and solver_principal and funder_principal == solver_principal:
+        if shared:
             return _err(403, "self_dealing")
     return None
 
@@ -764,13 +793,17 @@ class HoldRejected(Exception):
 async def resolve_hold(funder, lease, amount_ate: int) -> str:
     """Create, or recover, the lease's hold escrow and return its id.
 
-    The request is deterministic per lease, so a repeat replays the original
-    (idempotency key) or names it (409 for an active task_id). Raises
-    HoldRejected on any other 4xx; other failures propagate.
+    The request is deterministic per lease (the TTL comes from the pending
+    marker), so a repeat replays the original (idempotency key) or names it
+    (409 for an active task_id). Raises HoldRejected only on a 4xx other than
+    409/429; anything else, including an unrecovered 409, propagates because an
+    escrow may exist.
     """
     from app.services.github_settlement import _duplicate_escrow_id
 
     key = f"gh-hold:{lease.id}"
+    marker = getattr(lease, "hold_escrow_id", None)
+    ttl = _pending_ttl(marker) if is_pending_hold(marker) else _hold_ttl_minutes()
     try:
         result = await asyncio.to_thread(
             exchange.create_escrow,
@@ -778,14 +811,14 @@ async def resolve_hold(funder, lease, amount_ate: int) -> str:
             provider_id=lease.agent_id,
             amount=int(amount_ate),
             task_id=key,
-            ttl_minutes=_hold_ttl_minutes(),
+            ttl_minutes=ttl,
             idempotency_key=key,
         )
     except Exception as exc:
         recovered = _duplicate_escrow_id(exc)
         if recovered:
             return recovered
-        if _client_error(exc) and _status_code(exc) != 429:
+        if _client_error(exc) and _status_code(exc) not in (409, 429):
             raise HoldRejected(str(_status_code(exc))) from exc
         raise
     raw_id = result.get("escrow_id") if isinstance(result, dict) else None
@@ -795,7 +828,7 @@ async def resolve_hold(funder, lease, amount_ate: int) -> str:
 
 
 async def _lock_claim_hold(db, lease, funder, amount_ate: int) -> APIResult | None:
-    """Create the hold for a lease committed with ``hold_escrow_id = HOLD_PENDING``.
+    """Create the hold for a lease committed with a pending ``hold_escrow_id`` marker.
 
     Only ``hold_escrow_id`` is written here, so a concurrent release is not
     overwritten; that release already queued a refund, which resolves the hold.
@@ -917,7 +950,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         hard_expires_at=now + timedelta(minutes=settings.LEASE_HARD_CAP_MINUTES),
         claim_kya=claims.kya_level,
         claim_reputation=claims.reputation,
-        hold_escrow_id=HOLD_PENDING if lock_funds else None,
+        hold_escrow_id=pending_hold_marker(_hold_ttl_minutes()) if lock_funds else None,
         created_at=now,
     )
     db.add(lease)
@@ -1274,7 +1307,7 @@ async def handle_refund_hold(db: AsyncSession, job) -> None:
     funder = await fetch_bounty_funder(db, getattr(binding, "bounty_id", None))
     if funder is None:
         raise RetryableJobError("funder missing for hold refund")
-    if lease.hold_escrow_id == HOLD_PENDING:
+    if is_pending_hold(lease.hold_escrow_id):
         spec = await fetch_spec(db, lease.spec_id)
         if spec is None:
             raise RetryableJobError("spec missing for hold refund")

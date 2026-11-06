@@ -335,7 +335,7 @@ async def _adopted_hold_id(ctx: SettlementContext) -> str | None:
     hold_id = getattr(lease, "hold_escrow_id", None) if lease is not None else None
     if not hold_id:
         return None
-    if hold_id == github_leases.HOLD_PENDING:
+    if github_leases.is_pending_hold(hold_id):
         try:
             hold_id = await github_leases.resolve_hold(ctx.funder, lease, ctx.spec.amount_ate)
         except github_leases.HoldRejected:
