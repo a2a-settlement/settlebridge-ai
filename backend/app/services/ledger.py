@@ -40,6 +40,7 @@ _SETTLING_STATES = frozenset(
         SettlementState.PENDING.value,
         SettlementState.ESCROW_CREATED.value,
         SettlementState.DELIVERED.value,
+        SettlementState.NEEDS_REVIEW.value,
     }
 )
 _ENDED_LEASES = frozenset({LeaseStatus.EXPIRED.value, LeaseStatus.RELEASED.value})
