@@ -20,6 +20,7 @@ from app.models.github import (  # noqa: E402
     AcceptanceSpec,
     FunderLedgerEntry,
     GitHubBountyBinding,
+    GitHubJob,
     GitHubLease,
     GitHubRepoLink,
     GitHubSettlement,
@@ -73,7 +74,9 @@ def _expected(state: str, escrow_status: str | None, delivered: bool | None) -> 
 @pytest.mark.parametrize("escrow_status", _STATUSES)
 @pytest.mark.parametrize("delivered", _DELIVERED)
 def test_next_action_table(state, escrow_status, delivered):
-    assert next_action(state, escrow_status, delivered) == _expected(state, escrow_status, delivered)
+    assert next_action(state, escrow_status, delivered) == _expected(
+        state, escrow_status, delivered
+    )
 
 
 def test_next_action_priority_rows():
@@ -492,10 +495,7 @@ def test_duplicate_create_recovers_escrow_id(monkeypatch):
     def _create(*_args, **_kwargs):
         err = RuntimeError("Client error '409 Conflict' for url 'https://exchange.example/v1'")
         err.response = SimpleNamespace(  # type: ignore[attr-defined]
-            text=(
-                "An active escrow already exists for this task_id "
-                f"(escrow_id={_RECOVERED})"
-            )
+            text=(f"An active escrow already exists for this task_id (escrow_id={_RECOVERED})")
         )
         raise err
 
@@ -627,9 +627,7 @@ def _load_graph(lease):
         spec_id=_SPEC_ID,
         solver_agent_id="solver-1",
     )
-    binding = SimpleNamespace(
-        id=_BINDING_ID, bounty_id=_BOUNTY_ID, repo_full_name="octo/hello"
-    )
+    binding = SimpleNamespace(id=_BINDING_ID, bounty_id=_BOUNTY_ID, repo_full_name="octo/hello")
     spec = SimpleNamespace(id=_SPEC_ID)
     bounty = SimpleNamespace(id=_BOUNTY_ID, requester_id=_FUNDER_ID)
     funder = SimpleNamespace(id=_FUNDER_ID, exchange_api_key="ate_funder")
@@ -708,6 +706,34 @@ def test_loader_without_settled_lease_has_no_provider(monkeypatch):
     assert len(user_stmts) == 1
 
 
+class _JobRows:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+def _recheck_db(rows):
+    added = []
+    commits = []
+
+    async def _execute(_stmt):
+        return _JobRows(rows)
+
+    async def _commit():
+        commits.append(True)
+
+    db = MagicMock()
+    db.execute = _execute
+    db.add = added.append
+    db.commit = _commit
+    return db, added, commits
+
+
 def _alert_world(monkeypatch, alert_state, *, age_hours=1.0, kind="dependabot"):
     world = _world(monkeypatch)
     world.spec.payment_trigger = settlement_mod.github_alerts.ALERT_FIXED_TRIGGER
@@ -720,9 +746,12 @@ def _alert_world(monkeypatch, alert_state, *, age_hours=1.0, kind="dependabot"):
     world.refund = MagicMock(return_value={"status": "refunded"})
     world.added = []
     world.db.add = world.added.append
-    monkeypatch.setattr(
-        settlement_mod.github_alerts, "dispatch_for_issue", world.dispatch_lookup
-    )
+
+    async def _no_pending_jobs(_stmt):
+        return _JobRows([])
+
+    world.db.execute = _no_pending_jobs
+    monkeypatch.setattr(settlement_mod.github_alerts, "dispatch_for_issue", world.dispatch_lookup)
     name = "get_dependabot_alert" if kind == "dependabot" else "get_code_scanning_alert"
     monkeypatch.setattr(settlement_mod.github_app, name, world.alert)
     monkeypatch.setattr(settlement_mod.exchange, "refund_escrow", world.refund)
@@ -810,3 +839,75 @@ def test_alert_gate_blocks_release_when_the_solver_delivered_early(monkeypatch):
     assert world.release.call_count == 0
     assert world.settlement.state == "escrow_created"
     assert len(world.added) == 1
+
+
+def _pending_advance(settlement_id, status="pending", *, when=None):
+    return SimpleNamespace(
+        kind="advance_settlement",
+        status=status,
+        payload={"settlement_id": settlement_id},
+        next_run_at=when if when is not None else datetime.now(timezone.utc),
+    )
+
+
+def test_schedule_recheck_inserts_when_no_pending_job_exists():
+    settlement = SimpleNamespace(id=_SETTLEMENT_ID)
+    db, added, commits = _recheck_db([])
+    opened = datetime.now(timezone.utc)
+    asyncio.run(settlement_mod._schedule_recheck(db, settlement))
+    closed = datetime.now(timezone.utc)
+    assert commits == [True]
+    (job,) = added
+    assert isinstance(job, GitHubJob)
+    assert job.kind == "advance_settlement"
+    assert job.status == "pending"
+    assert job.payload == {"settlement_id": str(_SETTLEMENT_ID)}
+    assert opened + timedelta(minutes=15) <= job.next_run_at <= closed + timedelta(minutes=15)
+
+
+@pytest.mark.parametrize("raw_id", [str(_SETTLEMENT_ID), _SETTLEMENT_ID])
+def test_schedule_recheck_skips_existing_pending_job(raw_id):
+    settlement = SimpleNamespace(id=_SETTLEMENT_ID)
+    later = datetime.now(timezone.utc) + timedelta(hours=3)
+    existing = _pending_advance(raw_id, when=later)
+    db, added, commits = _recheck_db([existing])
+    opened = datetime.now(timezone.utc)
+    asyncio.run(settlement_mod._schedule_recheck(db, settlement))
+    closed = datetime.now(timezone.utc)
+    assert added == []
+    assert commits == [True]
+    assert opened + timedelta(minutes=15) <= existing.next_run_at <= closed + timedelta(minutes=15)
+
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
+    sooner = _pending_advance(raw_id, when=soon)
+    db, added, commits = _recheck_db([sooner])
+    asyncio.run(settlement_mod._schedule_recheck(db, settlement))
+    assert added == []
+    assert commits == [True]
+    assert sooner.next_run_at is soon
+
+
+@pytest.mark.parametrize(
+    ("status", "settlement_id"),
+    [
+        ("pending", "00000000-0000-0000-0000-000000000099"),
+        ("done", str(_SETTLEMENT_ID)),
+        ("failed", str(_SETTLEMENT_ID)),
+        ("running", str(_SETTLEMENT_ID)),
+    ],
+)
+def test_schedule_recheck_inserts_when_existing_job_does_not_cover_settlement(
+    status, settlement_id
+):
+    settlement = SimpleNamespace(id=_SETTLEMENT_ID)
+    stamp = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    existing = _pending_advance(settlement_id, status=status, when=stamp)
+    db, added, commits = _recheck_db([existing])
+    asyncio.run(settlement_mod._schedule_recheck(db, settlement))
+    assert commits == [True]
+    assert existing.next_run_at is stamp
+    (job,) = added
+    assert isinstance(job, GitHubJob)
+    assert job.kind == "advance_settlement"
+    assert job.status == "pending"
+    assert job.payload == {"settlement_id": str(_SETTLEMENT_ID)}
