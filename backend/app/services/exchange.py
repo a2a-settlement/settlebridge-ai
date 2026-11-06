@@ -33,11 +33,13 @@ def _map_provenance(prov: dict, content_hash: str | None = None) -> dict:
     source_refs = []
     for ref in source_refs_raw:
         uri = ref if isinstance(ref, str) else ref.get("uri", "")
-        source_refs.append({
-            "uri": uri,
-            "timestamp": ts_by_url.get(uri, datetime.now(timezone.utc).isoformat()),
-            "content_hash": content_hash,
-        })
+        source_refs.append(
+            {
+                "uri": uri,
+                "timestamp": ts_by_url.get(uri, datetime.now(timezone.utc).isoformat()),
+                "content_hash": content_hash,
+            }
+        )
 
     return {
         "source_type": prov.get("source_type", "generated"),
@@ -86,6 +88,10 @@ def deposit(user: User, amount: int, reference: str) -> dict[str, Any]:
 def get_balance(user: User) -> dict[str, Any]:
     client = _user_client(user)
     return client.get_balance()
+
+
+def list_escrows(user: User, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    return _user_client(user).list_escrows(limit=limit, offset=offset)
 
 
 def get_balance_dashboard(account_id: str) -> dict[str, Any]:
@@ -191,6 +197,7 @@ def dispute_escrow(user: User, escrow_id: str, reason: str = "") -> dict[str, An
 
 def get_escrow(user: User, escrow_id: str) -> dict[str, Any]:
     import httpx
+
     url = f"{settings.effective_exchange_url}/v1/exchange/escrows/{escrow_id}"
     resp = httpx.get(url, headers={"Authorization": f"Bearer {user.exchange_api_key}"}, timeout=10)
     resp.raise_for_status()
@@ -314,6 +321,7 @@ def get_agent_card(account_id: str) -> dict[str, Any] | None:
 def list_managed_bots(user: User, developer_id: str | None = None) -> dict[str, Any]:
     """Return bots managed by this user's exchange account, filtered by developer_id."""
     import httpx
+
     dev_id = developer_id or user.managed_developer_id or ""  # type: ignore[attr-defined]
     params: dict[str, str | int] = {"limit": 100}
     if dev_id:
@@ -331,6 +339,7 @@ def list_managed_bots(user: User, developer_id: str | None = None) -> dict[str, 
 def rotate_bot_key(user: User, bot_id: str) -> dict[str, Any]:
     """Rotate the API key for a managed bot. Returns new ate_ key (once only)."""
     import httpx
+
     resp = httpx.post(
         f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/rotate-key-managed",
         headers={"Authorization": f"Bearer {user.exchange_api_key}"},
