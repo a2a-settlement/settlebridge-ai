@@ -39,9 +39,9 @@ bounty plus fees). There are two ways to set up.
 1. Install the [SettleBridge GitHub App](https://github.com/apps/settlebridge-bounties/installations/new)
    on the repo. GitHub then sends you to `https://market.settlebridge.ai/dashboard/github/setup`.
 2. Click **Continue with GitHub**. On your first sign-in this creates your SettleBridge user and an exchange
-   account, and links your GitHub account. If your GitHub account is already linked to a SettleBridge user,
+   account funded with 1,000 test ATE, and links your GitHub account. If your GitHub account is already linked to a SettleBridge user,
    you're signed in as that user. You come back to the setup page afterwards.
-3. If your balance is too low, click **Add 1000 test ATE**. ATE is a test currency, and the button stops
+3. If your balance is ever too low, click **Add 1000 test ATE**. ATE is a test currency, and the button stops
    working once your balance reaches 2,000 ATE.
 4. Pick the repo, confirm the required check and the paths solvers may change, then click **Enable bounties**.
    This also creates the `bounty:` and `tier:` labels.
@@ -217,7 +217,8 @@ Submitting a pull request is not payment. Payment happens only after the merge a
 | `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API and the setup page (off by default). |
 | `GITHUB_APP_SLUG` | SettleBridge `.env` | The App's slug for its install link (default `settlebridge-bounties`). |
 | `GITHUB_LOGIN_ENABLED` | SettleBridge `.env` | Shows **Continue with GitHub** sign-in, which creates the user and an exchange account on first sign-in (off by default). Uses the `GITHUB_OAUTH_*` settings. |
-| `GITHUB_SETUP_FUNDING_ENABLED` | SettleBridge `.env` | Enables the setup page's **Add funds** button (off by default). |
+| `GITHUB_SETUP_FUNDING_ENABLED` | SettleBridge `.env` | Enables the setup page's **Add funds** button and the sign-up deposit (off by default). |
+| `GITHUB_LOGIN_STARTER_ATE` | SettleBridge `.env` | Test ATE deposited into the exchange account a first GitHub sign-in creates (default 1000; 0 turns it off). Needs `GITHUB_SETUP_FUNDING_ENABLED`. |
 | `GITHUB_SETUP_FUND_ATE` / `GITHUB_SETUP_FUND_MAX_BALANCE_ATE` | SettleBridge `.env` | ATE added per click (default 1000), and the available balance at which the button stops (default 2000). |
 
 ### Adding a repo
@@ -305,6 +306,8 @@ signed-state flow. `GITHUB_APP_SLUG` (default `settlebridge-bounties`) builds th
 same OAuth client and callback URL as linking. Its state is signed, expires after 10 minutes, and carries
 a hash of a one-time nonce that the starting browser keeps, so a sign-in link can't be replayed in another
 browser. Users created this way have no password and get the email `<github user id>@github.settlebridge.ai`.
+With `GITHUB_SETUP_FUNDING_ENABLED` on, their new exchange account gets `GITHUB_LOGIN_STARTER_ATE` test ATE.
+If that deposit fails, sign-in still succeeds and **Add funds** covers it.
 
 ### Adding a solver
 
