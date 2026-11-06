@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.github import GitHubIdentity
+from app.models.github import GitHubIdentity, GitHubRepoLink
 from app.routes import github_onboarding as routes
 from tests.test_github_onboarding import (
     ACTIONS,
@@ -128,7 +128,8 @@ def test_requires_a_linked_github_identity(db, gh):
     user = _setup(db, identity=False)
     response = _client(db, user).post(URL, json=BODY)
     assert response.status_code == 403
-    assert "link your GitHub account" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "link_github"
+    assert response.json()["detail"]["url"].endswith("/dashboard/settings/github")
 
 
 @pytest.mark.parametrize(
@@ -139,13 +140,26 @@ def test_requires_admin_on_the_same_github_user(db, gh, record):
     gh.record = record
     response = _client(db, user).post(URL, json=BODY)
     assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "repo_access"
     assert reload(db).enabled is False
 
 
-def test_unknown_repo_is_404(db, gh):
+def test_unknown_repo_looks_like_no_access(db, gh):
     user = _setup(db)
-    response = _client(db, user).post("/api/v1/github/repos/acme/other/onboard", json=BODY)
-    assert response.status_code == 404
+    gh.record = ("none", None)
+    unknown = _client(db, user).post("/api/v1/github/repos/acme/other/onboard", json=BODY)
+    not_admin = _client(db, user).post(URL, json=BODY)
+    assert unknown.status_code == not_admin.status_code == 403
+    assert unknown.json()["detail"]["message"].replace("acme/other", REPO) == (
+        not_admin.json()["detail"]["message"]
+    )
+
+
+def test_removed_installation_looks_like_no_access(db, gh):
+    user = _setup(db, removed=True)
+    response = _client(db, user).post(URL, json=BODY)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "repo_access"
 
 
 def test_invalid_repo_name_is_422(db, gh):
@@ -212,6 +226,7 @@ def test_different_funder_is_409(db, gh):
     db.sync.commit()
     response = _client(db, user).post(URL, json=BODY)
     assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "funded_by_other"
     assert reload(db).funder_user_id == other.id
 
 
@@ -219,5 +234,199 @@ def test_service_validation_is_422(db, gh):
     user = _setup(db)
     response = _client(db, user).post(URL, json={**BODY, "allowed_paths": ["*"]})
     assert response.status_code == 422
-    assert ".github" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["code"] == "forbidden_path" and detail["path"] == "*"
+    assert ".github" in detail["message"]
     assert reload(db).enabled is False
+
+
+def test_low_balance_reports_headroom(db, gh, monkeypatch):
+    from app.services import github_onboarding
+
+    user = _setup(db)
+    monkeypatch.setattr(
+        github_onboarding.exchange, "get_balance_dashboard", lambda account_id: {"available": 50}
+    )
+    response = _client(db, user).post(URL, json=BODY)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "funder_low_balance"
+    assert detail["headroom_ate"] == 50 and detail["minimum_ate"] == 101
+
+
+# Setup status
+
+STATUS_URL = f"/api/v1/github/repos/{REPO}/setup-status"
+
+
+def _codes(payload: dict) -> list[str]:
+    return [step["code"] for step in payload["next_steps"]]
+
+
+def test_setup_status_is_hidden_when_self_serve_is_off(db, gh, monkeypatch):
+    user = _setup(db)
+    monkeypatch.setattr(routes.settings, "GITHUB_SELF_SERVE_ONBOARDING", False)
+    assert _client(db, user).get(STATUS_URL).status_code == 404
+
+
+def test_setup_status_ready_for_a_funded_admin(db, gh):
+    user = _setup(db)
+    response = _client(db, user).get(STATUS_URL)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is True
+    assert payload["next_steps"] == []
+    assert payload["repo_access"] is True and payload["enabled"] is False
+    assert payload["detected"]["required_checks"] == [{"name": "test", "app_id": ACTIONS}]
+    assert payload["funder"] == {"exchange_account": True, "headroom_ate": 5_000, "minimum_ate": 101}
+    assert payload["urls"]["install_app"] == (
+        "https://github.com/apps/settlebridge-bounties/installations/new"
+    )
+    assert db.commits == 0
+
+
+def test_setup_status_lists_every_missing_step_without_repo_details(db, gh):
+    user = _setup(db, identity=False)
+    user.exchange_bot_id = None
+    db.sync.commit()
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert payload["ready"] is False
+    assert _codes(payload) == ["link_github", "funder_no_exchange"]
+    assert payload["next_steps"][0]["url"].endswith("/dashboard/settings/github")
+    assert payload["detected"] is None and payload["enabled"] is None
+
+
+@pytest.mark.parametrize("record", [("write", 4242), ("admin", 999)])
+def test_setup_status_hides_repo_state_from_non_admins(db, gh, record):
+    user = _setup(db, enabled=True)
+    gh.record = record
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert _codes(payload) == ["repo_access"]
+    assert payload["repo_access"] is False
+    assert payload["detected"] is None and payload["enabled"] is None
+    unknown = _client(db, user).get("/api/v1/github/repos/acme/other/setup-status").json()
+    assert _codes(unknown) == ["repo_access"] and unknown["enabled"] is None
+
+
+def test_setup_status_asks_for_a_check_and_funding(db, gh, monkeypatch):
+    from app.services import github_onboarding
+
+    user = _setup(db)
+    gh.rules = []
+    gh.runs = [{"name": "ci", "conclusion": "success", "app": {"id": ACTIONS}}]
+    monkeypatch.setattr(
+        github_onboarding.exchange, "get_balance_dashboard", lambda account_id: {"available": 10}
+    )
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert _codes(payload) == ["no_pinned_check", "funder_low_balance"]
+    assert payload["next_steps"][0]["candidates"] == [{"name": "ci", "app_id": ACTIONS}]
+    assert payload["ready"] is False
+
+
+def test_setup_status_reports_another_funder(db, gh):
+    user = _setup(db)
+    other = make_user("owner@example.com")
+    db.sync.add(other)
+    db.sync.flush()
+    reload(db).funder_user_id = other.id
+    db.sync.commit()
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert _codes(payload) == ["funded_by_other"]
+    assert payload["funded_by_other"] is True and payload["ready"] is False
+
+
+def test_setup_status_notes_an_enabled_repo_without_blocking(db, gh):
+    user = _setup(db)
+    link = reload(db)
+    link.funder_user_id = user.id
+    link.enabled = True
+    db.sync.commit()
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert _codes(payload) == ["already_enabled"]
+    assert payload["ready"] is True and payload["enabled"] is True
+
+
+def test_setup_status_github_outage_is_502(db, gh):
+    user = _setup(db)
+    gh.fail = "get_collaborator_record"
+    response = _client(db, user).get(STATUS_URL)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "github_unavailable"
+
+
+# Installation repos
+
+INSTALL_URL = "/api/v1/github/setup/installations/10/repos"
+
+
+def _add_link(db: Bridge, repo: str, **values) -> None:
+    db.sync.add(
+        GitHubRepoLink(
+            id=uuid.uuid4(),
+            installation_id=10,
+            repo_full_name=repo,
+            funder_user_id=None,
+            enabled=False,
+            default_policy={},
+            required_checks=[],
+            **values,
+        )
+    )
+    db.sync.commit()
+
+
+def test_installation_repos_lists_only_admin_repos(db, gh, monkeypatch):
+    user = _setup(db)
+    _add_link(db, "acme/secret")
+
+    async def record(installation_id, repo, username):
+        return ("admin", 4242) if repo == REPO else ("read", 4242)
+
+    monkeypatch.setattr(routes.github_app, "get_collaborator_record", record)
+    payload = _client(db, user).get(INSTALL_URL).json()
+    assert payload["github_login"] == "pat"
+    assert payload["repos"] == [
+        {"repo": REPO, "enabled": False, "funded_by_you": False, "funded_by_other": False}
+    ]
+    assert payload["truncated"] is False
+
+
+def test_installation_repos_skips_repos_github_hides(db, gh, monkeypatch):
+    user = _setup(db)
+
+    async def record(installation_id, repo, username):
+        raise routes.github_app.GitHubAPIError("forbidden", 403)
+
+    monkeypatch.setattr(routes.github_app, "get_collaborator_record", record)
+    assert _client(db, user).get(INSTALL_URL).json()["repos"] == []
+
+
+def test_installation_repos_unknown_or_removed_installation_is_empty(db, gh):
+    user = _setup(db, removed=True)
+    client = _client(db, user)
+    assert client.get(INSTALL_URL).json()["repos"] == []
+    assert client.get("/api/v1/github/setup/installations/99/repos").json()["repos"] == []
+
+
+def test_installation_repos_requires_identity(db, gh):
+    user = _setup(db, identity=False)
+    response = _client(db, user).get(INSTALL_URL)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "link_github"
+
+
+def test_installation_repos_caps_lookups(db, gh, monkeypatch):
+    user = _setup(db)
+    monkeypatch.setattr(routes, "MAX_INSTALLATION_REPOS", 2)
+    for index in range(3):
+        _add_link(db, f"acme/extra{index}")
+    calls = []
+
+    async def record(installation_id, repo, username):
+        calls.append(repo)
+        return ("admin", 4242)
+
+    monkeypatch.setattr(routes.github_app, "get_collaborator_record", record)
+    payload = _client(db, user).get(INSTALL_URL).json()
+    assert len(calls) == 2 and len(payload["repos"]) == 2
+    assert payload["truncated"] is True

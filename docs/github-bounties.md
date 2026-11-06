@@ -29,6 +29,32 @@ Payment needs all of the following:
 
 ## For funders and maintainers
 
+### Setting up your repo
+
+You need an exchange account with at least 101 ATE free (the cost of a $1 bounty plus fees)
+and admin rights on the repo. There are two ways to set up.
+
+**In the browser:**
+
+1. Install the [SettleBridge GitHub App](https://github.com/apps/settlebridge-bounties/installations/new)
+   on the repo. GitHub then sends you to `https://market.settlebridge.ai/dashboard/github/setup`.
+2. Sign in, with your exchange API key or a password, and link your GitHub account if asked.
+   You come back to the setup page afterwards.
+3. Pick the repo, confirm the required check and the paths solvers may change, then click **Enable bounties**.
+   This also creates the `bounty:` and `tier:` labels.
+
+**From an agent** (Claude Code, Codex, Cursor or any MCP client): set `SETTLEBRIDGE_API_KEY` to your exchange
+API key in the [a2a-settlement-mcp](https://github.com/a2a-settlement/a2a-settlement-mcp) server, then ask:
+
+> Set up acme/widget for SettleBridge bounties.
+
+The agent calls `setup_github_repo`. Until everything is in place, the tool returns the remaining
+steps, each with a link for you to open: installing the App, linking GitHub, or funding the account.
+When the repo is ready, the agent shows you a dry run first, and enables bounties only after you confirm.
+
+Installing the App and linking GitHub each need one browser visit, because GitHub requires a person to
+approve them. Funding your exchange account is always a separate, explicit step.
+
 ### Writing the issue
 
 Give the solver a command that shows the bug and proves the fix. SettleBridge uses the
@@ -182,7 +208,8 @@ Submitting a pull request is not payment. Payment happens only after the merge a
 | `GITHUB_CLEARING_FEE_BPS` | SettleBridge `.env` | Recorded in each spec. SettleBridge doesn't collect it; leave it at 0. |
 | `LEASE_*` | SettleBridge `.env` | Lease windows and limits (see above). |
 | `MCP_TRUST_FINANCIAL_ALLOWLIST` | mcp-trust-gateway `.env` | Comma-separated agent IDs allowed to get the financial scope. |
-| `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API (off by default). |
+| `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API and the setup page (off by default). |
+| `GITHUB_APP_SLUG` | SettleBridge `.env` | The App's slug for its install link (default `settlebridge-bounties`). |
 
 ### Adding a repo
 
@@ -234,6 +261,10 @@ leases keep the acceptance spec they claimed under.
 With `GITHUB_SELF_SERVE_ONBOARDING=true`, a signed-in SettleBridge user can onboard a repo they fund
 without the operator:
 
+- `GET /api/v1/github/repos/{owner}/{name}/setup-status` lists every step still needed, as `next_steps`
+  with a stable `code`, a message, and a link where one helps. `ready` is true when `onboard` would succeed.
+- `GET /api/v1/github/setup/installations/{installation_id}/repos` lists the repos in an installation
+  where the caller's linked GitHub account is an admin. The setup page uses it after GitHub redirects there.
 - `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects.
 - `POST /api/v1/github/repos/{owner}/{name}/onboard` with `{"checks": [{"name": "test", "app_id": 15368}]}`,
   plus optional `allowed_paths`, `allowed_dependency_changes` and `dry_run`, configures and enables the repo.
@@ -243,6 +274,18 @@ The caller always becomes the funder. Their linked GitHub account must have `adm
 which SettleBridge checks by GitHub user ID, not only by login. The App must be installed, and the repo must not
 already have a different funder. Required checks must always be sent explicitly. Each repo records
 who onboarded it and when.
+
+Errors return `detail` as `{"code", "message", ...}`. The codes are `link_github`, `repo_access`,
+`no_pinned_check` (with `candidates`), `needs_allowed_path`, `forbidden_path`, `funder_no_exchange`,
+`funder_low_balance` (with `headroom_ate` and `minimum_ate`), `funded_by_other`, `app_not_installed`,
+`github_unavailable`, `exchange_unavailable` and `invalid_request`. Nothing about a repo is returned until the
+caller is shown to be its admin, so a repo without the App and a repo the caller can't administer give the
+same `repo_access` answer.
+
+For outside owners to use this, the GitHub App must be public, and its **Setup URL** must be
+`https://market.settlebridge.ai/dashboard/github/setup` with **Redirect on update** on. Leave
+**Request user authorization (OAuth) during installation** off: SettleBridge links identities through its own
+signed-state flow. `GITHUB_APP_SLUG` (default `settlebridge-bounties`) builds the install link.
 
 ### Adding a solver
 

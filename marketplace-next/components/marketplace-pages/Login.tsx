@@ -5,8 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Shield, Key, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { safeReturnPath } from "@/lib/returnTo";
 
 type Tab = "email" | "apikey";
+
+function afterLogin(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return safeReturnPath(next) ?? "/dashboard";
+}
 
 export default function Login() {
   const { login, exchangeLogin } = useAuth();
@@ -24,7 +30,7 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email, password);
-      router.push("/dashboard");
+      router.push(afterLogin());
     } catch (err: any) {
       setError(err.response?.data?.detail || "Login failed");
     } finally {
@@ -38,7 +44,7 @@ export default function Login() {
     setLoading(true);
     try {
       await exchangeLogin(apiKey);
-      router.push("/dashboard");
+      router.push(afterLogin());
     } catch (err: any) {
       setError(err.response?.data?.detail || "Login failed");
     } finally {

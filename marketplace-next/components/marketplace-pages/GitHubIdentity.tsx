@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { AlertCircle, CheckCircle, Link as LinkIcon, Unlink } from "lucide-react";
 import api from "@/services/api";
+import { rememberReturnPath } from "@/lib/returnTo";
 
-interface GitHubIdentityResponse {
+export interface GitHubIdentityResponse {
   linked: boolean;
   login: string | null;
   github_user_id: number | null;
@@ -34,7 +35,13 @@ function formatVerified(value: string | null): string | null {
   return date.toLocaleDateString();
 }
 
-export default function GitHubIdentity() {
+export default function GitHubIdentity({
+  returnTo,
+  onChange,
+}: {
+  returnTo?: string;
+  onChange?: (identity: GitHubIdentityResponse) => void;
+} = {}) {
   const [identity, setIdentity] = useState<GitHubIdentityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -42,6 +49,10 @@ export default function GitHubIdentity() {
   const [error, setError] = useState("");
   const [confirmUnlink, setConfirmUnlink] = useState(false);
   const busyRef = useRef(false);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +60,7 @@ export default function GitHubIdentity() {
     try {
       const { data } = await api.get<GitHubIdentityResponse>("/v1/github/identity/");
       setIdentity(data);
+      onChangeRef.current?.(data);
       setUnavailable(false);
     } catch (err: unknown) {
       setIdentity(null);
@@ -85,6 +97,7 @@ export default function GitHubIdentity() {
         );
         return;
       }
+      if (returnTo) rememberReturnPath(returnTo);
       window.location.assign(authorizeUrl);
     } catch (err: unknown) {
       if (statusOf(err) === 503) {
