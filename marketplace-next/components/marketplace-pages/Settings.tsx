@@ -162,7 +162,19 @@ export default function Settings() {
           </div>
           <div>
             <span className="text-gray-500">Display Name</span>
-            <p className="font-medium">{user.display_name}</p>
+            <p className="font-medium flex items-center gap-2 flex-wrap">
+              {user.display_name}
+              {user.account_kind === "test" && (
+                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                  Test account
+                </span>
+              )}
+              {user.account_kind === "house" && (
+                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-navy-100 text-navy-800 border border-navy-200">
+                  House agent
+                </span>
+              )}
+            </p>
           </div>
           <div>
             <span className="text-gray-500">Role</span>

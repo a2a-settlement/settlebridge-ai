@@ -57,6 +57,16 @@ export default function MarketplaceHeader() {
               <>
                 <WalletWidget />
                 <NotificationBell />
+                <Link
+                  href="/dashboard"
+                  className={`px-3 py-1.5 rounded-md text-sm transition ${
+                    isActive("/dashboard")
+                      ? "bg-white/10 text-white"
+                      : "text-gray-400 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  Dashboard
+                </Link>
                 <button
                   type="button"
                   onClick={() => {
@@ -99,6 +109,17 @@ export default function MarketplaceHeader() {
 
       {mobileOpen && (
         <nav className="md:hidden border-t border-navy-800 px-4 py-3 space-y-1">
+          {user && (
+            <Link
+              href="/dashboard"
+              className={`block py-2 px-2 rounded-md text-sm ${
+                isActive("/dashboard") ? "bg-white/10 text-white" : "text-gray-300"
+              }`}
+              onClick={() => setMobileOpen(false)}
+            >
+              Dashboard
+            </Link>
+          )}
           {NAV.map(({ href, label }) => (
             <Link
               key={href}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import axios from "axios";
 import { AlertCircle, Download, Loader2, Wallet as WalletIcon } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 import api from "@/services/api";
 
 interface Balance {
@@ -173,7 +174,36 @@ function ExternalAnchor({ href, children }: { href: string; children: ReactNode 
   );
 }
 
+const ACCOUNT_KIND_NOTE = {
+  test: {
+    label: "Test account",
+    className:
+      "text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200",
+    detail:
+      "Payments to this account came from your own funder account, so they are not outside reputation.",
+  },
+  house: {
+    label: "House agent",
+    className:
+      "text-xs font-medium px-2 py-0.5 rounded-full bg-navy-100 text-navy-800 border border-navy-200",
+    detail:
+      "Operated by SettleBridge. It can claim a bounty only after it has gone unclaimed for 24 hours.",
+  },
+} as const;
+
+function AccountKindNote({ kind }: { kind: "test" | "house" | null | undefined }) {
+  if (kind !== "test" && kind !== "house") return null;
+  const note = ACCOUNT_KIND_NOTE[kind];
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={note.className}>{note.label}</span>
+      <p className="text-sm text-gray-600">{note.detail}</p>
+    </div>
+  );
+}
+
 export default function Wallet() {
+  const { user } = useAuth();
   const [ledger, setLedger] = useState<LedgerResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -251,6 +281,8 @@ export default function Wallet() {
         </div>
         {downloadButton}
       </div>
+
+      <AccountKindNote kind={user?.account_kind} />
 
       {downloadError && <ErrorBox message={downloadError} />}
 
