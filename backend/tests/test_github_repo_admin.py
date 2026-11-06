@@ -23,6 +23,7 @@ from sqlalchemy.pool import StaticPool
 from app.cli import github_repos
 from app.models.github import GitHubInstallation, GitHubRepoLink
 from app.models.user import User, UserType
+from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
 from app.services.github_repo_admin import (
     RepoAdminError,
     configure_repo_link,
@@ -201,6 +202,9 @@ def test_list_repo_links(db):
             "installation_id": 1,
             "installation_removed": False,
             "enabled": False,
+            "strict_tests": False,
+            "auto_merge_acceptable": False,
+            "auto_dispatch_alerts": False,
             "funder_email": None,
             "required_checks": [],
             "allowed_paths": [],
@@ -213,6 +217,9 @@ def test_list_repo_links(db):
             "installation_id": 2,
             "installation_removed": True,
             "enabled": True,
+            "strict_tests": False,
+            "auto_merge_acceptable": False,
+            "auto_dispatch_alerts": False,
             "funder_email": "Pat@Example.com",
             "required_checks": [{"name": "ci", "app_id": 9}],
             "allowed_paths": ["lib/*"],
@@ -509,6 +516,8 @@ def _stored_link(engine, repo: str) -> dict | None:
             "funder_user_id": None if row.funder_user_id is None else str(row.funder_user_id),
             "required_checks": json.loads(json.dumps(row.required_checks)),
             "default_policy": json.loads(json.dumps(row.default_policy)),
+            "auto_merge_acceptable": bool(row.auto_merge_acceptable),
+            "auto_dispatch_alerts": bool(row.auto_dispatch_alerts),
         }
     finally:
         session.close()
@@ -708,3 +717,231 @@ def test_cli_bad_arguments_exit_2(capsys):
     with pytest.raises(SystemExit) as zero_app:
         github_repos.main(["configure", "--repo", "acme/widget", "--check", "ci:0"])
     assert zero_app.value.code == 2
+
+
+def test_configure_strict_tests_merges_rules_and_persists_flags(db):
+    policy = _policy()
+    policy["rule_severity"] = {"star_import": "violation", "test_file_deleted": "review"}
+    _add(db, _installation(10), _link(10, default_policy=policy))
+
+    turned_on = _run(
+        configure_repo_link(
+            db,
+            REPO,
+            strict_tests=True,
+            auto_merge_acceptable=True,
+            auto_dispatch_alerts=True,
+        )
+    )
+    assert turned_on["before"]["strict_tests"] is False
+    assert turned_on["after"]["strict_tests"] is True
+    assert turned_on["before"]["auto_merge_acceptable"] is False
+    assert turned_on["after"]["auto_merge_acceptable"] is True
+    assert turned_on["after"]["auto_dispatch_alerts"] is True
+    row = _run(_reload(db, REPO))
+    assert row.auto_merge_acceptable is True
+    assert row.auto_dispatch_alerts is True
+    assert row.default_policy["rule_severity"] == {
+        "star_import": "violation",
+        **STRICT_TEST_RULE_SEVERITY,
+    }
+    assert row.default_policy["allowed_paths"] == ["old/*"]
+    assert row.default_policy["allowed_dependency_changes"] == ["oldpkg"]
+    assert row.default_policy["type_ignore_is_suppression"] is False
+    listed = _run(list_repo_links(db))
+    assert listed[0]["strict_tests"] is True
+    assert listed[0]["auto_merge_acceptable"] is True
+    assert listed[0]["auto_dispatch_alerts"] is True
+
+    _run(configure_repo_link(db, REPO, allowed_paths=["src/*"]))
+    row = _run(_reload(db, REPO))
+    assert row.auto_merge_acceptable is True
+    assert row.auto_dispatch_alerts is True
+    assert row.default_policy["rule_severity"]["assertion_changed"] == "violation"
+    assert row.default_policy["allowed_paths"] == ["src/*"]
+
+    turned_off = _run(
+        configure_repo_link(
+            db,
+            REPO,
+            strict_tests=False,
+            auto_merge_acceptable=False,
+            auto_dispatch_alerts=False,
+        )
+    )
+    assert turned_off["before"]["strict_tests"] is True
+    assert turned_off["after"]["strict_tests"] is False
+    assert turned_off["after"]["auto_merge_acceptable"] is False
+    assert turned_off["after"]["auto_dispatch_alerts"] is False
+    row = _run(_reload(db, REPO))
+    assert row.default_policy["rule_severity"] == {"star_import": "violation"}
+    assert row.default_policy["allowed_paths"] == ["src/*"]
+    assert row.auto_merge_acceptable is False
+    assert row.auto_dispatch_alerts is False
+    listed = _run(list_repo_links(db))
+    assert listed[0]["strict_tests"] is False
+    assert listed[0]["auto_merge_acceptable"] is False
+    assert listed[0]["auto_dispatch_alerts"] is False
+
+
+def test_strict_tests_off_removes_those_keys_at_any_level(db):
+    _add(
+        db,
+        _installation(10),
+        _link(
+            10,
+            default_policy={
+                "rule_severity": {
+                    "star_import": "violation",
+                    "test_file_deleted": "review",
+                    "assertion_changed": "violation",
+                    "weak_assertion_added": "review",
+                    "test_skip_added": "violation",
+                    "other": "review",
+                },
+                "allowed_paths": ["old/*"],
+            },
+        ),
+    )
+    _run(configure_repo_link(db, REPO, strict_tests=False))
+    row = _run(_reload(db, REPO))
+    assert row.default_policy["rule_severity"] == {"star_import": "violation", "other": "review"}
+    assert row.default_policy["allowed_paths"] == ["old/*"]
+
+
+def test_strict_tests_off_drops_rule_severity_when_nothing_remains(db):
+    _add(
+        db,
+        _installation(10),
+        _link(
+            10,
+            default_policy={
+                "rule_severity": dict(STRICT_TEST_RULE_SEVERITY),
+                "allowed_paths": ["keep/*"],
+                "extra": {"keep": True},
+            },
+        ),
+    )
+    _run(configure_repo_link(db, REPO, strict_tests=False))
+    row = _run(_reload(db, REPO))
+    assert row.default_policy == {"allowed_paths": ["keep/*"], "extra": {"keep": True}}
+    assert _run(list_repo_links(db))[0]["strict_tests"] is False
+
+
+def test_list_strict_tests_requires_every_rule_at_violation(db):
+    rules = dict(STRICT_TEST_RULE_SEVERITY)
+    rules["test_skip_added"] = "review"
+    _add(
+        db,
+        _installation(10),
+        _link(10, auto_merge_acceptable=True, default_policy=_policy(rule_severity=rules)),
+    )
+    listed = _run(list_repo_links(db))[0]
+    assert listed["strict_tests"] is False
+    assert listed["auto_merge_acceptable"] is True
+    assert listed["auto_dispatch_alerts"] is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["strict_tests", "auto_merge_acceptable", "auto_dispatch_alerts"],
+)
+def test_configure_rejects_non_bool_auto_flags(db, field):
+    _add(db, _installation(10), _link(10, auto_merge_acceptable=True))
+    with pytest.raises(RepoAdminError, match=f"^{field} must be true or false$"):
+        _run(configure_repo_link(db, REPO, **{field: 1}))
+    row = _run(_reload(db, REPO))
+    assert row.auto_merge_acceptable is True
+    assert row.auto_dispatch_alerts is False
+    assert "test_file_deleted" not in row.default_policy["rule_severity"]
+
+
+def test_cli_parses_strict_tests_and_auto_flags():
+    parser = github_repos.build_parser()
+    omitted = parser.parse_args(["configure", "--repo", "acme/widget"])
+    assert omitted.strict_tests is None
+    assert omitted.auto_merge_acceptable is None
+    assert omitted.auto_dispatch_alerts is None
+
+    enabled = parser.parse_args(
+        [
+            "configure",
+            "--repo",
+            "acme/widget",
+            "--strict-tests",
+            "--auto-merge",
+            "--auto-dispatch-alerts",
+        ]
+    )
+    assert enabled.strict_tests is True
+    assert enabled.auto_merge_acceptable is True
+    assert enabled.auto_dispatch_alerts is True
+
+    disabled = parser.parse_args(
+        [
+            "configure",
+            "--repo",
+            "acme/widget",
+            "--no-strict-tests",
+            "--no-auto-merge",
+            "--no-auto-dispatch-alerts",
+        ]
+    )
+    assert disabled.strict_tests is False
+    assert disabled.auto_merge_acceptable is False
+    assert disabled.auto_dispatch_alerts is False
+
+
+def test_cli_apply_persists_strict_tests_and_auto_flags(engine, monkeypatch, capsys):
+    _seed(engine, _installation(10), _link(10))
+    _sessions(monkeypatch, engine)
+    code = github_repos.main(
+        [
+            "configure",
+            "--repo",
+            "acme/widget",
+            "--strict-tests",
+            "--auto-merge",
+            "--no-auto-dispatch-alerts",
+            "--apply",
+        ]
+    )
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert err == ""
+    payload, status = _status_payload(out)
+    assert status == "APPLIED"
+    assert payload["after"]["strict_tests"] is True
+    assert payload["after"]["auto_merge_acceptable"] is True
+    assert payload["after"]["auto_dispatch_alerts"] is False
+    stored = _stored_link(engine, REPO)
+    severity = stored["default_policy"]["rule_severity"]
+    assert severity["star_import"] == "violation"
+    for rule, level in STRICT_TEST_RULE_SEVERITY.items():
+        assert severity[rule] == level
+    assert stored["auto_merge_acceptable"] is True
+    assert stored["auto_dispatch_alerts"] is False
+    _assert_no_secrets(out + err)
+
+    code = github_repos.main(
+        ["configure", "--repo", REPO, "--strict-tests", "--auto-dispatch-alerts"]
+    )
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert _status_payload(out)[1] == "DRY RUN (use --apply to write)"
+    stored = _stored_link(engine, REPO)
+    assert stored["auto_merge_acceptable"] is True
+    assert stored["auto_dispatch_alerts"] is False
+    assert "test_file_deleted" in stored["default_policy"]["rule_severity"]
+
+    code = github_repos.main(
+        ["configure", "--repo", REPO, "--no-strict-tests", "--no-auto-merge", "--apply"]
+    )
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert _status_payload(out)[1] == "APPLIED"
+    stored = _stored_link(engine, REPO)
+    assert stored["default_policy"]["rule_severity"] == {"star_import": "violation"}
+    assert stored["auto_merge_acceptable"] is False
+    assert stored["auto_dispatch_alerts"] is False
+    _assert_no_secrets(out + err)
