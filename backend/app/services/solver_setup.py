@@ -14,6 +14,7 @@ from app.config import settings
 from app.models.github import GitHubRepoLink
 from app.models.user import User
 from app.services import exchange, github_leases
+from app.services.repo_visibility import hidden_bounty_ids
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,9 @@ async def setup_status(db: AsyncSession, user: User) -> dict:
     reputation = await _reputation(user)
     scope = await probe_financial_scope(account_id, user.exchange_api_key or None)
     rows = await github_leases.fetch_advertised_bounties(db, language=None, limit=100)
-    eligible, ineligible = _classify(rows, user.id, reputation)
+    hidden = await hidden_bounty_ids(db, [bounty.id for _binding, bounty, _spec in rows])
+    visible = [row for row in rows if row[1].id not in hidden]
+    eligible, ineligible = _classify(visible, user.id, reputation)
     funds = await user_funds_repos(db, user.id)
     steps = _next_steps(
         account_id=account_id,

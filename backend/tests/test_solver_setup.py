@@ -121,12 +121,25 @@ class _Result:
         return None
 
 
+class _IdRows:
+    def __init__(self, ids):
+        self._ids = list(ids)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._ids)
+
+
 class _Db:
     def __init__(self, state: dict):
         self._state = state
 
     async def execute(self, stmt):
         self._state["statements"].append(stmt)
+        if "github_bounty_bindings" in str(stmt):
+            return _IdRows(self._state.get("hidden_ids", ()))
         return _Result(bool(self._state["funds"]))
 
 
@@ -514,3 +527,22 @@ def test_balance_failure_returns_200(world, caplog):
     assert "reputation_below_most_repos" not in _codes(body)
     assert "RuntimeError" in caplog.text
     assert "ate_secret" not in caplog.text
+
+
+def test_hidden_bounties_are_excluded_from_eligible_and_ineligible(world):
+    user_id = world["user"].id
+    other = uuid.uuid4()
+    default = settings.GITHUB_DEFAULT_REQUIRED_EMA
+    visible_ok = _row(other, default / 2, repo="acme/pub", issue=1, title="Visible bug")
+    visible_hard = _row(other, default + 5, repo="acme/hard", issue=2, title="Hard bug")
+    hidden_ok = _row(other, 0, repo="acme/secret", issue=3, title="Secret eligible")
+    hidden_hard = _row(other, default + 9, repo="acme/secret", issue=4, title="Secret hard")
+    hidden_owned = _row(user_id, 0, repo="acme/mine", issue=5, title="Secret mine")
+    world["rows"] = [visible_ok, visible_hard, hidden_ok, hidden_hard, hidden_owned]
+    world["balance"] = {"reputation": default}
+    world["hidden_ids"] = {hidden_ok[1].id, hidden_hard[1].id, hidden_owned[1].id}
+    response, body = _get(world)
+    assert body["eligible_bounties"] == [_item(visible_ok)]
+    assert body["ineligible_count"] == 1
+    assert "Secret" not in response.text
+    assert any("github_bounty_bindings" in str(stmt) for stmt in world["statements"])

@@ -35,6 +35,7 @@ from app.services.compliance import check_compliance, is_compliant_for_approval
 from app.services.mediator import trigger_training_mediation
 from app.services.score_history_write import mediator_result_from_ai_review
 from app.services.notification_service import create_notification
+from app.services.repo_visibility import can_view_bounty
 from app.utils.helpers import compute_content_hash
 
 import uuid as _uuid_mod
@@ -350,6 +351,9 @@ async def list_bounty_submissions(
 ):
     bounty = await bounty_service.get_bounty(db, bounty_id)
     if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+    # Before the 401 below, so a hidden bounty does not confirm that it exists.
+    if not await can_view_bounty(db, bounty.id, user):
         raise HTTPException(status_code=404, detail="Bounty not found")
 
     # Completed bounties are publicly readable so anonymous visitors can see
@@ -793,6 +797,8 @@ async def get_shared_submission(
     bounty = await bounty_service.get_bounty(db, sub.bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
+    if not await can_view_bounty(db, bounty.id, None):
+        raise HTTPException(status_code=404, detail="Shared submission not found")
 
     agent_result = await db.execute(select(UserModel).where(UserModel.id == sub.agent_user_id))
     agent = agent_result.scalar_one_or_none()

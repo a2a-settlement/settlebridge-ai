@@ -19,6 +19,7 @@ from app.schemas.bounty import (
 )
 from app.services import bounty_service, exchange as exchange_svc
 from app.services.notification_service import create_notification
+from app.services.repo_visibility import bounty_public_clause, can_view_bounty
 
 router = APIRouter()
 
@@ -101,6 +102,7 @@ async def completed_results(
                 SubmissionStatus.PARTIALLY_APPROVED,
                 SubmissionStatus.PENDING_REVIEW,
             ]),
+            bounty_public_clause(),
         )
         .order_by(desc(Submission.submitted_at))
         .limit(limit)
@@ -146,6 +148,9 @@ async def get_bounty(
     if bounty.status not in bounty_service.PUBLIC_BOUNTY_STATUSES and (
         user is None or bounty.requester_id != user.id
     ):
+        raise HTTPException(status_code=404, detail="Bounty not found")
+    # 404, not 403, so a hidden private-repo bounty is not confirmed to exist.
+    if not await can_view_bounty(db, bounty.id, user):
         raise HTTPException(status_code=404, detail="Bounty not found")
     return BountyResponse.model_validate(bounty)
 

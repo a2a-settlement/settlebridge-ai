@@ -19,6 +19,7 @@ from app.models.training_run import TrainingRun, TrainingTranscript
 from app.models.score_history import ScoreHistory
 from app.models.user import User
 from app.services import training_service
+from app.services.repo_visibility import hidden_bounty_ids
 
 router = APIRouter()
 training_public_router = APIRouter()
@@ -325,9 +326,12 @@ async def list_public_training_runs(
         .offset(offset)
     )
     runs = (await db.execute(stmt)).scalars().all()
+    hidden = await hidden_bounty_ids(db, [run.bounty_id for run in runs])
 
     results = []
     for run in runs:
+        if run.bounty_id in hidden:
+            continue
         scores, ema, merkle = await _load_run_scores(db, run)
         agent = await _load_agent(db, run.agent_user_id)
         bounty_title = (run.bounty_snapshot or {}).get("title", "")
@@ -349,7 +353,7 @@ async def get_training_card(
 ):
     """Public JSON or HTML card for a training run (only if public=True)."""
     run = await training_service.get_run(db, run_id)
-    if run is None or not run.public:
+    if run is None or not run.public or await hidden_bounty_ids(db, [run.bounty_id]):
         raise HTTPException(status_code=404, detail="Training card not found or not public")
 
     scores, ema, merkle = await _load_run_scores(db, run)
@@ -375,7 +379,7 @@ async def get_training_card_html(
 ):
     """Standalone HTML page for a public training run card."""
     run = await training_service.get_run(db, run_id)
-    if run is None or not run.public:
+    if run is None or not run.public or await hidden_bounty_ids(db, [run.bounty_id]):
         raise HTTPException(status_code=404, detail="Training card not found or not public")
 
     scores, ema, merkle = await _load_run_scores(db, run)
