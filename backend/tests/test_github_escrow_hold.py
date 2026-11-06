@@ -21,7 +21,6 @@ from app.models.github import GitHubJob, GitHubLease, JobKind, JobStatus
 from app.services import github_app, github_bounty_service, github_leases, github_settlement
 from app.services.github_errors import RetryableJobError
 from app.services.github_settlement import SettlementContext
-from app.services import principal_sync
 
 FIXED = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 REPO = "acme/widget"
@@ -170,6 +169,7 @@ class _Claim:
         self.create_user = None
         self.create_kwargs = None
         self.db = None
+        self.bounty_funder = self.funder
 
     def install(self, monkeypatch):
         world = self
@@ -243,8 +243,12 @@ class _Claim:
         async def fetch_principal(client, agent_id):
             world.principal_calls.append(agent_id)
             if world.principal_error is not None:
-                raise world.principal_error
+                raise github_leases._PrincipalUnavailable(str(world.principal_error))
             return world.principals.get(agent_id)
+
+        async def fetch_bounty_funder(db, bounty_id):
+            assert bounty_id == world.binding.bounty_id
+            return world.bounty_funder
 
         monkeypatch.setattr(settings, "GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION", self.enforce)
         monkeypatch.setattr(settings, "GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM", self.lock)
@@ -264,7 +268,8 @@ class _Claim:
         monkeypatch.setattr(github_leases.exchange, "get_balance_dashboard", get_balance)
         monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
         monkeypatch.setattr(github_leases.httpx, "AsyncClient", _Client)
-        monkeypatch.setattr(principal_sync, "_fetch_principal_id", fetch_principal)
+        monkeypatch.setattr(github_leases, "_principal_id", fetch_principal)
+        monkeypatch.setattr(github_leases, "fetch_bounty_funder", fetch_bounty_funder)
         return self
 
     def claim(self):
@@ -315,14 +320,38 @@ def test_self_dealing_same_principal_is_refused(monkeypatch):
     assert "balance" not in world.events
 
 
-def test_principal_lookup_failure_does_not_refuse(monkeypatch):
+def test_principal_lookup_failure_refuses_the_claim(monkeypatch):
     world = _Claim()
     world.principal_error = RuntimeError("lookup down")
     world.install(monkeypatch)
     result = world.claim()
-    assert result.status_code == 201
+    assert result.status_code == 502
+    assert result.body == {"error": "exchange_unavailable"}
     assert world.principal_calls == [FUNDER_AGENT]
-    assert "balance" not in world.events
+    assert world.db.added == []
+
+
+def test_self_dealing_checks_the_bounty_funder_when_the_link_funder_changed(monkeypatch):
+    world = _Claim()
+    world.bounty_funder = types.SimpleNamespace(id=world.solver_id, exchange_bot_id=AGENT)
+    world.install(monkeypatch)
+    result = world.claim()
+    assert result.status_code == 403
+    assert result.body == {"error": "self_dealing"}
+
+
+def test_hold_is_funded_by_the_bounty_requester_not_the_link_funder(monkeypatch):
+    world = _Claim()
+    world.lock = True
+    requester = types.SimpleNamespace(
+        id=uuid.uuid4(), exchange_bot_id="requester-bot", exchange_api_key="set"
+    )
+    world.bounty_funder = requester
+    world.principals["requester-bot"] = "principal-requester"
+    world.install(monkeypatch)
+    result = world.claim()
+    assert result.status_code == 201
+    assert world.create_user is requester
 
 
 def test_missing_principal_does_not_refuse(monkeypatch):
@@ -459,7 +488,22 @@ def test_hold_create_server_error_is_exchange_unavailable(monkeypatch):
     lease = _lease_row(world)
     assert lease.status == "released"
     assert lease.release_reason == "hold_failed"
-    assert _jobs(world.db.added) == []
+    # The escrow may exist; the refund job recovers it by replaying the create.
+    assert lease.hold_escrow_id == github_leases.HOLD_PENDING
+    assert [job.payload for job in _jobs(world.db.added)] == [{"lease_id": str(lease.id)}]
+
+
+def test_hold_create_409_duplicate_recovers_the_existing_escrow(monkeypatch):
+    world = _Claim()
+    world.lock = True
+    world.balance = 500
+    world.create_error = _http_error(
+        409, "An active escrow already exists for this task_id (escrow_id=abcd-1234)"
+    )
+    world.install(monkeypatch)
+    result = world.claim()
+    assert result.status_code == 201
+    assert _lease_row(world).hold_escrow_id == "abcd-1234"
 
 
 def test_hold_create_without_an_id_releases_the_lease(monkeypatch):
@@ -487,7 +531,7 @@ def test_losing_claim_does_not_create_an_escrow(monkeypatch):
     assert world.db.rollbacks == 1
 
 
-def test_submit_refreshes_claim_trust(monkeypatch):
+def test_submit_keeps_the_lower_trust_values(monkeypatch):
     lease_id = uuid.uuid4()
     binding = types.SimpleNamespace(
         id=uuid.uuid4(),
@@ -562,8 +606,8 @@ def test_submit_refreshes_claim_trust(monkeypatch):
     )
     assert result.status_code == 200
     assert lease.status == "submitted"
-    assert lease.claim_kya == 4
-    assert lease.claim_reputation == 0.55
+    assert lease.claim_kya == 1
+    assert lease.claim_reputation == 0.1
 
 
 def _holder(lease):
@@ -742,9 +786,13 @@ def _install_refund(monkeypatch, lease, *, settlement=None, get_escrow=None, ref
     funder_id = uuid.uuid4()
     funder = types.SimpleNamespace(id=funder_id, exchange_bot_id=FUNDER_AGENT, exchange_api_key="set")
     binding_id = lease.binding_id if lease is not None else uuid.uuid4()
-    binding = types.SimpleNamespace(id=binding_id, repo_full_name=REPO)
+    bounty_id = uuid.uuid4()
+    binding = types.SimpleNamespace(id=binding_id, repo_full_name=REPO, bounty_id=bounty_id)
     link = types.SimpleNamespace(funder_user_id=funder_id, repo_full_name=REPO)
     db = _DB({funder_id: funder})
+
+    async def fetch_bounty_funder(db_session, wanted):
+        return funder if wanted == bounty_id else None
 
     async def fetch_lease(db_session, lease_id):
         if lease is None or lease_id != lease.id:
@@ -764,6 +812,7 @@ def _install_refund(monkeypatch, lease, *, settlement=None, get_escrow=None, ref
     monkeypatch.setattr(github_leases, "fetch_settlement", fetch_settlement)
     monkeypatch.setattr(github_leases, "fetch_binding", fetch_binding)
     monkeypatch.setattr(github_leases, "fetch_repo_link", fetch_repo_link)
+    monkeypatch.setattr(github_leases, "fetch_bounty_funder", fetch_bounty_funder)
     if get_escrow is not None:
         monkeypatch.setattr(github_leases.exchange, "get_escrow", get_escrow)
     if refund is not None:
@@ -1005,10 +1054,18 @@ def test_settlement_adopts_a_held_escrow_and_falls_back_otherwise(monkeypatch, e
         created.append(kwargs)
         return {"escrow_id": "esc-new"}
 
+    refunded = []
     monkeypatch.setattr(github_settlement.exchange, "get_escrow", get_escrow)
     monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(
+        github_settlement.exchange,
+        "refund_escrow",
+        lambda user, escrow_id, reason="": refunded.append(escrow_id),
+    )
     monkeypatch.setattr(settings, "ESCROW_TTL_MINUTES", 90)
     _run(github_settlement._step_create(db, ctx))
+    held = str(escrow["status"]).lower() == "held"
+    assert refunded == (["hold-1"] if held and not adopt else [])
     if adopt:
         assert created == []
         assert ctx.settlement.escrow_id == "hold-1"
@@ -1078,3 +1135,116 @@ def test_settlement_does_not_create_a_second_escrow_when_the_hold_lookup_fails(m
         _run(github_settlement._step_create(db, ctx))
     assert ctx.settlement.escrow_id is None
     assert ctx.settlement.state == "pending"
+
+
+def test_settlement_does_not_create_when_the_stale_hold_refund_fails(monkeypatch):
+    ctx = _settlement_ctx("hold-1")
+    db, _commits = _commit_db(ctx.settlement)
+
+    def refund(user, escrow_id, reason=""):
+        raise ConnectionError("reset")
+
+    def create_escrow(user, **kwargs):
+        raise AssertionError("create_escrow")
+
+    monkeypatch.setattr(
+        github_settlement.exchange,
+        "get_escrow",
+        lambda user, escrow_id: {"status": "held", "provider_id": "other"},
+    )
+    monkeypatch.setattr(github_settlement.exchange, "refund_escrow", refund)
+    monkeypatch.setattr(github_settlement.exchange, "create_escrow", create_escrow)
+    with pytest.raises(ConnectionError):
+        _run(github_settlement._step_create(db, ctx))
+    assert ctx.settlement.escrow_id is None
+
+
+def test_settlement_resolves_a_pending_hold_by_replaying_the_create(monkeypatch):
+    ctx = _settlement_ctx(github_leases.HOLD_PENDING)
+    db, _commits = _commit_db(ctx.settlement)
+    replays = []
+
+    def create_escrow(user, **kwargs):
+        replays.append(kwargs["idempotency_key"])
+        return {"escrow_id": "hold-recovered"}
+
+    monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
+    monkeypatch.setattr(
+        github_settlement.exchange,
+        "get_escrow",
+        lambda user, escrow_id: {"status": "held", "provider_id": AGENT, "amount": 100},
+    )
+    _run(github_settlement._step_create(db, ctx))
+    assert replays == [f"gh-hold:{ctx.lease.id}"]
+    assert ctx.settlement.escrow_id == "hold-recovered"
+    assert ctx.lease.hold_escrow_id == "hold-recovered"
+
+
+def test_refund_resolves_a_pending_hold_then_refunds_it(monkeypatch):
+    calls = {}
+    lease = _refund_lease(hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4())
+
+    def refund(user, escrow_id, reason=""):
+        calls["refund"] = escrow_id
+
+    db, _funder = _install_refund(
+        monkeypatch,
+        lease,
+        get_escrow=lambda user, escrow_id: {"status": "held"},
+        refund=refund,
+    )
+
+    async def fetch_spec(db_session, spec_id):
+        return types.SimpleNamespace(amount_ate=100)
+
+    monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
+    monkeypatch.setattr(
+        github_leases.exchange, "create_escrow", lambda user, **kw: {"escrow_id": "hold-late"}
+    )
+    _run(github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})))
+    assert lease.hold_escrow_id == "hold-late"
+    assert calls["refund"] == "hold-late"
+
+
+def test_refund_of_a_pending_hold_the_exchange_refuses_is_done(monkeypatch):
+    lease = _refund_lease(hold_escrow_id=github_leases.HOLD_PENDING, agent_id=AGENT, spec_id=uuid.uuid4())
+
+    def forbid(*_args, **_kwargs):
+        raise AssertionError("no escrow to read or refund")
+
+    db, _funder = _install_refund(monkeypatch, lease, get_escrow=forbid, refund=forbid)
+
+    async def fetch_spec(db_session, spec_id):
+        return types.SimpleNamespace(amount_ate=100)
+
+    def create_escrow(user, **kwargs):
+        raise _http_error(402, "insufficient balance")
+
+    monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
+    monkeypatch.setattr(github_leases.exchange, "create_escrow", create_escrow)
+    _run(github_leases.handle_refund_hold(db, types.SimpleNamespace(payload={"lease_id": str(lease.id)})))
+    assert lease.hold_escrow_id is None
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (200, {"links": [{"principal_id": "p-1"}]}, "p-1"),
+        (200, {"links": []}, None),
+        (404, {"detail": "not found"}, None),
+        (503, {"detail": "down"}, "raise"),
+        (200, {"links": [{}]}, "raise"),
+    ],
+)
+def test_principal_lookup_separates_no_principal_from_an_outage(status, body, expected):
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+
+    async def lookup():
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await github_leases._principal_id(client, "agent-1")
+
+    if expected == "raise":
+        with pytest.raises(github_leases._PrincipalUnavailable):
+            _run(lookup())
+    else:
+        assert _run(lookup()) == expected

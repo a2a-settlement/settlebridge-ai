@@ -265,6 +265,11 @@ def api(monkeypatch):
     async def fetch_repo_link(db, repo_full_name):
         return box["link"]
 
+    route_funder = types.SimpleNamespace(id=uuid.uuid4(), exchange_bot_id=None)
+
+    async def fetch_bounty_funder(db, bounty_id):
+        return route_funder
+
     async def fetch_other_pr_binding(db, repo_full_name, pr_number, binding_id):
         return box["other_pr"]
 
@@ -345,6 +350,7 @@ def api(monkeypatch):
     monkeypatch.setattr(github_leases, "fetch_lease", fetch_lease)
     monkeypatch.setattr(github_leases, "fetch_binding", fetch_binding)
     monkeypatch.setattr(github_leases, "fetch_repo_link", fetch_repo_link)
+    monkeypatch.setattr(github_leases, "fetch_bounty_funder", fetch_bounty_funder)
     monkeypatch.setattr(github_leases, "fetch_other_pr_binding", fetch_other_pr_binding)
     monkeypatch.setattr(github_leases, "fetch_binding_by_bounty", fetch_binding_by_bounty)
     monkeypatch.setattr(github_leases, "fetch_settlement", fetch_settlement)

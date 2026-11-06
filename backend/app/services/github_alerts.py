@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.github import AlertKind, GitHubAlertDispatch, GitHubJob
+from app.models.github import AlertKind, GitHubAlertDispatch, GitHubJob, GitHubRepoLink
 from app.services.github_errors import PermanentJobError
 
 logger = logging.getLogger(__name__)
@@ -536,6 +536,12 @@ async def _open_dispatch(
         return
     amount_ate = github_bounty_service.usd_to_ate(Decimal(plan.usd))
     now = datetime.now(timezone.utc)
+    # Serialize budget checks per repo; the lock is held until the reservation commits.
+    await db.execute(
+        select(GitHubRepoLink.repo_full_name)
+        .where(GitHubRepoLink.repo_full_name == repo)
+        .with_for_update()
+    )
     spent = await _spent_this_week(db, repo, now)
     limit = int(settings.GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE)
     if spent + amount_ate > limit:

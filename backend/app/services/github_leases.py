@@ -610,6 +610,9 @@ def _exception_text(exc: BaseException) -> str:
     return "\n".join(parts).lower()
 
 
+HOLD_PENDING = "pending"
+
+
 def _hold_ttl_minutes() -> int:
     """Cover the work cap, submitted hold, alert-fixed wait, and a margin."""
     return (
@@ -634,77 +637,105 @@ def enqueue_hold_refund(db, lease) -> None:
     )
 
 
-async def _load_funder(db, repo_full_name: str | None):
-    """Return ``(repo link, funder)``. Either is None when that row is absent."""
-    if not repo_full_name:
-        return None, None
-    link = await fetch_repo_link(db, repo_full_name)
-    if link is None:
-        return None, None
-    funder_id = getattr(link, "funder_user_id", None)
-    if funder_id is None:
-        return link, None
-    return link, await db.get(User, funder_id)
+async def fetch_bounty_funder(db, bounty_id):
+    """The bounty's requester. Settlement pays from this account, so holds use it too."""
+    if bounty_id is None:
+        return None
+    bounty = await db.get(Bounty, bounty_id)
+    requester_id = getattr(bounty, "requester_id", None) if bounty is not None else None
+    if requester_id is None:
+        return None
+    return await db.get(User, requester_id)
+
+
+class _PrincipalUnavailable(Exception):
+    pass
+
+
+async def _principal_id(client: httpx.AsyncClient, agent_id: str) -> str | None:
+    """None when the account has no principal. Raises when the exchange can't say."""
+    try:
+        resp = await client.get(
+            f"{settings.effective_exchange_url}/v1/accounts/{agent_id}/principal",
+            timeout=10.0,
+        )
+    except Exception as exc:
+        raise _PrincipalUnavailable(type(exc).__name__) from exc
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise _PrincipalUnavailable(f"status {resp.status_code}")
+    try:
+        links = resp.json().get("links") or []
+        return str(links[0]["principal_id"]) if links else None
+    except Exception as exc:
+        raise _PrincipalUnavailable("malformed principal response") from exc
 
 
 async def _principal_pair(funder_agent: str, solver_agent: str) -> tuple[object, object]:
-    """Principal ids for the two exchange accounts. Caller decides how to treat failures."""
-    from app.services.principal_sync import _fetch_principal_id
-
     headers: dict[str, str] = {}
     # Same client the principal sync job uses. The value is a credential; never log it.
     gateway_api_key = settings.GATEWAY_EXCHANGE_API_KEY or settings.GATEWAY_EXCHANGE_URL
     if gateway_api_key:
         headers["Authorization"] = f"Bearer {gateway_api_key}"
     async with httpx.AsyncClient(headers=headers) as client:
-        funder_principal = await _fetch_principal_id(client, funder_agent)
-        solver_principal = await _fetch_principal_id(client, solver_agent)
+        funder_principal = await _principal_id(client, funder_agent)
+        solver_principal = await _principal_id(client, solver_agent)
     return funder_principal, solver_principal
 
 
-async def _same_principal(funder_agent: str, solver_agent: str) -> bool:
-    """True only when both lookups return the same non-empty principal id."""
-    try:
-        funder_principal, solver_principal = await _principal_pair(funder_agent, solver_agent)
-    except Exception:
-        logger.info("principal lookup failed; self-dealing check not applied")
-        return False
-    if not funder_principal or not solver_principal:
-        logger.info("principal id unavailable; self-dealing check not applied")
-        return False
-    return str(funder_principal) == str(solver_principal)
+async def _self_dealing_denial(db, binding, solver, github_user_id: int, claims) -> APIResult | None:
+    """403 when the solver is a funder by user, GitHub account, or exchange principal.
 
-
-async def _self_dealing_denial(
-    db, repo: str, solver, github_user_id: int, claims
-) -> APIResult | None:
-    """403 when the solver is the funder by user, GitHub account, or exchange principal."""
+    Checks the bounty's requester and the repo link's funder. Fails closed: a
+    principal lookup the exchange can't answer refuses the claim with 502.
+    """
     if not settings.GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION:
         return None
-    link, funder = await _load_funder(db, repo)
-    if link is None:
-        return None
-    funder_id = getattr(link, "funder_user_id", None)
-    if funder_id is not None and solver.id == funder_id:
-        return _err(403, "self_dealing")
-    if funder is None:
-        return None
-    identity = await fetch_identity_for_user(db, funder.id)
-    funder_github = None
-    if identity is not None:
-        funder_github = _positive_int(getattr(identity, "github_user_id", None))
-    if funder_github is not None and funder_github == github_user_id:
-        return _err(403, "self_dealing")
-    funder_agent = getattr(funder, "exchange_bot_id", None)
+    funders = []
+    bounty_funder = await fetch_bounty_funder(db, binding.bounty_id)
+    if bounty_funder is not None:
+        funders.append(bounty_funder)
+    link = await fetch_repo_link(db, binding.repo_full_name)
+    link_funder_id = getattr(link, "funder_user_id", None) if link is not None else None
+    if link_funder_id is not None and all(f.id != link_funder_id for f in funders):
+        if solver.id == link_funder_id:
+            return _err(403, "self_dealing")
+        link_funder = await db.get(User, link_funder_id)
+        if link_funder is not None:
+            funders.append(link_funder)
+    if not funders:
+        logger.info("bounty has no funder; refusing claim")
+        return _err(409, "funder_missing")
     solver_agent = getattr(claims, "agent_id", None)
-    if funder_agent and solver_agent and await _same_principal(str(funder_agent), str(solver_agent)):
-        return _err(403, "self_dealing")
+    for funder in funders:
+        if solver.id == funder.id:
+            return _err(403, "self_dealing")
+        identity = await fetch_identity_for_user(db, funder.id)
+        funder_github = None
+        if identity is not None:
+            funder_github = _positive_int(getattr(identity, "github_user_id", None))
+        if funder_github is not None and funder_github == github_user_id:
+            return _err(403, "self_dealing")
+        funder_agent = getattr(funder, "exchange_bot_id", None)
+        if not funder_agent or not solver_agent:
+            continue
+        if str(funder_agent) == str(solver_agent):
+            return _err(403, "self_dealing")
+        try:
+            pair = await _principal_pair(str(funder_agent), str(solver_agent))
+        except _PrincipalUnavailable as exc:
+            logger.info("principal lookup failed (%s); refusing claim", exc)
+            return _err(502, "exchange_unavailable")
+        funder_principal, solver_principal = pair
+        if funder_principal and solver_principal and funder_principal == solver_principal:
+            return _err(403, "self_dealing")
     return None
 
 
-async def _funder_for_hold(db, repo: str, amount_ate: int):
-    """Balance-check the funder. Returns ``(funder, None)`` or ``(None, error)``."""
-    _link, funder = await _load_funder(db, repo)
+async def _funder_for_hold(db, binding, amount_ate: int):
+    """Balance-check the bounty funder. Returns ``(funder, None)`` or ``(None, error)``."""
+    funder = await fetch_bounty_funder(db, binding.bounty_id)
     account_id = getattr(funder, "exchange_bot_id", None) if funder is not None else None
     if not account_id:
         logger.info("funder exchange account missing for lease hold")
@@ -726,10 +757,71 @@ async def _funder_for_hold(db, repo: str, amount_ate: int):
     return funder, None
 
 
-async def _abort_hold(db, lease, exc: BaseException) -> APIResult:
-    """The lease won the race but no hold id was stored, so nothing is refunded."""
+class HoldRejected(Exception):
+    """The exchange refused to create the hold; no escrow exists for it."""
+
+
+async def resolve_hold(funder, lease, amount_ate: int) -> str:
+    """Create, or recover, the lease's hold escrow and return its id.
+
+    The request is deterministic per lease, so a repeat replays the original
+    (idempotency key) or names it (409 for an active task_id). Raises
+    HoldRejected on any other 4xx; other failures propagate.
+    """
+    from app.services.github_settlement import _duplicate_escrow_id
+
+    key = f"gh-hold:{lease.id}"
+    try:
+        result = await asyncio.to_thread(
+            exchange.create_escrow,
+            funder,
+            provider_id=lease.agent_id,
+            amount=int(amount_ate),
+            task_id=key,
+            ttl_minutes=_hold_ttl_minutes(),
+            idempotency_key=key,
+        )
+    except Exception as exc:
+        recovered = _duplicate_escrow_id(exc)
+        if recovered:
+            return recovered
+        if _client_error(exc) and _status_code(exc) != 429:
+            raise HoldRejected(str(_status_code(exc))) from exc
+        raise
+    raw_id = result.get("escrow_id") if isinstance(result, dict) else None
+    if not raw_id or not str(raw_id).strip():
+        raise RuntimeError("create_escrow returned no escrow id")
+    return str(raw_id).strip()
+
+
+async def _lock_claim_hold(db, lease, funder, amount_ate: int) -> APIResult | None:
+    """Create the hold for a lease committed with ``hold_escrow_id = HOLD_PENDING``.
+
+    Only ``hold_escrow_id`` is written here, so a concurrent release is not
+    overwritten; that release already queued a refund, which resolves the hold.
+    """
+    try:
+        escrow_id = await resolve_hold(funder, lease, amount_ate)
+    except HoldRejected:
+        logger.info("hold escrow refused for lease %s", lease.id)
+        lease.hold_escrow_id = None
+        await _abort_hold(db, lease, refund=False)
+        return _err(409, "funder_insufficient")
+    except Exception:
+        # The escrow may exist. Keep the pending marker so the refund job recovers it.
+        logger.info("hold escrow create failed for lease %s", lease.id)
+        await _abort_hold(db, lease, refund=True)
+        return _err(502, "exchange_unavailable")
+    lease.hold_escrow_id = escrow_id
+    await db.commit()
+    return None
+
+
+async def _abort_hold(db, lease, *, refund: bool) -> None:
     lease.status = LeaseStatus.RELEASED.value
     lease.release_reason = "hold_failed"
+    if refund:
+        enqueue_hold_refund(db, lease)
     try:
         await db.commit()
     except Exception:
@@ -738,38 +830,6 @@ async def _abort_hold(db, lease, exc: BaseException) -> APIResult:
             await db.rollback()
         except Exception:
             logger.warning("rollback failed after hold_failed for lease %s", lease.id)
-    if _client_error(exc):
-        return _err(409, "funder_insufficient")
-    return _err(502, "exchange_unavailable")
-
-
-async def _lock_claim_hold(db, lease, funder, claims, amount_ate: int) -> APIResult | None:
-    """Create the hold escrow for a lease row that is already committed."""
-    key = f"gh-hold:{lease.id}"
-    try:
-        result = await asyncio.to_thread(
-            exchange.create_escrow,
-            funder,
-            provider_id=claims.agent_id,
-            amount=int(amount_ate),
-            task_id=key,
-            ttl_minutes=_hold_ttl_minutes(),
-            idempotency_key=key,
-        )
-    except Exception as exc:
-        logger.info("hold escrow create failed for lease %s", lease.id)
-        return await _abort_hold(db, lease, exc)
-    escrow_id = ""
-    if isinstance(result, dict):
-        raw_id = result.get("escrow_id")
-        if raw_id:
-            escrow_id = str(raw_id).strip()
-    if not escrow_id:
-        logger.info("hold escrow create returned no id for lease %s", lease.id)
-        return await _abort_hold(db, lease, RuntimeError("create_escrow returned no escrow id"))
-    lease.hold_escrow_id = escrow_id
-    await db.commit()
-    return None
 
 
 def _refund_is_final(exc: BaseException) -> bool:
@@ -819,9 +879,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     github_user_id = _positive_int(getattr(identity, "github_user_id", None))
     if github_user_id is None:
         return _err(409, "no_github_identity")
-    denial_self = await _self_dealing_denial(
-        db, binding.repo_full_name, user, github_user_id, claims
-    )
+    denial_self = await _self_dealing_denial(db, binding, user, github_user_id, claims)
     if denial_self is not None:
         return denial_self
     await lock_agent_for_claim(db, claims.agent_id)
@@ -842,9 +900,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     lock_funds = bool(settings.GITHUB_LOCK_ESCROW_ON_LEASE_CLAIM)
     funder = None
     if lock_funds:
-        funder, balance_error = await _funder_for_hold(
-            db, binding.repo_full_name, spec.amount_ate
-        )
+        funder, balance_error = await _funder_for_hold(db, binding, spec.amount_ate)
         if balance_error is not None:
             return balance_error
     token = "sbl_" + secrets.token_urlsafe(32)
@@ -861,6 +917,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         hard_expires_at=now + timedelta(minutes=settings.LEASE_HARD_CAP_MINUTES),
         claim_kya=claims.kya_level,
         claim_reputation=claims.reputation,
+        hold_escrow_id=HOLD_PENDING if lock_funds else None,
         created_at=now,
     )
     db.add(lease)
@@ -870,7 +927,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         await db.rollback()
         return _err(409, "lease_held")
     if lock_funds:
-        hold_error = await _lock_claim_hold(db, lease, funder, claims, spec.amount_ate)
+        hold_error = await _lock_claim_hold(db, lease, funder, spec.amount_ate)
         if hold_error is not None:
             return hold_error
     body = {
@@ -888,6 +945,12 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     if lock_funds:
         body["funds_reserved"] = True
     return APIResult(201, body)
+
+
+def _lower(previous, current):
+    if previous is None or current is None:
+        return None
+    return min(previous, current)
 
 
 async def _locked_lease(db, lease):
@@ -999,8 +1062,9 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     locked.pr_number = pr_number
     locked.otel_trace_id = None if trace is None else trace[:64]
     locked.hold_expires_at = now + timedelta(hours=settings.LEASE_SUBMITTED_HOLD_HOURS)
-    locked.claim_kya = claims.kya_level
-    locked.claim_reputation = claims.reputation
+    # Auto-merge reads these; keep the lower of the claim and submit values.
+    locked.claim_kya = _lower(getattr(locked, "claim_kya", None), claims.kya_level)
+    locked.claim_reputation = _lower(getattr(locked, "claim_reputation", None), claims.reputation)
     binding.pr_number = pr_number
     binding.lease_holder_agent_id = locked.agent_id
     _clear_evaluation(binding)
@@ -1207,10 +1271,22 @@ async def handle_refund_hold(db: AsyncSession, job) -> None:
     if adopted and str(adopted) == str(lease.hold_escrow_id):
         return
     binding = await fetch_binding(db, lease.binding_id)
-    repo = getattr(binding, "repo_full_name", None) if binding is not None else None
-    _link, funder = await _load_funder(db, repo)
+    funder = await fetch_bounty_funder(db, getattr(binding, "bounty_id", None))
     if funder is None:
-        raise RetryableJobError("exchange unavailable")
+        raise RetryableJobError("funder missing for hold refund")
+    if lease.hold_escrow_id == HOLD_PENDING:
+        spec = await fetch_spec(db, lease.spec_id)
+        if spec is None:
+            raise RetryableJobError("spec missing for hold refund")
+        try:
+            lease.hold_escrow_id = await resolve_hold(funder, lease, spec.amount_ate)
+        except HoldRejected:
+            lease.hold_escrow_id = None
+            await db.commit()
+            return
+        except Exception as exc:
+            raise RetryableJobError("exchange unavailable") from exc
+        await db.commit()
     try:
         escrow = await asyncio.to_thread(exchange.get_escrow, funder, lease.hold_escrow_id)
     except Exception as exc:

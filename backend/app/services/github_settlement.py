@@ -230,7 +230,13 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
             delivered = escrow_already_delivered(escrow)
 
         action = next_action(state, escrow_status, delivered)
-        if action == "deliver" and _waits_for_alert(ctx):
+        # Gate deliver and release: the solver can deliver on a hold before the merge.
+        # DELIVERED is only reached after this gate passes.
+        if (
+            state == SettlementState.ESCROW_CREATED.value
+            and action in ("deliver", "release")
+            and _waits_for_alert(ctx)
+        ):
             gate = await _alert_gate(db, ctx)
             if gate == "wait":
                 await _schedule_recheck(db, settlement)
@@ -323,10 +329,18 @@ async def _adopted_hold_id(ctx: SettlementContext) -> str | None:
     A missing escrow (404) falls through to create. Any other lookup failure is
     re-raised so a blip cannot lock a second escrow while the hold is still open.
     """
+    from app.services import github_leases
+
     lease = ctx.lease
     hold_id = getattr(lease, "hold_escrow_id", None) if lease is not None else None
     if not hold_id:
         return None
+    if hold_id == github_leases.HOLD_PENDING:
+        try:
+            hold_id = await github_leases.resolve_hold(ctx.funder, lease, ctx.spec.amount_ate)
+        except github_leases.HoldRejected:
+            return None
+        lease.hold_escrow_id = hold_id
     try:
         escrow = await asyncio.to_thread(exchange.get_escrow, ctx.funder, hold_id)
     except Exception as exc:
@@ -347,18 +361,14 @@ async def _adopted_hold_id(ctx: SettlementContext) -> str | None:
 
 
 async def _refund_stale_hold(ctx: SettlementContext, hold_id: str) -> None:
-    """The lease is SETTLED, so handle_refund_hold skips it; settlement returns it."""
-    try:
-        await asyncio.to_thread(
-            exchange.refund_escrow, ctx.funder, hold_id, "hold not adoptable at settlement"
-        )
-    except Exception as exc:
-        logger.warning(
-            "could not refund hold %s for settlement %s: %s",
-            hold_id,
-            ctx.settlement.id,
-            _safe_error(exc),
-        )
+    """The lease is SETTLED, so handle_refund_hold skips it; settlement returns it.
+
+    A failed refund propagates (retryable) so a second escrow is never locked
+    while this one is still held.
+    """
+    await asyncio.to_thread(
+        exchange.refund_escrow, ctx.funder, hold_id, "hold not adoptable at settlement"
+    )
 
 
 async def _step_create(db: AsyncSession, ctx: SettlementContext) -> None:

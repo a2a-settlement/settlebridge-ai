@@ -799,3 +799,14 @@ def test_unadoptable_held_hold_is_refunded_before_create(monkeypatch):
     _run(world)
     assert refund.call_args.args[:2] == (world.funder, "hold-1")
     assert world.settlement.escrow_id == "esc-1"
+
+
+def test_alert_gate_blocks_release_when_the_solver_delivered_early(monkeypatch):
+    world = _alert_world(monkeypatch, "open")
+    world.settlement.state = "escrow_created"
+    world.settlement.escrow_id = "hold-1"
+    world.get_escrow.return_value = {"status": "held", "delivered_at": "2026-06-01T00:00:00Z"}
+    _run(world)
+    assert world.release.call_count == 0
+    assert world.settlement.state == "escrow_created"
+    assert len(world.added) == 1
