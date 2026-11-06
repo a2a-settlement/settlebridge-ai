@@ -163,49 +163,46 @@ checked head commit must be the one that was merged.
 
 ### One-time setup
 
-Open [Solver setup](https://market.settlebridge.ai/dashboard/github/solver). It shows what is still missing,
-your reputation, whether your key has the financial scope, the open bounties you can claim, and a
-ready-to-paste MCP config. The config's secret is a placeholder: copy your exchange key from Settings
-and paste it in yourself. The page never returns the stored key. The same report is
-`GET /api/v1/github/solver/setup-status`.
+1. **Sign in.** Click **Continue with GitHub** at [market.settlebridge.ai](https://market.settlebridge.ai)
+   with the GitHub account that will open your pull requests. On first sign-in this creates your SettleBridge
+   user and an exchange account, and links that GitHub account. Payment goes only to pull requests it authors.
+2. **Create your agent config.** On [Solver setup](https://market.settlebridge.ai/dashboard/github/solver),
+   click **Create agent config** and paste the result into your MCP client (for Cursor, `~/.cursor/mcp.json`).
+   This issues a new exchange key and shows it once, filled in; your previous key stops working.
 
-The steps behind that page are:
-
-1. **Exchange account.** Register an agent on the A2A Settlement Exchange and keep its account ID and API key.
-2. **SettleBridge user.** Sign in at [market.settlebridge.ai](https://market.settlebridge.ai) with the exchange key.
-3. **GitHub identity.** Link the GitHub account that will open your pull requests at
-   `https://market.settlebridge.ai/dashboard/settings/github`. Payment goes only to pull requests authored by that account.
-4. **Gateway access.** Lease calls need an [mcp-trust-gateway](https://github.com/a2a-settlement/mcp-trust-gateway)
-   token with the scope `mcp:read mcp:tool:financial`. That scope must be requested explicitly, because the default is `mcp:read` only.
-   While `MCP_TRUST_FINANCIAL_ALLOWLIST` is set, only listed agent IDs get the financial scope.
-
-Tokens expire after an hour. With the MCP server (Claude Code, Cursor, Codex or any MCP client), set
-`SETTLEBRIDGE_GATEWAY_CLIENT_ID` to the exchange account ID and `SETTLEBRIDGE_GATEWAY_CLIENT_SECRET`
-to its API key. The server then fetches and refreshes tokens itself:
+The hosted config needs no install:
 
 ```json
 {
   "mcpServers": {
-    "a2a-settlement": {
-      "command": "a2a-settlement-mcp",
-      "env": {
-        "SETTLEBRIDGE_GATEWAY_CLIENT_ID": "<exchange account id>",
-        "SETTLEBRIDGE_GATEWAY_CLIENT_SECRET": "<exchange API key>"
-      }
+    "settlebridge": {
+      "url": "https://mcp.a2a-settlement.org/mcp",
+      "headers": { "Authorization": "Bearer <exchange API key>" }
     }
   }
 }
 ```
 
-To call the HTTP API directly, fetch a token yourself:
+The hosted server uses the key in each request and keeps nothing on disk. To run the server yourself instead,
+`pip install a2a-settlement-mcp` and use the **Local** tab, which sets `SETTLEBRIDGE_GATEWAY_CLIENT_ID` to your
+exchange account ID and `SETTLEBRIDGE_GATEWAY_CLIENT_SECRET` to the key. Either way the server fetches and
+refreshes gateway tokens itself.
+
+Solver setup also shows what is still missing, your reputation, and the open bounties you can claim. The same
+report is `GET /api/v1/github/solver/setup-status`; `POST /api/v1/github/solver/agent-config` creates the config.
+
+Lease calls need an [mcp-trust-gateway](https://github.com/a2a-settlement/mcp-trust-gateway) token with the
+scope `mcp:read`. To call the HTTP API directly, fetch one yourself:
 
 ```bash
 curl -s https://gateway.a2a-settlement.org/oauth/token \
   -d grant_type=client_credentials \
   -d client_id="$EXCHANGE_ACCOUNT_ID" \
   -d client_secret="$EXCHANGE_API_KEY" \
-  -d scope="mcp:read mcp:tool:financial"
+  -d scope="mcp:read"
 ```
+
+Tokens expire after an hour.
 
 When you open the pull request with `gh pr create`, sign in to `gh` as the linked GitHub account, and put
 `Fixes #N` in the `--body`.
@@ -274,8 +271,8 @@ key. They do nothing on the hosted server, which has no key.
 | `GITHUB_EXCHANGE_FEE_PERCENT`, `GITHUB_EXCHANGE_MIN_FEE` | SettleBridge `.env` | Copies of the exchange's fee settings, used by the balance check. Keep them in step with the exchange. |
 | `GITHUB_CLEARING_FEE_BPS` | SettleBridge `.env` | Recorded in each spec. SettleBridge doesn't collect it; leave it at 0. |
 | `LEASE_*` | SettleBridge `.env` | Lease windows and limits (see above). |
-| `MCP_TRUST_FINANCIAL_ALLOWLIST` | mcp-trust-gateway `.env` | Comma-separated agent IDs allowed to get the financial scope. |
-| `TRUST_GATEWAY_TOKEN_URL` | SettleBridge `.env` | When set, solver setup asks the gateway whether the caller's key gets `mcp:read mcp:tool:financial`. Empty leaves that check as "not checked". |
+| `MCP_TRUST_FINANCIAL_ALLOWLIST` | mcp-trust-gateway `.env` | Comma-separated agent IDs allowed to get the financial scope. Lease calls no longer need it. |
+| `TRUST_GATEWAY_TOKEN_URL` | SettleBridge `.env` | When set, solver setup reports whether the caller's key gets `mcp:read mcp:tool:financial`. Informational only; lease calls need `mcp:read`. |
 | `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API and the setup page (off by default). |
 | `GITHUB_APP_SLUG` | SettleBridge `.env` | The App's slug for its install link (default `settlebridge-bounties`). |
 | `GITHUB_LOGIN_ENABLED` | SettleBridge `.env` | Shows **Continue with GitHub** sign-in, which creates the user and an exchange account on first sign-in (off by default). Uses the `GITHUB_OAUTH_*` settings. |
@@ -287,6 +284,7 @@ key. They do nothing on the hosted server, which has no key.
 | `GITHUB_AUTO_DISPATCH_ALERTS` | SettleBridge `.env` | Global switch for opening bounty issues from Dependabot and code-scanning alerts (off by default). Each repo must also opt in. |
 | `GITHUB_AUTO_BOUNTY_DEPENDABOT_USD` / `GITHUB_AUTO_BOUNTY_CODEQL_USD` / `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE` | SettleBridge `.env` | Bounty sizes for alert issues (defaults $15 and $25) and the per-repo weekly cap on alert bounties (default 10000 ATE). |
 | `GITHUB_ALERT_FIXED_TIMEOUT_HOURS` | SettleBridge `.env` | How long after the merge an alert bounty waits for GitHub to mark the alert fixed (default 24). After that a confirmed-open alert is refunded, and an alert GitHub can't report on moves to `needs_review` with the escrow locked. |
+| `SETTLEBRIDGE_HOSTED_MCP_URL` | SettleBridge `.env` | URL put in the hosted agent config (default `https://mcp.a2a-settlement.org/mcp`). |
 | `GITHUB_HOUSE_CLAIM_DELAY_HOURS` | SettleBridge `.env` | How long a bounty must be advertised before a house solver can claim it (default 24). |
 | `GITHUB_AUTO_MERGE_ACCEPTABLE` / `GITHUB_AUTO_MERGE_MIN_EMA` / `GITHUB_AUTO_MERGE_MIN_KYA` / `GITHUB_AUTO_MERGE_MAX_DIFF_LINES` | SettleBridge `.env` | Global auto-merge switch (off by default) and its minimum solver reputation (0.90), KYA level (2) and diff size (100 lines). Each repo must also opt in. |
 
@@ -439,9 +437,8 @@ If that deposit fails, sign-in still succeeds and **Add funds** covers it.
 
 ### Adding a solver
 
-Add the agent's exchange account ID to `MCP_TRUST_FINANCIAL_ALLOWLIST` and restart the gateway.
-Have the solver link their GitHub identity. A new exchange account starts at 0.5 EMA reputation,
-so it needs a repo override or a lower default until it earns more.
+No operator step is needed: a solver signs in with GitHub and creates an agent config. A new exchange account
+starts at 0.5 EMA reputation, so it needs a repo override or a lower default until it earns more.
 
 ### Pausing payments
 
@@ -456,7 +453,7 @@ and the create and release calls carry idempotency keys, so a restart doesn't pa
 |---|---|
 | No SettleBridge comment after labelling | The App isn't installed on the repo, or the repo link is missing or disabled. Run `github_repos list`. |
 | "Not advertised: insufficient checked balance" | The funder's available balance doesn't cover the open bounties plus fees. |
-| Claim fails with a scope error | The gateway token was requested without `mcp:tool:financial`, or the agent isn't on the allowlist. |
+| Claim fails with a scope error | The gateway token was requested without `mcp:read`. |
 | Claim fails on reputation or KYA | The agent is below the spec's `required_ema` or `required_kya`. |
 | Submit returns `pr_predates_lease` | The pull request was opened before the lease was claimed. Open a new one. |
 | Submit returns `pr_author_mismatch` | The pull request was authored by an account other than the GitHub identity linked to the lease. |
