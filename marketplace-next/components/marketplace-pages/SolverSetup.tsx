@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import axios from "axios";
-import { AlertCircle, Check, CheckCircle, Copy, Loader2, Wrench } from "lucide-react";
+import { AlertCircle, Check, CheckCircle, Copy, Key, Loader2, Wrench } from "lucide-react";
 import api from "@/services/api";
 
 interface NextStep {
@@ -103,7 +104,247 @@ function ErrorBox({ message }: { message: string }) {
   );
 }
 
+interface AgentConfigPayload {
+  account_id: string;
+  api_key: string;
+  rotated_at: string;
+  hosted: {
+    mcpServers: {
+      settlebridge: {
+        url: string;
+        headers: { Authorization: string };
+      };
+    };
+  };
+  local: {
+    mcpServers: {
+      "a2a-settlement": {
+        command: string;
+        env: {
+          SETTLEBRIDGE_GATEWAY_CLIENT_ID: string;
+          SETTLEBRIDGE_GATEWAY_CLIENT_SECRET: string;
+        };
+      };
+    };
+  };
+}
+
+type ConfigTab = "hosted" | "local";
+
+function readAgentConfig(data: unknown): AgentConfigPayload | null {
+  if (!data || typeof data !== "object") return null;
+  const body = data as AgentConfigPayload;
+  if (!body.hosted || typeof body.hosted !== "object") return null;
+  if (!body.local || typeof body.local !== "object") return null;
+  return body;
+}
+
+/** 401 is left to the API client's existing sign-in redirect. */
+function messageForAgentConfig(err: unknown): string | null {
+  if (!axios.isAxiosError(err)) return "Couldn't create the agent config.";
+  const status = err.response?.status;
+  if (status === 401) return null;
+  if (status === 409) {
+    return "Your account has no exchange account yet. Finish GitHub sign-in first.";
+  }
+  if (status === 502) {
+    return "The exchange did not respond. Your current key still works. Try again.";
+  }
+  return "Couldn't create the agent config.";
+}
+
+function AgentConfigCard({ needsConfirm, busy }: { needsConfirm: boolean; busy: boolean }) {
+  const [payload, setPayload] = useState<AgentConfigPayload | null>(null);
+  const [tab, setTab] = useState<ConfigTab>("hosted");
+  const [confirming, setConfirming] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [configError, setConfigError] = useState("");
+  const [copiedTab, setCopiedTab] = useState<ConfigTab | null>(null);
+  const creatingRef = useRef(false);
+  const copyTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    const clearOnLeave = () => setPayload(null);
+    window.addEventListener("pagehide", clearOnLeave);
+    return () => {
+      window.removeEventListener("pagehide", clearOnLeave);
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+      setPayload(null);
+    };
+  }, []);
+
+  const clearConfig = () => {
+    setPayload(null);
+    setTab("hosted");
+    setCopiedTab(null);
+    setConfirming(false);
+    setConfigError("");
+    if (copyTimer.current) window.clearTimeout(copyTimer.current);
+  };
+
+  const createConfig = async () => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    setConfigError("");
+    try {
+      const { data } = await api.post<unknown>("/v1/github/solver/agent-config");
+      const next = readAgentConfig(data);
+      if (!next) {
+        setConfigError("Couldn't create the agent config.");
+        return;
+      }
+      setPayload(next);
+      setTab("hosted");
+      setCopiedTab(null);
+      setConfirming(false);
+    } catch (err: unknown) {
+      const message = messageForAgentConfig(err);
+      if (message) setConfigError(message);
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
+  };
+
+  const onCreateClick = () => {
+    setConfigError("");
+    if (needsConfirm) {
+      setConfirming(true);
+      return;
+    }
+    void createConfig();
+  };
+
+  const copyShown = (which: ConfigTab, text: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setCopiedTab(which);
+        if (copyTimer.current) window.clearTimeout(copyTimer.current);
+        copyTimer.current = window.setTimeout(() => setCopiedTab(null), 2000);
+      },
+      () => setConfigError("Couldn't copy the MCP config.")
+    );
+  };
+
+  const shownText = payload
+    ? JSON.stringify(tab === "hosted" ? payload.hosted : payload.local, null, 2)
+    : "";
+
+  const tabClass = (which: ConfigTab) =>
+    `flex-1 py-2 text-sm font-medium rounded-lg transition ${
+      tab === which ? "bg-navy-900 text-white" : "text-gray-600 hover:text-navy-900"
+    }`;
+
+  return (
+    <div className="bg-white border-2 border-navy-900 rounded-xl p-6 space-y-4">
+      <div className="flex items-center gap-2">
+        <Key className="w-4 h-4 text-navy-900" />
+        <h2 className="font-semibold text-navy-900">Create agent config</h2>
+      </div>
+      <p className="text-sm text-gray-700">
+        Creates a new exchange key and a config with it filled in. The config is shown once. Your
+        previous key stops working, so update any agent already using it.
+      </p>
+
+      {configError && <ErrorBox message={configError} />}
+
+      {payload ? (
+        <div className="space-y-3">
+          <div className="flex bg-gray-100 rounded-lg p-1" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "hosted"}
+              className={tabClass("hosted")}
+              onClick={() => setTab("hosted")}
+            >
+              Hosted (recommended)
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "local"}
+              className={tabClass("local")}
+              onClick={() => setTab("local")}
+            >
+              Local
+            </button>
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => copyShown(tab, shownText)}
+              className="flex items-center gap-1 text-xs text-navy-700 hover:text-navy-900 font-medium"
+            >
+              {copiedTab === tab ? (
+                <>
+                  <Check className="w-3.5 h-3.5" /> Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" /> Copy
+                </>
+              )}
+            </button>
+          </div>
+          <pre className="text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-gray-800">
+            {shownText}
+          </pre>
+          <p className="text-sm text-gray-600">
+            {tab === "hosted"
+              ? "Paste into your MCP client config (Cursor: ~/.cursor/mcp.json). No install needed."
+              : "Needs pip install a2a-settlement-mcp."}
+          </p>
+          <button
+            type="button"
+            onClick={clearConfig}
+            className="inline-flex items-center justify-center px-5 py-2.5 border border-gray-300 text-navy-900 rounded-lg font-semibold text-sm hover:bg-gray-50 transition"
+          >
+            Done
+          </button>
+        </div>
+      ) : confirming ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-3">
+          <p className="text-sm text-amber-900">Replace your current key with a new one?</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void createConfig()}
+              disabled={creating}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-navy-900 text-white rounded-lg font-semibold text-sm hover:bg-navy-800 transition disabled:opacity-50"
+            >
+              {creating && <Loader2 className="w-4 h-4 animate-spin" />}
+              {creating ? "Creating…" : "Create agent config"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={creating}
+              className="px-4 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onCreateClick}
+          disabled={busy || creating}
+          className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-navy-900 text-white rounded-lg font-semibold text-sm hover:bg-navy-800 transition disabled:opacity-50"
+        >
+          {creating && <Loader2 className="w-4 h-4 animate-spin" />}
+          {creating ? "Creating…" : "Create agent config"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function SolverSetup() {
+  const searchParams = useSearchParams();
+  const welcome = searchParams.get("welcome") === "1";
   const [status, setStatus] = useState<SolverSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -153,6 +394,14 @@ export default function SolverSetup() {
           </p>
         </div>
       </div>
+
+      {welcome && (
+        <p className="text-sm text-navy-900 bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+          Welcome. Create your agent config to start solving bounties.
+        </p>
+      )}
+
+      <AgentConfigCard needsConfirm={!welcome && Boolean(status?.exchange_account_id)} busy={loading} />
 
       {loading && (
         <p className="text-sm text-gray-400 flex items-center gap-2">
@@ -248,7 +497,10 @@ export default function SolverSetup() {
 
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-navy-900">MCP config</h2>
+              <div>
+                <h2 className="text-sm font-semibold text-navy-900">MCP config</h2>
+                <p className="text-xs text-gray-500">Uses a placeholder key.</p>
+              </div>
               <button
                 type="button"
                 onClick={copyConfig}

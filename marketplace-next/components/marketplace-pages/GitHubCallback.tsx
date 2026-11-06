@@ -27,6 +27,25 @@ function failureMessage(
   return "";
 }
 
+const SOLVER_WELCOME = "/dashboard/github/solver?welcome=1";
+
+/** Repo setup keeps its own return path. Any other new GitHub account starts as a solver. */
+function isRepoSetupReturn(path: string | null): boolean {
+  if (!path) return false;
+  const end = path.search(/[?#]/);
+  const pathname = end === -1 ? path : path.slice(0, end);
+  return pathname === "/dashboard/github/setup" || pathname.startsWith("/dashboard/github/setup/");
+}
+
+function destinationAfterGitHubSignIn(
+  created: boolean,
+  returnedNext: string | null,
+  storedReturn: string | null
+): string {
+  if (created && !isRepoSetupReturn(returnedNext)) return SOLVER_WELCOME;
+  return returnedNext ?? storedReturn ?? "/dashboard";
+}
+
 function stripOAuthParams() {
   const url = new URL(window.location.href);
   if (!url.searchParams.has("code") && !url.searchParams.has("state")) return;
@@ -85,7 +104,9 @@ export default function GitHubCallback() {
           const result = await githubLogin(authorizationCode, authorizationState, nonce);
           setLogin(result.login);
           setPhase("signed_in");
-          router.replace(result.next ?? next ?? "/dashboard");
+          router.replace(
+            destinationAfterGitHubSignIn(result.created === true, result.next, next)
+          );
         } catch (err: unknown) {
           const status = axios.isAxiosError(err) ? err.response?.status : undefined;
           setPhase(status === 404 || status === 503 ? "unavailable" : "failed");

@@ -444,6 +444,23 @@ def list_managed_bots(user: User, developer_id: str | None = None) -> dict[str, 
     return resp.json()
 
 
+def rotate_api_key(user: User) -> str:
+    """Rotate the caller's own exchange API key and return the new key."""
+    import httpx
+
+    response = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/rotate-key",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    body = response.json()
+    api_key = body.get("api_key") if isinstance(body, dict) else None
+    if not isinstance(api_key, str) or api_key == "":
+        raise ValueError("exchange rotate-key response missing api_key")
+    return api_key
+
+
 def rotate_bot_key(user: User, bot_id: str) -> dict[str, Any]:
     """Rotate the API key for a managed bot. Returns new ate_ key (once only)."""
     import httpx
