@@ -159,25 +159,60 @@ Submitting a pull request is not payment. Payment happens only after the merge a
 | `GITHUB_CLEARING_FEE_BPS` | SettleBridge `.env` | Recorded in each spec. SettleBridge doesn't collect it; leave it at 0. |
 | `LEASE_*` | SettleBridge `.env` | Lease windows and limits (see above). |
 | `MCP_TRUST_FINANCIAL_ALLOWLIST` | mcp-trust-gateway `.env` | Comma-separated agent IDs allowed to get the financial scope. |
+| `GITHUB_SELF_SERVE_ONBOARDING` | SettleBridge `.env` | Lets a repo admin onboard their own repo through the API (off by default). |
 
 ### Adding a repo
 
 1. Install the SettleBridge GitHub App on the repo. The installation event creates a disabled repo link.
-2. Make sure the repo's default branch requires the check you will name, such as a GitHub Actions job.
-3. On the server, from `backend/` and as the service user, with the `.env` loaded, configure and then enable the link.
-   Each command is a dry run until you add `--apply`:
+2. Make sure the funder has a SettleBridge user with an exchange account. Its available balance, after its
+   open bounties, must cover at least a $1 bounty plus the fee (101 ATE).
+3. On the server, from `backend/` and as the service user, with the `.env` loaded, run `onboard`.
+   It's a dry run until you add `--apply`:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m app.cli.github_repos onboard --repo OWNER/NAME \
+  --funder-email funder@example.com
+```
+
+`onboard` reads the repo from GitHub and prints what it found. It then sets the funder, required
+checks and allowed paths, and enables the link, all in one transaction. Running it again with the same
+inputs reports `"changed": false` and writes nothing.
+
+- **Required checks.** A check is used automatically only when the default branch's ruleset or branch
+  protection pins it to an app. Otherwise `onboard` stops and lists the checks that passed on the latest
+  commit; choose one and pass it as `--check NAME:APP_ID` (15368 is GitHub Actions). A check name alone isn't
+  enough, because any app could report a check with that name.
+- **Allowed paths.** These are detected from the repo root: `src/`, `app/`, `lib/`, `tests/` and `test/`
+  for Python repos, and `src/`, `lib/`, `test/` and `tests/` for JavaScript repos. Only directories that
+  exist are included. Pass `--allowed-path GLOB` (repeatable) to replace them. The list can't be empty,
+  because the mediator treats an empty list as every path, and no glob may match anything under `.github/`.
+- **Funder.** `onboard` won't replace a different funder already set on the link unless you pass `--replace-funder`.
+
+Use `list` to see every link, and `configure`, `enable` and `disable` for later edits:
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m app.cli.github_repos list
 PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAME \
-  --funder-email funder@example.com --check test:15368 \
-  --allowed-path 'src/*' --allowed-path 'tests/*'
-PYTHONPATH=. .venv/bin/python -m app.cli.github_repos enable --repo OWNER/NAME
+  --check test:15368 --allowed-path 'src/*' --allowed-path 'tests/*'
+PYTHONPATH=. .venv/bin/python -m app.cli.github_repos disable --repo OWNER/NAME
 ```
 
-The check is given as `name:app_id`; 15368 is GitHub Actions. To enable a link it needs a funder,
-at least one required check, and a live installation. Existing leases keep the acceptance spec
-they claimed under.
+To enable a link it needs a funder, at least one required check, and a live installation. Existing
+leases keep the acceptance spec they claimed under.
+
+### Self-serve onboarding
+
+With `GITHUB_SELF_SERVE_ONBOARDING=true`, a signed-in SettleBridge user can onboard a repo they fund
+without the operator:
+
+- `GET /api/v1/github/repos/{owner}/{name}/onboard` previews what `onboard` detects.
+- `POST /api/v1/github/repos/{owner}/{name}/onboard` with `{"checks": [{"name": "test", "app_id": 15368}]}`,
+  plus optional `allowed_paths`, `allowed_dependency_changes` and `dry_run`, configures and enables the repo.
+
+The caller always becomes the funder. Their linked GitHub account must have `admin` permission on the repo,
+which SettleBridge checks by GitHub user ID, not only by login. The App must be installed, and the repo must not
+already have a different funder. Required checks must always be sent explicitly. Each repo records
+who onboarded it and when.
 
 ### Adding a solver
 

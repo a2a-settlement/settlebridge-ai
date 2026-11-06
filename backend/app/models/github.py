@@ -169,6 +169,10 @@ class GitHubRepoLink(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     default_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     required_checks: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    onboarded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    onboarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

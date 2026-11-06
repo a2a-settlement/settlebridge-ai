@@ -481,7 +481,103 @@ def test_invalid_repo_and_sha_rejected(monkeypatch: pytest.MonkeyPatch):
         github_app.list_check_runs(1, "not a repo", sha),
         github_app.upsert_sticky_comment(1, "acme/widgets?x=1", 1, "m", "b"),
         github_app.get_collaborator_permission(1, REPO, "octo/cat"),
+        github_app.get_collaborator_record(1, REPO, "octo cat"),
+        github_app.get_repository(1, "acme"),
+        github_app.get_branch(1, REPO, "has space"),
+        github_app.get_branch_rules(1, REPO, ""),
+        github_app.list_root_entries(1, REPO, "main\n"),
     ]
     for call in calls:
         with pytest.raises(GitHubAPIError):
             asyncio.run(call)
+
+
+def _routes(monkeypatch: pytest.MonkeyPatch, responses: dict[str, httpx.Response]) -> list[str]:
+    _configure(monkeypatch, _PRIVATE_PEM)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return _token_json(request, _expiry(timedelta(hours=1)))
+        target = request.url.raw_path.decode("ascii")
+        seen.append(target)
+        assert request.headers["authorization"] == "Bearer ghs_3"
+        return responses[target]
+
+    _install(monkeypatch, handler)
+    return seen
+
+
+def test_repository_branch_and_rules_quote_the_branch(monkeypatch: pytest.MonkeyPatch):
+    seen = _routes(
+        monkeypatch,
+        {
+            "/repos/acme/widgets": httpx.Response(200, json={"default_branch": "release/1.x"}),
+            "/repos/acme/widgets/branches/release%2F1.x": httpx.Response(
+                200, json={"name": "release/1.x", "commit": {"sha": "f" * 40}}
+            ),
+            "/repos/acme/widgets/rules/branches/release%2F1.x?per_page=100": httpx.Response(
+                200, json=[{"type": "required_status_checks"}, "junk"]
+            ),
+        },
+    )
+    repo = asyncio.run(github_app.get_repository(3, REPO))
+    branch = asyncio.run(github_app.get_branch(3, REPO, repo["default_branch"]))
+    rules = asyncio.run(github_app.get_branch_rules(3, REPO, "release/1.x"))
+    assert branch["commit"]["sha"] == "f" * 40
+    assert rules == [{"type": "required_status_checks"}]
+    assert len(seen) == 3
+
+
+def test_branch_rules_and_contents_treat_404_as_empty(monkeypatch: pytest.MonkeyPatch):
+    _routes(
+        monkeypatch,
+        {
+            "/repos/acme/widgets/rules/branches/main?per_page=100": httpx.Response(404),
+            "/repos/acme/widgets/contents?ref=main": httpx.Response(404),
+        },
+    )
+    assert asyncio.run(github_app.get_branch_rules(3, REPO, "main")) == []
+    assert asyncio.run(github_app.list_root_entries(3, REPO, "main")) == []
+
+
+def test_list_root_entries_keeps_name_and_type(monkeypatch: pytest.MonkeyPatch):
+    _routes(
+        monkeypatch,
+        {
+            "/repos/acme/widgets/contents?ref=main": httpx.Response(
+                200,
+                json=[
+                    {"name": "src", "type": "dir", "sha": "x"},
+                    {"name": "pyproject.toml", "type": "file"},
+                    {"type": "file"},
+                ],
+            )
+        },
+    )
+    assert asyncio.run(github_app.list_root_entries(3, REPO, "main")) == [
+        {"name": "src", "type": "dir"},
+        {"name": "pyproject.toml", "type": "file"},
+    ]
+
+
+def test_get_branch_error_is_raised(monkeypatch: pytest.MonkeyPatch):
+    _routes(monkeypatch, {"/repos/acme/widgets/branches/main": httpx.Response(404)})
+    with pytest.raises(GitHubAPIError) as caught:
+        asyncio.run(github_app.get_branch(3, REPO, "main"))
+    assert caught.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "expected"),
+    [
+        (200, {"permission": "admin", "user": {"id": 77}}, ("admin", 77)),
+        (200, {"permission": "write", "role_name": "maintain", "user": {"id": 77}}, ("maintain", 77)),
+        (200, {"permission": "read", "user": {"id": True}}, ("read", None)),
+        (404, None, ("none", None)),
+    ],
+)
+def test_get_collaborator_record(monkeypatch: pytest.MonkeyPatch, status, payload, expected):
+    response = httpx.Response(status, json=payload) if payload is not None else httpx.Response(status)
+    _routes(monkeypatch, {"/repos/acme/widgets/collaborators/octo/permission": response})
+    assert asyncio.run(github_app.get_collaborator_record(3, REPO, "octo")) == expected

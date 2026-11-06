@@ -3,6 +3,7 @@
 Run from the backend directory::
 
     PYTHONPATH=. python -m app.cli.github_repos list
+    PYTHONPATH=. python -m app.cli.github_repos onboard --repo OWNER/NAME --funder-email EMAIL
     PYTHONPATH=. python -m app.cli.github_repos configure --repo OWNER/NAME ...
     PYTHONPATH=. python -m app.cli.github_repos enable --repo OWNER/NAME
     PYTHONPATH=. python -m app.cli.github_repos disable --repo OWNER/NAME
@@ -26,8 +27,10 @@ import json
 import sys
 
 from app.database import async_session
+from app.services.github_onboarding import onboard_repo
 from app.services.github_repo_admin import (
     RepoAdminError,
+    _require_user,
     configure_repo_link,
     list_repo_links,
     set_repo_enabled,
@@ -63,6 +66,49 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="Show repo links. Does not write.")
+
+    onboard = sub.add_parser(
+        "onboard",
+        parents=[write_flags],
+        help=(
+            "Detect required checks and allowed paths, then set the funder and enable the "
+            "repo in one transaction. Passed values replace detected ones."
+        ),
+    )
+    onboard.add_argument("--repo", required=True, help="GitHub repo as OWNER/NAME")
+    onboard.add_argument(
+        "--funder-email", required=True, help="User who funds bounties on this repo."
+    )
+    onboard.add_argument(
+        "--check",
+        action="append",
+        default=None,
+        type=parse_check,
+        metavar="NAME:APP_ID",
+        help=(
+            "Required check. Needed when the default branch does not pin one to an app. "
+            "Repeat for more than one."
+        ),
+    )
+    onboard.add_argument(
+        "--allowed-path",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help="Allowed path glob. Replaces the detected paths. Repeat to add another.",
+    )
+    onboard.add_argument(
+        "--allowed-dependency",
+        action="append",
+        default=None,
+        metavar="PKG",
+        help="Replace allowed_dependency_changes. Repeat to add another package.",
+    )
+    onboard.add_argument(
+        "--replace-funder",
+        action="store_true",
+        help="Allow replacing a different funder already set on the link.",
+    )
 
     configure = sub.add_parser(
         "configure",
@@ -113,6 +159,18 @@ def _print_json(payload: object) -> None:
 async def _invoke(db, args: argparse.Namespace) -> tuple[object, bool]:
     if args.command == "list":
         return await list_repo_links(db), False
+    if args.command == "onboard":
+        funder = await _require_user(db, args.funder_email)
+        payload = await onboard_repo(
+            db,
+            args.repo,
+            funder=funder,
+            checks=args.check,
+            allowed_paths=args.allowed_path,
+            allowed_dependency_changes=args.allowed_dependency,
+            replace_funder=args.replace_funder,
+        )
+        return payload, bool(payload["changed"])
     if args.command == "configure":
         payload = await configure_repo_link(
             db,
