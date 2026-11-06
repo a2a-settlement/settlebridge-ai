@@ -13,6 +13,7 @@ from app.routes import github as github_routes
 from app.routes import github_identity as github_identity_routes
 from app.routes import github_leases as github_lease_routes
 from app.routes import github_onboarding as github_onboarding_routes
+from app.routes import cyber as cyber_routes
 from app.routes import ledger as ledger_routes
 from app.routes import solver_setup as solver_setup_routes
 from app.services.github_jobs import run_github_job_loop
@@ -246,6 +247,7 @@ if settings.MARKETPLACE_ENABLED:
         github_onboarding_routes.router, prefix="/api/v1/github", tags=["github"]
     )
     app.include_router(ledger_routes.router, prefix="/api/v1", tags=["ledger"])
+    app.include_router(cyber_routes.router, prefix="/api/v1", tags=["cyber"])
     app.include_router(solver_setup_routes.router, prefix="/api/v1/github", tags=["github"])
 
 

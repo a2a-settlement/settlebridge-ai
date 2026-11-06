@@ -798,8 +798,11 @@ def _stage_spec(
     version: int,
     content: dict,
     content_hash: str,
+    *,
+    security_tier: bool = False,
 ) -> AcceptanceSpec:
     # Acceptance terms are insert-only. A change is a new version, never an update.
+    # security_tier follows ParsedLabels.security and is not part of the content hash.
     spec = AcceptanceSpec(
         id=uuid.uuid4(),
         binding_id=binding_id,
@@ -813,6 +816,7 @@ def _stage_spec(
         fee_bps=content["fee_bps"],
         required_kya=content["required_kya"],
         required_ema=content["required_ema"],
+        security_tier=security_tier,
     )
     db.add(spec)
     return spec
@@ -996,6 +1000,7 @@ async def _create_advertised_bounty(
     content: dict,
     content_hash: str,
     amount_usd: str,
+    security_tier: bool = False,
 ) -> None:
     user = await lock_user(db, link.funder_user_id)
     if user is None or not user.exchange_bot_id:
@@ -1053,7 +1058,9 @@ async def _create_advertised_bounty(
     )
     db.add(binding)
     await _flush(db)
-    spec = _stage_spec(db, binding.id, 1, content, content_hash)
+    spec = _stage_spec(
+        db, binding.id, 1, content, content_hash, security_tier=security_tier
+    )
     await _flush(db)
     binding.current_spec_id = spec.id
     db.add(
@@ -1113,6 +1120,7 @@ async def _update_binding_terms(
     content: dict,
     content_hash: str,
     amount_usd: str,
+    security_tier: bool = False,
 ) -> None:
     if binding.current_spec_id is None:
         current = None
@@ -1180,7 +1188,9 @@ async def _update_binding_terms(
             await _flush(db)
             return
     version = 1 if current is None else int(current.version) + 1
-    spec = _stage_spec(db, binding.id, version, content, content_hash)
+    spec = _stage_spec(
+        db, binding.id, version, content, content_hash, security_tier=security_tier
+    )
     await _flush(db)
     binding.current_spec_id = spec.id
     if ledger is None:
@@ -1286,6 +1296,7 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
             content=content,
             content_hash=content_hash,
             amount_usd=amount_usd,
+            security_tier=parsed.security,
         )
         return
     await _update_binding_terms(
@@ -1298,6 +1309,7 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
         content=content,
         content_hash=content_hash,
         amount_usd=amount_usd,
+        security_tier=parsed.security,
     )
 
 

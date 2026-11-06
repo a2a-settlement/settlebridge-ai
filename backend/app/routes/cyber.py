@@ -1,0 +1,23 @@
+"""Public SettleBridge Cyber tasks. Mounted at /api/v1."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.services import cyber_tasks
+
+router = APIRouter()
+
+
+@router.get("/cyber/tasks")
+async def list_cyber_tasks(
+    view: Literal["available", "in_progress", "completed"] = "available",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(12, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    return await cyber_tasks.list_tasks(db, view=view, page=page, page_size=page_size)

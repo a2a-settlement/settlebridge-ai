@@ -6,8 +6,10 @@ import enum
 import uuid
 from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -301,6 +303,9 @@ class AcceptanceSpec(Base):
     fee_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     required_kya: Mapped[int] = mapped_column(Integer, nullable=False)
     required_ema: Mapped[float] = mapped_column(Float, nullable=False)
+    security_tier: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa.false()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
