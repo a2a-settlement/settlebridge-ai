@@ -466,7 +466,8 @@ async def _usage_totals(db, task_id, claim_ids) -> dict[str, int]:
         db, select(ChallengeAttempt).where(ChallengeAttempt.task_id == task_id)
     )
     reservation_ids = [row.reservation_id for row in attempts if row.reservation_id is not None]
-    subjects = [f"challenge_attempt:{row.id}" for row in attempts]
+    subjects = [f"challenge_baseline:{task_id}"]
+    subjects.extend(f"challenge_attempt:{row.id}" for row in attempts)
     subjects.extend(f"challenge_validate:{claim_id}" for claim_id in claim_ids)
     filters = []
     if reservation_ids:

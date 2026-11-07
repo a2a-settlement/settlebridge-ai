@@ -346,6 +346,23 @@ def test_usage_is_deduped_by_execution_id(db):
     assert _count(db, ExecutionUsage) == 2
 
 
+def test_usage_replay_from_another_reservation_is_refused(db):
+    async def body():
+        budget = _add_budget(db)
+        first = await _reserve(db, budget, cents=100)
+        second = await _reserve(
+            db, budget, cents=100, key="other-hold", subject="challenge_validate:2"
+        )
+        await _use(db, first, "exec:shared", cost=30)
+        with pytest.raises(ValueError):
+            await _use(db, second, "exec:shared", cost=30)
+        return second.id
+
+    second_id = _run(body())
+    assert _fresh(db, SpendReservation, second_id).used_cents == 0
+    assert _count(db, ExecutionUsage) == 1
+
+
 def test_usage_conflict_does_not_charge_twice(db, monkeypatch):
     async def body():
         budget = _add_budget(db)

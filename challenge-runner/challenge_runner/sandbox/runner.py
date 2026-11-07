@@ -334,7 +334,7 @@ def _run_container(
     archive_cap = min(job.limits.disk_mb * 1024 * 1024, MAX_EXPORT_BYTES)
     code, stdout, stderr, timed_out = run_foreground(
         argv,
-        timeout=job.limits.wall_seconds,
+        timeout=min(job.limits.wall_seconds, job.limits.cpu_seconds),
         kill_name=resources.container,
         stdin=stdin,
         max_archive_bytes=archive_cap,
@@ -354,7 +354,8 @@ def _run_container(
         status,
         error=error,
         exit_code=exit_code,
-        cpu_seconds=0,
+        # --cpus=1 bounds CPU time by wall time, so wall is the CPU upper bound.
+        cpu_seconds=wall,
         wall_seconds=wall,
         log_text=stderr.decode("utf-8", "replace"),
         captured=True,

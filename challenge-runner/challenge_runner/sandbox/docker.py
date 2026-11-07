@@ -117,7 +117,8 @@ def require_image() -> str:
 
 def require_runtime() -> str:
     runtime = os.environ.get("CHALLENGE_SANDBOX_RUNTIME", "runsc")
-    if RUNTIME_RE.fullmatch(runtime) is None:
+    # Untrusted code runs only under gVisor; any other runtime fails closed.
+    if RUNTIME_RE.fullmatch(runtime) is None or not runtime.startswith("runsc"):
         raise SandboxUnavailable("sandbox runtime unavailable")
     return runtime
 
@@ -131,6 +132,10 @@ def ensure_runtime(runtime: str) -> None:
     except json.JSONDecodeError as exc:
         raise SandboxUnavailable("sandbox runtime unavailable") from exc
     if not isinstance(data, dict) or runtime not in data:
+        raise SandboxUnavailable("sandbox runtime unavailable")
+    entry = data[runtime]
+    path = entry.get("path") if isinstance(entry, dict) else None
+    if not isinstance(path, str) or not Path(path).name.startswith("runsc"):
         raise SandboxUnavailable("sandbox runtime unavailable")
 
 

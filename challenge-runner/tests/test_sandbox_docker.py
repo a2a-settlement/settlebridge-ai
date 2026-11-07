@@ -264,6 +264,23 @@ def test_missing_runtime_is_sandbox_error(fake, tmp_path: Path):
     assert not _runs(fake, "stage_deps")
 
 
+def test_runc_is_refused_before_any_docker_call(fake, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CHALLENGE_SANDBOX_RUNTIME", "runc")
+    job = _job(tmp_path, stage="dependencies", files={"requirements.txt": b"requests==1\n"})
+    result = run_job(job, artifact_root=tmp_path)
+    assert result.status == "sandbox_error"
+    assert "runtime" in (result.error or "")
+    assert not _runs(fake, "stage_deps")
+
+
+def test_runtime_named_runsc_that_points_at_runc_is_refused(fake, tmp_path: Path):
+    fake.runtimes = {"runsc": {"path": "/usr/bin/runc"}}
+    job = _job(tmp_path, stage="dependencies", files={"requirements.txt": b"requests==1\n"})
+    result = run_job(job, artifact_root=tmp_path)
+    assert result.status == "sandbox_error"
+    assert not _runs(fake, "stage_deps")
+
+
 def test_dependencies_flags_manifest_and_sanitized_log(fake, tmp_path: Path):
     canaries = _store(tmp_path, json.dumps([CANARY]).encode())
     job = _job(

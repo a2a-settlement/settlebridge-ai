@@ -195,13 +195,14 @@ def _json_hash(value: object) -> str:
 
 
 def _reason(text: str) -> str:
-    compact = " ".join(str(text).split()) or "unspecified"
-    if "secure" in compact.casefold():
+    """Validate a reason. Reasons are stored and signed exactly as given."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("a reason is required")
+    if len(text) > 2000:
+        raise ValueError("a reason must be at most 2000 characters")
+    if "secure" in text.casefold():
         raise ValueError("a reason must not use the word secure")
-    phrase = "under the stated property, environment, and budget"
-    if phrase not in compact.casefold():
-        compact = f"{compact} {_SCOPE_NOTE}"
-    return compact[:2000]
+    return text
 
 
 def _diff_marker(base_sha: str, target_sha: str) -> str:
@@ -790,6 +791,23 @@ def _early_evidence(
     )
 
 
+async def _append_task_verdict(
+    db: AsyncSession, stage: "_Stage", verdict: str, reason: str
+) -> None:
+    await _append_verdict(
+        db,
+        task=stage.task,
+        contract=stage.contract,
+        claim=None,
+        verdict=verdict,
+        decided_by=DecidedBy.MACHINE.value,
+        reason=reason,
+        evidence=_early_evidence(
+            citation_valid=True, tamper_clean=True, execution_ids=stage.execution_ids
+        ),
+    )
+
+
 async def _bundle_for_attempt(
     db: AsyncSession, task_id: uuid.UUID, attempt_id: uuid.UUID
 ) -> str | None:
@@ -1021,9 +1039,12 @@ async def _reconcile(db: AsyncSession, reservation: SpendReservation | None) -> 
     await reconcile_reservation(db, reservation.id)
 
 
-async def _next_execution_id(db: AsyncSession, task_id: uuid.UUID, purpose: str) -> str:
+async def _next_execution_id(
+    db: AsyncSession, task_id: uuid.UUID, purpose: str, reservation_id: uuid.UUID
+) -> str:
+    scope = reservation_id.hex[:12]
     for number in range(1, 1000):
-        candidate = f"exec:{task_id}:{purpose}:{number}"
+        candidate = f"exec:{task_id}:{purpose}:{scope}-{number}"
         stmt = select(ExecutionUsage.id).where(ExecutionUsage.execution_id == candidate)
         if (await db.execute(stmt)).first() is None:
             return candidate
@@ -1225,7 +1246,7 @@ async def _run_purpose(
         raise _AttemptStopped("budget exhausted")
 
     async def once(cause: str) -> RunnerResult:
-        execution_id = await _next_execution_id(db, stage.task.id, purpose)
+        execution_id = await _next_execution_id(db, stage.task.id, purpose, stage.reservation.id)
         job = _runner_job(
             stage,
             purpose,
@@ -1294,6 +1315,8 @@ async def _stop_task(db: AsyncSession, stage: _Stage, reason: str) -> None:
     elif task.state == ChallengeTaskState.ADJUDICATING.value:
         await transition(db, task, ChallengeTaskState.INCONCLUSIVE.value, explained)
     await _reconcile(db, stage.reservation)
+    if task.state == ChallengeTaskState.INCONCLUSIVE.value:
+        await _append_task_verdict(db, stage, VerdictKind.INCONCLUSIVE.value, reason)
     if task.state in {ChallengeTaskState.INCONCLUSIVE.value, ChallengeTaskState.CLOSED.value}:
         await _enqueue(
             db,
@@ -1707,16 +1730,21 @@ async def _sync_task(db: AsyncSession, stage: _Stage) -> None:
         verdict = await _latest_verdict(db, claim.id)
         if verdict is not None:
             kinds.append(verdict.verdict)
-    if any(kind == VerdictKind.INCONCLUSIVE.value for kind in kinds) and not any(
-        kind == VerdictKind.CONFIRMED.value for kind in kinds
-    ):
+    if any(kind == VerdictKind.CONFIRMED.value for kind in kinds):
+        destination = ChallengeTaskState.CLOSED.value
+        task_verdict = VerdictKind.CONFIRMED.value
+        reason = "challenge decided"
+    elif any(kind == VerdictKind.INCONCLUSIVE.value for kind in kinds):
         destination = ChallengeTaskState.INCONCLUSIVE.value
+        task_verdict = VerdictKind.INCONCLUSIVE.value
         reason = "inconclusive"
     elif kinds and all(kind == VerdictKind.INVALID_OR_DUPLICATE.value for kind in kinds):
         destination = ChallengeTaskState.CLOSED.value
+        task_verdict = VerdictKind.INVALID_OR_DUPLICATE.value
         reason = "no valid claim"
     else:
         destination = ChallengeTaskState.CLOSED.value
+        task_verdict = VerdictKind.NO_FAILURE_FOUND.value
         reason = "challenge decided"
     if task.state == ChallengeTaskState.VALIDATING.value:
         await transition(db, task, destination, _reason(reason))
@@ -1727,6 +1755,7 @@ async def _sync_task(db: AsyncSession, stage: _Stage) -> None:
         await transition(db, task, destination, _reason(reason))
     else:
         return
+    await _append_task_verdict(db, stage, task_verdict, reason)
     await _enqueue(
         db,
         kind=JobKind.CHALLENGE_REPORT.value,
@@ -1846,8 +1875,8 @@ async def _handle_report(db: AsyncSession, job: GitHubJob) -> None:
 
     try:
         await challenge_report.build_report(db, stage.task.id)
-    except NotImplementedError:
-        return
+    except challenge_report.ReportNotBuilt as exc:
+        raise PermanentJobError("challenge report could not be built") from exc
 
 
 _HANDLERS = {

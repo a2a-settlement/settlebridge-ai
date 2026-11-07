@@ -117,3 +117,8 @@ Next action copy:
 - Until a diff artifact kind exists, the challenger's view of the change is recorded as `diff:{sha256(base_sha:target_sha)}` plus the two source tarballs.
 - The frozen contract carries `observers_digest` and a top-level `oracle_texts`.
 - M2 charge rate is `max(cpu_seconds, 1)` cents per execution, in test ATE only; `platform_retry` executions are never charged.
+- Orchestrator execution ids are `exec:{task_id}:{purpose}:{reservation_hex12}-{n}`, so concurrent validations never share an id. `record_usage` refuses an execution id already recorded against a different reservation.
+- Every terminal task (closed or inconclusive) has a task-scoped verdict: confirmed if any claim is confirmed, else inconclusive, else invalid_or_duplicate when every claim is, else no_failure_found. The report job fails permanently if the report cannot be built.
+- Reasons are validated (non-empty, at most 2000 characters, no "secure") and stored unchanged; the scope sentence is added only when presented.
+- The runner accepts only a `runsc` runtime whose Docker path is a runsc binary. Each run stops at min(wall_seconds, cpu_seconds); with `--cpus=1`, reported `cpu_seconds` is the measured wall time, an upper bound on CPU use.
+- The report's usage totals include the `challenge_baseline:{task_id}` reservation.

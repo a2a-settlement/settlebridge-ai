@@ -692,10 +692,17 @@ def test_pipeline_dedupe_keys_verifier_and_no_token(db, monkeypatch, tmp_path, c
     fresh = db.sync.get(ChallengeTask, task.id)
     assert fresh.state == "closed"
     verdicts = list(db.sync.scalars(select(ChallengeVerdict)).all())
-    assert len(verdicts) == 1
-    assert verdicts[0].verdict == "confirmed"
-    assert "under the stated property, environment, and budget" in verdicts[0].reason.casefold()
-    assert "secure" not in verdicts[0].reason.casefold()
+    claim_verdicts = [row for row in verdicts if row.scope == "claim"]
+    task_verdicts = [row for row in verdicts if row.scope == "task"]
+    assert len(claim_verdicts) == 1
+    assert claim_verdicts[0].verdict == "confirmed"
+    assert "secure" not in claim_verdicts[0].reason.casefold()
+    assert [row.verdict for row in task_verdicts] == ["confirmed"]
+    from app.services import challenge_report
+
+    report = _run(challenge_report.build_report(db, task.id))
+    assert report.task_verdict == "confirmed"
+    assert [item.verdict for item in report.claims] == ["confirmed"]
     finding = db.sync.scalar(select(Finding))
     claim = db.sync.get(ChallengeClaim, uuid.UUID(claim_id))
     assert finding.dedupe_key == f"chal:acme/app:integrity:{claim.claim_hash}"
@@ -1082,9 +1089,12 @@ def test_adjudicator_conflict_and_decision(db):
     assert db.sync.get(ChallengeClaim, claim.id).state == "decided"
     assert db.sync.get(ChallengeTask, task.id).state == "closed"
     verdicts = list(db.sync.scalars(select(ChallengeVerdict)).all())
-    assert len(verdicts) == 1
-    assert verdicts[0].decided_by == "adjudicator"
-    assert verdicts[0].verdict == "confirmed"
+    claim_verdicts = [row for row in verdicts if row.scope == "claim"]
+    assert len(claim_verdicts) == 1
+    assert claim_verdicts[0].decided_by == "adjudicator"
+    assert claim_verdicts[0].verdict == "confirmed"
+    assert claim_verdicts[0].reason == "controls held"
+    assert [row.verdict for row in verdicts if row.scope == "task"] == ["confirmed"]
 
 
 def _attach_bundle(db, task, attempt, path):

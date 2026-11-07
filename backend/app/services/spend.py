@@ -245,6 +245,12 @@ async def reserve_spend(
     return reservation
 
 
+def _same_reservation(usage: ExecutionUsage, reservation_id: uuid.UUID) -> ExecutionUsage:
+    if usage.reservation_id != reservation_id:
+        raise ValueError("execution id is already recorded against another reservation")
+    return usage
+
+
 async def record_usage(
     db: AsyncSession,
     *,
@@ -258,7 +264,7 @@ async def record_usage(
 ) -> ExecutionUsage:
     existing = await _usage_by_execution(db, execution_id)
     if existing is not None:
-        return existing
+        return _same_reservation(existing, reservation_id)
     if cost_cents < 0:
         raise ValueError("cost_cents must be non-negative")
     cause_value = UsageCause(cause).value
@@ -268,7 +274,7 @@ async def record_usage(
         raise ValueError("reservation not found")
     existing = await _usage_by_execution(db, execution_id)
     if existing is not None:
-        return existing
+        return _same_reservation(existing, reservation_id)
     if reservation.status != ReservationStatus.RESERVED.value:
         raise ValueError("reservation is not reserved")
     usage = ExecutionUsage(
@@ -309,7 +315,7 @@ async def record_usage(
         existing = await _usage_by_execution(db, execution_id)
         if existing is None:
             raise
-        return existing
+        return _same_reservation(existing, reservation_id)
     except Exception:
         _detach(db, usage)
         raise
