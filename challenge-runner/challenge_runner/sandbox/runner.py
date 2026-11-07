@@ -6,10 +6,11 @@ import json
 import os
 import re
 import shutil
+import tarfile
 import tempfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from challenge_runner.artifacts import ArtifactError, ArtifactStore
 from challenge_runner.protocol import DIGEST_RE, ObserverEvent, RunnerJob, RunnerResult
@@ -18,24 +19,31 @@ from challenge_runner.sandbox.docker import (
     SandboxUnavailable,
     base_flags,
     common_env,
-    create_egress_network,
-    egress_network_name,
-    proxy_resolv_conf,
     container_name,
+    create_egress_network,
     create_internal_network,
+    create_tmpfs_volume,
+    egress_network_name,
     ensure_runtime,
     fallback_image_digest,
     inspect_image_digest,
     inspect_state,
     network_name,
+    output_hit_disk_limit,
     package_mounts,
+    pack_tree,
     proxy_container_name,
+    proxy_resolv_conf,
     read_proxy_ip,
     require_image,
     require_runtime,
     run_detached,
+    MAX_EXPORT_BYTES,
     run_foreground,
     teardown,
+    volume_mount,
+    volume_name,
+    wrap_command,
 )
 from challenge_runner.sandbox.sanitize import parse_canaries, scrub
 from challenge_runner.sandbox.tarutil import DiskLimitExceeded, UnsafeArchive, safe_extract
@@ -65,6 +73,7 @@ class _Outcome:
     events: tuple[ObserverEvent, ...] = ()
     log_text: str = ""
     captured: bool = False
+    archive: bytes = b""
 
 
 @dataclass
@@ -77,6 +86,7 @@ class _Resources:
     started_proxy: bool = False
     started_network: bool = False
     started_egress: bool = False
+    volumes: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -131,6 +141,7 @@ def run_job(job: RunnerJob, *, artifact_root: Path) -> RunnerResult:
             proxy=resources.proxy if resources.started_proxy else None,
             network=resources.network if resources.started_network else None,
             egress_network=resources.egress_network if resources.started_egress else None,
+            volumes=resources.volumes,
         )
         shutil.rmtree(tmp, ignore_errors=True)
     if outcome is None:
@@ -170,16 +181,14 @@ def _dependencies(
 ) -> _Outcome:
     src = tmp / "src"
     out = tmp / "out"
-    work = tmp / "work"
-    wheels = out / "wheels"
-    for path in (src, wheels, out / "tmp", work):
-        path.mkdir(parents=True, exist_ok=True)
+    src.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     safe_extract(source_archive, src, max_bytes=max_bytes)
     _relax(src, write=False)
-    _relax(out, write=True)
-    _relax(work, write=True)
     requirements, packages, require_hashes = _requirements(src, job.install_command, "/src")
     _check_allowlist(job.allowlist_hosts)
+    work_volume = _ensure_volume(resources, job, "work")
+    out_volume = _ensure_volume(resources, job, "out")
     create_internal_network(resources.network)
     resources.started_network = True
     create_egress_network(resources.egress_network)
@@ -187,7 +196,7 @@ def _dependencies(
     resolv = tmp / "resolv.conf"
     resolv.write_text(proxy_resolv_conf(), encoding="utf-8")
     resolv.chmod(0o444)
-    proxy_argv = _proxy_argv(job, image, runtime, resources, work, resolv)
+    proxy_argv = _proxy_argv(job, image, runtime, resources, work_volume, resolv)
     resources.started_proxy = True
     started = run_detached(proxy_argv)
     if started.returncode != 0:
@@ -205,11 +214,10 @@ def _dependencies(
         "run",
         *base_flags(job, name=resources.container, runtime=runtime),
         f"--network={resources.network}",
-        *package_mounts(str(work)),
+        *package_mounts(work_volume),
         "-v",
         f"{src}:/src:ro",
-        "-v",
-        f"{out}:/out:rw",
+        *volume_mount(out_volume, "/out"),
         *common_env(
             extra=(
                 ("HTTPS_PROXY", proxy_url),
@@ -220,14 +228,12 @@ def _dependencies(
             )
         ),
         image,
-        *command,
+        *wrap_command(command, seed=None, export="/out"),
     ]
     outcome = _run_container(job, resources, argv)
-    if _dir_size(out) > max_bytes:
-        outcome.status = "limit_exceeded"
-        outcome.error = "disk limit exceeded"
-    if outcome.status == "ok":
-        outcome.wheelhouse_manifest = _publish_wheelhouse(store, wheels)
+    _apply_disk_limit(outcome)
+    if outcome.status == "ok" and _extract_archive(outcome, out, max_bytes):
+        outcome.wheelhouse_manifest = _publish_wheelhouse(store, out / "wheels")
     return outcome
 
 
@@ -274,32 +280,35 @@ def _execute(
         _materialize_wheelhouse(store, job.wheelhouse_manifest, wheels)
     except (ArtifactError, FileNotFoundError, json.JSONDecodeError, OSError):
         return _Outcome("sandbox_error", error="wheelhouse unavailable")
+    (verifier / "capture").mkdir(parents=True, exist_ok=True)
     _relax(work, write=True)
     _relax(wheels, write=False)
     _relax(verifier, write=False)
     _relax(capture, write=True)
     requirements, packages, _hashes = _requirements(work, job.install_command, "/work")
     command = _exec_command(requirements, packages, job.test_command)
+    work_volume = _ensure_volume(resources, job, "work")
+    capture_volume = _ensure_volume(resources, job, "capture")
     argv = [
         "docker",
         "run",
+        "-i",
         *base_flags(job, name=resources.container, runtime=runtime),
         "--network=none",
-        *package_mounts(str(work)),
+        *package_mounts(work_volume),
         "-v",
         f"{wheels}:/wheels:ro",
         "-v",
         f"{verifier}:/verifier:ro",
-        "-v",
-        f"{capture}:/verifier/capture:rw",
+        *volume_mount(capture_volume, "/verifier/capture"),
         *common_env(extra=(("TMPDIR", "/work/tmp"),)),
         image,
-        *command,
+        *wrap_command(command, seed="/work", export="/verifier/capture"),
     ]
-    outcome = _run_container(job, resources, argv)
-    if _dir_size(work) > max_bytes:
-        outcome.status = "limit_exceeded"
-        outcome.error = "disk limit exceeded"
+    outcome = _run_container(job, resources, argv, stdin=pack_tree(work))
+    _apply_disk_limit(outcome)
+    if outcome.status in ("ok", "test_failed"):
+        _extract_archive(outcome, capture, max_bytes)
     if outcome.status in ("ok", "test_failed") and job.observers:
         try:
             outcome.events = tuple(_collect_observers(job, capture))
@@ -314,11 +323,21 @@ def _execute(
     return outcome
 
 
-def _run_container(job: RunnerJob, resources: _Resources, argv: list[str]) -> _Outcome:
+def _run_container(
+    job: RunnerJob,
+    resources: _Resources,
+    argv: list[str],
+    stdin: bytes | None = None,
+) -> _Outcome:
     resources.started_container = True
     started = time.monotonic()
+    archive_cap = min(job.limits.disk_mb * 1024 * 1024, MAX_EXPORT_BYTES)
     code, stdout, stderr, timed_out = run_foreground(
-        argv, timeout=job.limits.wall_seconds, kill_name=resources.container
+        argv,
+        timeout=job.limits.wall_seconds,
+        kill_name=resources.container,
+        stdin=stdin,
+        max_archive_bytes=archive_cap,
     )
     wall = max(0, int(time.monotonic() - started))
     oom, inspected = inspect_state(resources.container)
@@ -328,20 +347,18 @@ def _run_container(job: RunnerJob, resources: _Resources, argv: list[str]) -> _O
     status = _classify(exit_code, timed_out, oom)
     error = None
     if status == "limit_exceeded":
-        error = "limit exceeded"
+        error = "disk limit exceeded" if len(stdout) >= archive_cap else "limit exceeded"
     elif status == "sandbox_error":
         error = "docker run failed"
-    log_text = stdout
-    if stderr:
-        log_text = f"{log_text}\n{stderr}" if log_text else stderr
     return _Outcome(
         status,
         error=error,
         exit_code=exit_code,
         cpu_seconds=0,
         wall_seconds=wall,
-        log_text=log_text,
+        log_text=stderr.decode("utf-8", "replace"),
         captured=True,
+        archive=stdout,
     )
 
 
@@ -360,7 +377,7 @@ def _proxy_argv(
     image: str,
     runtime: str,
     resources: _Resources,
-    work: Path,
+    work_volume: str,
     resolv: Path,
 ) -> list[str]:
     allow = ",".join(job.allowlist_hosts)
@@ -374,7 +391,7 @@ def _proxy_argv(
         f"--network={resources.network}",
         "-v",
         f"{resolv}:/etc/resolv.conf:ro",
-        *package_mounts(str(work)),
+        *package_mounts(work_volume),
         *common_env(extra=(("TMPDIR", "/tmp"),)),
         image,
         "python",
@@ -604,18 +621,53 @@ def _load_canaries(store: ArtifactStore, digest: str | None) -> list[str]:
     return parse_canaries(store.get_path(digest).read_bytes())
 
 
-def _dir_size(root: Path) -> int:
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(root):
-        for filename in filenames:
-            path = Path(dirpath) / filename
-            if path.is_symlink():
+def _ensure_volume(resources: _Resources, job: RunnerJob, role: str) -> str:
+    name = volume_name(job.execution_id, role)
+    create_tmpfs_volume(name, job.limits.disk_mb)
+    resources.volumes.append(name)
+    return name
+
+
+def _extract_archive(outcome: _Outcome, dest: Path, max_bytes: int) -> bool:
+    """Unpack the job's stdout archive. Returns False when ``outcome`` changed."""
+    raw = dest.parent / f"{dest.name}.raw.tar"
+    cleaned = dest.parent / f"{dest.name}.clean.tar"
+    try:
+        raw.write_bytes(outcome.archive)
+        _drop_root_members(raw, cleaned)
+        safe_extract(cleaned, dest, max_bytes=max_bytes)
+    except DiskLimitExceeded:
+        outcome.status = "limit_exceeded"
+        outcome.error = "disk limit exceeded"
+        return False
+    except (UnsafeArchive, tarfile.TarError, OSError) as exc:
+        outcome.status = "sandbox_error"
+        outcome.error = str(exc) or "sandbox runtime unavailable"
+        return False
+    return True
+
+
+def _drop_root_members(source: Path, dest: Path) -> None:
+    """Drop the ``.`` member GNU tar writes for ``tar -c -C dir .``."""
+    with tarfile.open(source, "r|*") as incoming, tarfile.open(dest, "w|") as outgoing:
+        for member in incoming:
+            payload = incoming.extractfile(member) if member.isreg() else None
+            if _empty_member(member.name):
+                if payload is not None:
+                    payload.read()
                 continue
-            try:
-                total += path.stat().st_size
-            except OSError:
-                continue
-    return total
+            outgoing.addfile(member, payload)
+
+
+def _empty_member(name: str) -> bool:
+    parts = [part for part in PurePosixPath(name).parts if part not in (".",)]
+    return not parts
+
+
+def _apply_disk_limit(outcome: _Outcome) -> None:
+    if outcome.status in ("ok", "test_failed") and output_hit_disk_limit(outcome.log_text):
+        outcome.status = "limit_exceeded"
+        outcome.error = "disk limit exceeded"
 
 
 def _relax(root: Path, *, write: bool) -> None:
