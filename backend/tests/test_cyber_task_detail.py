@@ -86,7 +86,9 @@ def _snapshot(sync: Session) -> tuple:
         rows = sync.execute(text(f"SELECT * FROM {table}")).mappings().all()
         normalized = tuple(
             sorted(
-                tuple(sorted((key, "" if value is None else str(value)) for key, value in row.items()))
+                tuple(
+                    sorted((key, "" if value is None else str(value)) for key, value in row.items())
+                )
                 for row in rows
             )
         )
@@ -271,7 +273,11 @@ def world():
             issue=2,
             security=True,
             state="advertised",
-            last_assessment={"outcome": "REJECTED_CHECKS", "head_sha": FAILED_HEAD, "findings": [SECRET]},
+            last_assessment={
+                "outcome": "REJECTED_CHECKS",
+                "head_sha": FAILED_HEAD,
+                "findings": [SECRET],
+            },
         ),
         "pending": _add(
             bridge,
@@ -458,7 +464,12 @@ def test_unknown_and_non_public_share_one_404(world):
 
 def test_detail_reads_do_not_mutate_rows(world):
     before = _snapshot(world["bridge"].sync)
-    for bounty_id in [world["ids"]["passed"], world["ids"]["private"], "not-a-uuid", str(uuid.uuid4())]:
+    for bounty_id in [
+        world["ids"]["passed"],
+        world["ids"]["private"],
+        "not-a-uuid",
+        str(uuid.uuid4()),
+    ]:
         _get(world, bounty_id)
         _get(world, bounty_id)
     after = _snapshot(world["bridge"].sync)

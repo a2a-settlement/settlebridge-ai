@@ -158,9 +158,7 @@ class DifferentialOutcome(_Frozen):
     base_fired: bool | None
     target_fired: bool
     reference_fired: bool | None = None
-    classification: Literal[
-        "same_class_alternate_path", "new_path", "regression", "not_applicable"
-    ]
+    classification: Literal["same_class_alternate_path", "new_path", "regression", "not_applicable"]
 
 
 class ValidationEvidence(_Frozen):
@@ -346,9 +344,7 @@ class ReportClaim(BaseModel):
 class ChallengeReport(BaseModel):
     """Payload signed as a compact JWS (ES256). Never contains secrets or raw logs."""
 
-    schema_version: Literal["settlebridge.challenge-report/v1"] = (
-        "settlebridge.challenge-report/v1"
-    )
+    schema_version: Literal["settlebridge.challenge-report/v1"] = "settlebridge.challenge-report/v1"
     task_id: str
     repo: str
     pr_number: int | None

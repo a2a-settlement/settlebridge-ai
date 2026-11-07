@@ -4,6 +4,7 @@ Revision ID: a7c3e9f1b2d4
 Revises: f6a1c8d24e90
 Create Date: 2026-11-07 11:30:00.000000
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -36,9 +37,7 @@ def upgrade() -> None:
         "github_jobs",
         ["dedupe_key"],
         unique=True,
-        postgresql_where=sa.text(
-            "dedupe_key IS NOT NULL AND status IN ('pending', 'running')"
-        ),
+        postgresql_where=sa.text("dedupe_key IS NOT NULL AND status IN ('pending', 'running')"),
     )
 
     op.add_column(
@@ -63,9 +62,7 @@ def upgrade() -> None:
         sa.Column("installation_id", sa.BigInteger(), nullable=False),
         sa.Column("repo_full_name", sa.String(255), nullable=False),
         sa.Column("pr_number", sa.Integer(), nullable=True),
-        sa.Column(
-            "binding_id", _UUID, sa.ForeignKey("github_bounty_bindings.id"), nullable=True
-        ),
+        sa.Column("binding_id", _UUID, sa.ForeignKey("github_bounty_bindings.id"), nullable=True),
         sa.Column("base_sha", sa.String(64), nullable=False),
         sa.Column("target_sha", sa.String(64), nullable=False),
         sa.Column("property_text", sa.Text(), nullable=False),
@@ -120,9 +117,7 @@ def upgrade() -> None:
         sa.Column(
             "participant_id", _UUID, sa.ForeignKey("challenge_participants.id"), nullable=False
         ),
-        sa.Column(
-            "contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False
-        ),
+        sa.Column("contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False),
         sa.Column("state", sa.String(16), nullable=False),
         sa.Column("reservation_id", _UUID, nullable=True),
         _ts("started_at"),
@@ -136,12 +131,8 @@ def upgrade() -> None:
         "challenge_claims",
         sa.Column("id", _UUID, primary_key=True),
         sa.Column("task_id", _UUID, sa.ForeignKey("challenge_tasks.id"), nullable=False),
-        sa.Column(
-            "attempt_id", _UUID, sa.ForeignKey("challenge_attempts.id"), nullable=False
-        ),
-        sa.Column(
-            "contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False
-        ),
+        sa.Column("attempt_id", _UUID, sa.ForeignKey("challenge_attempts.id"), nullable=False),
+        sa.Column("contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False),
         sa.Column("failure_class", sa.String(32), nullable=False),
         sa.Column("scenario", _JSONB, nullable=False),
         sa.Column("oracle_citation", _JSONB, nullable=False),
@@ -175,9 +166,7 @@ def upgrade() -> None:
         sa.Column("id", _UUID, primary_key=True),
         sa.Column("task_id", _UUID, sa.ForeignKey("challenge_tasks.id"), nullable=False),
         sa.Column("claim_id", _UUID, sa.ForeignKey("challenge_claims.id"), nullable=True),
-        sa.Column(
-            "contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False
-        ),
+        sa.Column("contract_id", _UUID, sa.ForeignKey("challenge_contracts.id"), nullable=False),
         sa.Column("scope", sa.String(8), nullable=False),
         sa.Column("verdict", sa.String(24), nullable=False),
         sa.Column("decided_by", sa.String(16), nullable=False),
@@ -246,9 +235,7 @@ def upgrade() -> None:
     op.create_table(
         "execution_usage",
         sa.Column("id", _UUID, primary_key=True),
-        sa.Column(
-            "reservation_id", _UUID, sa.ForeignKey("spend_reservations.id"), nullable=False
-        ),
+        sa.Column("reservation_id", _UUID, sa.ForeignKey("spend_reservations.id"), nullable=False),
         sa.Column("execution_id", sa.String(128), nullable=False),
         sa.Column("cause", sa.String(32), nullable=False),
         sa.Column("charged", sa.Boolean(), nullable=False),
