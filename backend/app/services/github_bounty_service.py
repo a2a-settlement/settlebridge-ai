@@ -40,7 +40,7 @@ from app.models.github import (
 )
 from app.models.user import User
 from app.services import exchange, github_app, github_comments, github_settlement, mediator
-from app.services.github_errors import PermanentJobError, RetryableJobError
+from app.services.github_errors import GitHubRateLimited, PermanentJobError, RetryableJobError
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +419,7 @@ def parse_closing_reference(pr_body: str | None, repo: str) -> int | None:
 
 
 def _reraise_external(exc: Exception) -> None:
-    if isinstance(exc, (RetryableJobError, PermanentJobError)):
+    if isinstance(exc, (RetryableJobError, PermanentJobError, GitHubRateLimited)):
         raise exc
     if isinstance(exc, github_app.GitHubAPIError):
         code = exc.status_code
