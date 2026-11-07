@@ -40,7 +40,23 @@ def _local_origins(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "host", ["http://github.com", "file:///tmp/x", "ssh://git@github.com", "github.com", ""]
+    "host",
+    [
+        "http://github.com",
+        "file:///tmp/x",
+        "ssh://git@github.com",
+        "github.com",
+        "",
+        "https://github.com@attacker.example",
+        "https://user:pw@github.com",
+        "https://attacker.example",
+        "https://github.com.attacker.example",
+        "https://github.com:8443",
+        "https://github.com/evil",
+        "https://github.com?x=1",
+        "https://github.com#x",
+        "https://github.com:bad",
+    ],
 )
 def test_only_https_hosts_receive_the_credential(host):
     with pytest.raises(FetchError):

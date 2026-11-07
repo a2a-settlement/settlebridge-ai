@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -27,6 +28,7 @@ _COMMAND_TIMEOUT_S = 60
 # git bundle create refuses a raw object id; it only packages a named ref.
 _FETCHED_REF = "refs/heads/fetched"
 _REDACTED = "REDACTED"
+_ALLOWED_GIT_HOSTS = frozenset({"github.com"})
 
 
 @dataclass(frozen=True)
@@ -84,10 +86,26 @@ def _require_repo(repo_full_name: str) -> str:
 
 
 def _require_host(git_host: str) -> str:
-    # The credential header goes to this host, so it must be TLS.
-    if not isinstance(git_host, str) or not git_host.startswith("https://"):
+    # The credential header goes to this host: TLS, an allowed name, nothing else in the URL.
+    if not isinstance(git_host, str):
         raise FetchError("git host must use https")
-    return git_host.rstrip("/")
+    try:
+        parts = urlsplit(git_host)
+        port = parts.port
+    except ValueError as exc:
+        raise FetchError("invalid git host") from exc
+    if parts.scheme != "https":
+        raise FetchError("git host must use https")
+    if (
+        parts.hostname not in _ALLOWED_GIT_HOSTS
+        or parts.netloc.casefold() != parts.hostname
+        or port is not None
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+    ):
+        raise FetchError("git host is not allowed")
+    return f"https://{parts.hostname}"
 
 
 def _require_sha(sha: str) -> str:
