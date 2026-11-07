@@ -481,7 +481,7 @@ export default function SolverSetup() {
                         {bounty.repo}#{bounty.issue_number}
                       </span>
                       <span className="block text-sm text-gray-700 mt-1">
-                        {bounty.amount_ate} ATE · required reputation {bounty.required_ema}
+                        {bounty.amount_ate} ATE (test) · required reputation {bounty.required_ema}
                       </span>
                     </Link>
                   </li>

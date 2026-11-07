@@ -35,13 +35,13 @@ const TRIGGER_LABELS: Record<string, string> = {
 };
 
 const SOURCE_STYLES: Record<string, string> = {
-  dependabot: "bg-money/10 text-money-dark",
+  dependabot: "bg-gray-100 text-gray-700",
   code_scanning: "bg-navy-100 text-navy-800",
   security_label: "bg-gray-100 text-gray-700",
 };
 
 const WORK_STYLES: Record<string, string> = {
-  available: "bg-money/10 text-money-dark",
+  available: "bg-navy-100 text-navy-800",
   claimed: "bg-blue-100 text-blue-700",
   pr_submitted: "bg-purple-100 text-purple-700",
   evaluating: "bg-indigo-100 text-indigo-700",

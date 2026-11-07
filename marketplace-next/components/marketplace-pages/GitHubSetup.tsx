@@ -251,7 +251,7 @@ export default function GitHubSetup() {
         "/v1/github/setup/add-funds"
       );
       setFundedMessage(
-        `Added ${data.deposited_ate} test ATE. Your balance is ${data.balance_ate} ATE.`
+        `Added ${data.deposited_ate} test ATE. Your balance is ${data.balance_ate} ATE (test).`
       );
       await loadStatus(status.repo);
     } catch (err: unknown) {
@@ -448,8 +448,8 @@ export default function GitHubSetup() {
 
           {status.funder && status.funder.headroom_ate !== null && (
             <p className="text-sm text-gray-600">
-              Free exchange balance: {status.funder.headroom_ate} ATE (a $1 bounty needs{" "}
-              {status.funder.minimum_ate} ATE).
+              Free exchange balance: {status.funder.headroom_ate} ATE (test) (a $1 bounty needs{" "}
+              {status.funder.minimum_ate} ATE (test)).
             </p>
           )}
 
