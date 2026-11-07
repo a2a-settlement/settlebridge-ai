@@ -453,6 +453,49 @@ def test_setup_status_reports_another_funder(db, gh):
     assert payload["funded_by_other"] is True and payload["ready"] is False
 
 
+def test_setup_status_warns_for_a_private_repo(db, gh):
+    user = _setup(db, visibility="private")
+    gh.repository["visibility"] = "private"
+    gh.repository["private"] = True
+    payload = _client(db, user).get(STATUS_URL).json()
+    steps = {step["code"]: step for step in payload["next_steps"]}
+    assert steps["private_repo_access"]["blocking"] is False
+    assert steps["private_repo_access"]["message"] == (
+        "Anyone with read access on GitHub can see and claim these bounties. "
+        "Add solvers as collaborators."
+    )
+    assert "forking_disabled" not in steps
+    assert payload["visibility"] == "private"
+    assert payload["detected"]["allow_forking"] is None
+    assert payload["ready"] is True
+
+
+def test_setup_status_warns_when_a_private_repo_disallows_forks(db, gh):
+    user = _setup(db, visibility="internal")
+    gh.repository["visibility"] = "internal"
+    gh.repository["private"] = True
+    gh.repository["allow_forking"] = False
+    payload = _client(db, user).get(STATUS_URL).json()
+    steps = {step["code"]: step for step in payload["next_steps"]}
+    assert steps["private_repo_access"]["blocking"] is False
+    assert steps["forking_disabled"]["blocking"] is False
+    assert steps["forking_disabled"]["message"] == (
+        "This repo does not allow forks. Solvers need write access to push a branch."
+    )
+    assert payload["visibility"] == "internal"
+    assert payload["detected"]["allow_forking"] is False
+
+
+def test_setup_status_public_repo_has_neither_private_step(db, gh):
+    user = _setup(db, visibility="public")
+    gh.repository["allow_forking"] = False
+    payload = _client(db, user).get(STATUS_URL).json()
+    assert "private_repo_access" not in _codes(payload)
+    assert "forking_disabled" not in _codes(payload)
+    assert payload["visibility"] == "public"
+    assert payload["detected"]["allow_forking"] is False
+
+
 def test_setup_status_notes_an_enabled_repo_without_blocking(db, gh):
     user = _setup(db)
     link = reload(db)

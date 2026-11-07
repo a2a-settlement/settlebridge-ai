@@ -107,6 +107,10 @@ def job_kind_for(event: str, action: str | None, data: object) -> JobKind | None
         return JobKind.REVIEW_CLEAR_COMMENT
     if event in ("dependabot_alert", "code_scanning_alert") and action in ("created", "fixed"):
         return JobKind.SECURITY_ALERT
+    if event == "repository":
+        if action in {"privatized", "publicized"}:
+            return JobKind.REPOSITORY
+        return None
     return None
 
 
