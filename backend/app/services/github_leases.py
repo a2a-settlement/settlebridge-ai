@@ -26,7 +26,6 @@ from app.config import settings
 from app.models.bounty import Bounty, BountyStatus
 from app.models.github import (
     ACTIVE_LEASE_STATUSES,
-    PUBLIC_VISIBILITY,
     AcceptanceSpec,
     BindingState,
     GitHubBountyBinding,
@@ -1192,8 +1191,9 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     if link is None or getattr(link, "installation_id", None) is None:
         logger.warning("no GitHub installation for %s", binding.repo_full_name)
         return _err(502, "github_unavailable")
-    if getattr(link, "visibility", None) != PUBLIC_VISIBILITY:
-        lease_user = await db.get(User, lease.user_id)
+    if getattr(link, "visibility", None) in {"private", "internal"}:
+        user_id = getattr(lease, "user_id", None)
+        lease_user = await db.get(User, user_id) if user_id is not None else None
         if not await has_repo_read(db, lease_user, link):
             return _err(403, "repo_access_revoked")
     try:
