@@ -9,14 +9,7 @@ only; fixtures and observers mounted read-only; the challenger writes only under
 
 from __future__ import annotations
 
-from pathlib import Path
+from challenge_runner.sandbox.docker import SandboxUnavailable
+from challenge_runner.sandbox.runner import run_job
 
-from challenge_runner.protocol import RunnerJob, RunnerResult
-
-
-class SandboxUnavailable(Exception):
-    """Docker or the runsc runtime is missing; the caller reports sandbox_error."""
-
-
-def run_job(job: RunnerJob, *, artifact_root: Path) -> RunnerResult:
-    raise NotImplementedError
+__all__ = ["SandboxUnavailable", "run_job"]
