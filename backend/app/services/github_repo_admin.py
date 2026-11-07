@@ -12,13 +12,16 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.github import GitHubInstallation, GitHubRepoLink, is_public_visibility
+from app.models.github import GitHubInstallation, GitHubRepoLink
 from app.models.user import User
 from app.services.github_alerts import STRICT_TEST_RULE_SEVERITY
 
 
 class RepoAdminError(Exception):
     """The repo link cannot be changed as requested."""
+
+
+_KNOWN_VISIBILITY = frozenset({"public", "private", "internal"})
 
 
 def _repo_name(repo: object) -> str:
@@ -250,8 +253,6 @@ async def configure_repo_link(
     _require_bool(strict_tests, "strict_tests")
     _require_bool(auto_merge_acceptable, "auto_merge_acceptable")
     _require_bool(auto_dispatch_alerts, "auto_dispatch_alerts")
-    if auto_dispatch_alerts is True and not is_public_visibility(link.visibility):
-        raise RepoAdminError(f"{link.repo_full_name} is not public")
 
     before: dict = {}
     after: dict = {}
@@ -303,8 +304,8 @@ async def _enable_problems(db: AsyncSession, link: GitHubRepoLink) -> list[str]:
         problems.append("missing installation")
     elif installation.removed_at is not None:
         problems.append("installation removed")
-    if not is_public_visibility(link.visibility):
-        problems.append("repository is not public")
+    if link.visibility not in _KNOWN_VISIBILITY:
+        problems.append("repository visibility is unknown")
     return problems
 
 

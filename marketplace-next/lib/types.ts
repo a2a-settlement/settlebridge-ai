@@ -82,6 +82,7 @@ export interface Bounty {
   updated_at: string;
   funded_at: string | null;
   completed_at: string | null;
+  github_visibility?: string | null;
 }
 
 export interface BountyListResponse {

@@ -41,7 +41,14 @@ from app.models.github import (
 from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_app, github_bounty_service, trust_gateway
 from app.services.github_errors import RetryableJobError
-from app.services.repo_visibility import bounty_public_clause, hidden_bounty_ids
+from app.services.repo_visibility import (
+    bounty_public_clause,
+    bounty_visible_clause,
+    can_view_bounty,
+    has_repo_read,
+    hidden_bounty_ids,
+    readable_private_repos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +211,7 @@ def spec_view(spec) -> dict:
     }
 
 
-def _listing_item(binding, bounty, spec) -> dict:
+def _listing_item(binding, bounty, spec, visibility: str | None = None) -> dict:
     return {
         "bounty_id": str(binding.bounty_id),
         "repo": binding.repo_full_name,
@@ -215,6 +222,7 @@ def _listing_item(binding, bounty, spec) -> dict:
         "amount_usd": amount_usd_text(spec.amount_ate),
         "funding_status": "balance_checked_not_reserved",
         "spec": spec_view(spec),
+        "visibility": visibility,
     }
 
 
@@ -380,7 +388,13 @@ async def _store_presence(agent_id: str, record: dict) -> str:
     return presence
 
 
-async def fetch_advertised_bounties(db: AsyncSession, *, language: str | None, limit: int):
+async def fetch_advertised_bounties(
+    db: AsyncSession,
+    *,
+    language: str | None,
+    limit: int,
+    readable_repos: set[str] | None = None,
+):
     # Bounty.category is lazy="joined"; noload keeps each row to the three selected entities.
     active = (
         select(GitHubLease.id)
@@ -399,7 +413,9 @@ async def fetch_advertised_bounties(db: AsyncSession, *, language: str | None, l
             GitHubBountyBinding.state == BindingState.ADVERTISED.value,
             Bounty.status == BountyStatus.OPEN,
             ~active,
-            bounty_public_clause(),
+            bounty_visible_clause(readable_repos)
+            if readable_repos
+            else bounty_public_clause(),
         )
         .order_by(GitHubBountyBinding.created_at, GitHubBountyBinding.id)
         .limit(limit)
@@ -590,9 +606,37 @@ async def _holder_lease(
     return lease, None
 
 
-async def list_bounties(db: AsyncSession, *, language: str | None, limit: int) -> APIResult:
-    rows = await fetch_advertised_bounties(db, language=language, limit=_clamp_limit(limit))
-    items = [_listing_item(binding, bounty, spec) for binding, bounty, spec in rows]
+async def _listing_visibility(db: AsyncSession, repos: set[str]) -> dict[str, str | None]:
+    if not repos:
+        return {}
+    stmt = select(GitHubRepoLink.repo_full_name, GitHubRepoLink.visibility).where(
+        GitHubRepoLink.repo_full_name.in_(repos)
+    )
+    result = await db.execute(stmt)
+    return {repo: visibility for repo, visibility in result.all()}
+
+
+async def list_bounties(
+    db: AsyncSession,
+    *,
+    language: str | None,
+    limit: int,
+    viewer=None,
+) -> APIResult:
+    readable = await readable_private_repos(db, viewer) if viewer is not None else None
+    rows = await fetch_advertised_bounties(
+        db,
+        language=language,
+        limit=_clamp_limit(limit),
+        readable_repos=readable,
+    )
+    visibility = await _listing_visibility(
+        db, {binding.repo_full_name for binding, _bounty, _spec in rows}
+    )
+    items = [
+        _listing_item(binding, bounty, spec, visibility.get(binding.repo_full_name))
+        for binding, bounty, spec in rows
+    ]
     return APIResult(200, {"bounties": items})
 
 
@@ -938,15 +982,41 @@ def _reraise_refund(exc: BaseException) -> None:
     raise RetryableJobError("exchange unavailable") from exc
 
 
+async def _claim_caller(db: AsyncSession, claims):
+    """``(user, github_user_id, error)``. ``error`` is an ``APIResult`` when the caller cannot claim."""
+    users = await fetch_users_for_agent(db, claims.agent_id)
+    if len(users) == 0:
+        return None, None, _err(409, "unknown_agent_account")
+    if len(users) > 1:
+        return None, None, _err(409, "ambiguous_agent_account")
+    user = users[0]
+    identity = await fetch_identity_for_user(db, user.id)
+    if identity is None:
+        return None, None, _err(409, "no_github_identity")
+    github_user_id = _positive_int(getattr(identity, "github_user_id", None))
+    if github_user_id is None:
+        return None, None, _err(409, "no_github_identity")
+    return user, github_user_id, None
+
+
 async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResult:
     binding = await fetch_advertised_binding(db, bounty_id)
     if binding is None or binding.current_spec_id is None:
         return _err(404, "not_found")
-    if await hidden_bounty_ids(db, [binding.bounty_id]):
-        return _err(404, "not_found")
     spec = await fetch_spec(db, binding.current_spec_id)
     if spec is None:
         return _err(404, "not_found")
+    # A private bounty is 404 before trust or account errors, so a stranger
+    # cannot tell it from a missing id. Public bounties still deny trust
+    # before the account lookup.
+    user = None
+    github_user_id = None
+    if await hidden_bounty_ids(db, [bounty_id]):
+        user, github_user_id, early = await _claim_caller(db, claims)
+        if early is not None:
+            return early
+        if not await can_view_bounty(db, bounty_id, user):
+            return _err(404, "not_found")
     denial = trust_gateway.trust_denial(
         claims,
         required_kya=spec.required_kya,
@@ -956,18 +1026,10 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         if isinstance(denial, dict):
             return APIResult(403, denial)
         return _err(403, "trust_insufficient")
-    users = await fetch_users_for_agent(db, claims.agent_id)
-    if len(users) == 0:
-        return _err(409, "unknown_agent_account")
-    if len(users) > 1:
-        return _err(409, "ambiguous_agent_account")
-    user = users[0]
-    identity = await fetch_identity_for_user(db, user.id)
-    if identity is None:
-        return _err(409, "no_github_identity")
-    github_user_id = _positive_int(getattr(identity, "github_user_id", None))
-    if github_user_id is None:
-        return _err(409, "no_github_identity")
+    if user is None:
+        user, github_user_id, early = await _claim_caller(db, claims)
+        if early is not None:
+            return early
     denial_self = await _self_dealing_denial(db, binding, user, github_user_id, claims)
     if denial_self is not None:
         return denial_self
@@ -1129,6 +1191,11 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     if link is None or getattr(link, "installation_id", None) is None:
         logger.warning("no GitHub installation for %s", binding.repo_full_name)
         return _err(502, "github_unavailable")
+    if getattr(link, "visibility", None) in {"private", "internal"}:
+        user_id = getattr(lease, "user_id", None)
+        lease_user = await db.get(User, user_id) if user_id is not None else None
+        if not await has_repo_read(db, lease_user, link):
+            return _err(403, "repo_access_revoked")
     try:
         pull = await github_app.get_pull_request(
             link.installation_id, binding.repo_full_name, pr_number
@@ -1207,11 +1274,14 @@ def _evaluation_job(repo: str, installation_id: int, pr_number: int, head_sha: s
     )
 
 
-async def bounty_status(db: AsyncSession, bounty_id: uuid.UUID) -> APIResult:
+async def bounty_status(db: AsyncSession, bounty_id: uuid.UUID, viewer=None) -> APIResult:
     binding = await fetch_binding_by_bounty(db, bounty_id)
     if binding is None:
         return _err(404, "not_found")
-    if await hidden_bounty_ids(db, [binding.bounty_id]):
+    if viewer is None:
+        if await hidden_bounty_ids(db, [binding.bounty_id]):
+            return _err(404, "not_found")
+    elif not await can_view_bounty(db, bounty_id, viewer):
         return _err(404, "not_found")
     settlement = await fetch_settlement(db, binding.id)
     lease = await fetch_active_lease_for_binding(db, binding.id)

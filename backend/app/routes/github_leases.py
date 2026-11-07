@@ -46,6 +46,23 @@ def _require_read_scope(claims) -> JSONResponse | None:
     )
 
 
+async def _viewer_for_listing(authorization: str | None, db: AsyncSession):
+    """Anonymous when the header is absent or the agent does not map to one user.
+
+    A present header is verified. An invalid token is a 401 response. These
+    reads do not require ``mcp:read``; the token only identifies the caller.
+    """
+    if authorization is None:
+        return None
+    claims = _agent_claims(authorization)
+    if isinstance(claims, JSONResponse):
+        return claims
+    users = await github_leases.fetch_users_for_agent(db, claims.agent_id)
+    if len(users) != 1:
+        return None
+    return users[0]
+
+
 async def _json_body(request: Request):
     try:
         payload = await request.json()
@@ -60,9 +77,15 @@ async def _json_body(request: Request):
 async def list_github_bounties(
     language: str | None = None,
     limit: int = 50,
+    authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
-    result = await github_leases.list_bounties(db, language=language, limit=limit)
+    viewer = await _viewer_for_listing(authorization, db)
+    if isinstance(viewer, JSONResponse):
+        return viewer
+    result = await github_leases.list_bounties(
+        db, language=language, limit=limit, viewer=viewer
+    )
     return _response(result)
 
 
@@ -139,9 +162,13 @@ async def submit_bounty_lease(
 @router.get("/github/bounties/{bounty_id}/status")
 async def github_bounty_status(
     bounty_id: uuid.UUID,
+    authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
-    return _response(await github_leases.bounty_status(db, bounty_id))
+    viewer = await _viewer_for_listing(authorization, db)
+    if isinstance(viewer, JSONResponse):
+        return viewer
+    return _response(await github_leases.bounty_status(db, bounty_id, viewer))
 
 
 @router.post("/workers/heartbeat")

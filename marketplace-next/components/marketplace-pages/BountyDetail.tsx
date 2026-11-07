@@ -457,6 +457,11 @@ export default function BountyDetail() {
                 <span className={`text-xs font-medium px-2.5 py-1 rounded-full capitalize ${statusColors[bounty.status] ?? "bg-gray-100 text-gray-600"}`}>
                   {bounty.status.replace("_", " ")}
                 </span>
+                {(bounty.github_visibility === "private" || bounty.github_visibility === "internal") && (
+                  <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-800 text-white">
+                    Private repo
+                  </span>
+                )}
                 <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800 capitalize">
                   {bounty.difficulty}
                 </span>

@@ -357,6 +357,7 @@ def test_detect_prefers_branch_rules(db, gh):
         "ecosystem": "python",
         "package_dirs": [],
         "allowed_paths": ["src/*", "tests/*"],
+        "allow_forking": None,
     }
 
 
@@ -785,9 +786,9 @@ def test_detect_records_public_visibility(db, gh):
 
 @pytest.mark.parametrize(
     ("visibility", "private"),
-    [("private", True), ("internal", True)],
+    [("private", True), ("internal", True), ("public", False)],
 )
-def test_onboard_refuses_a_repo_that_is_not_public(db, gh, balance, visibility, private):
+def test_onboard_accepts_public_private_and_internal(db, gh, balance, visibility, private):
     user = make_user()
     db.sync.add(user)
     seed(db.sync)
@@ -796,10 +797,25 @@ def test_onboard_refuses_a_repo_that_is_not_public(db, gh, balance, visibility, 
         "visibility": visibility,
         "private": private,
     }
-    with pytest.raises(RepoAdminError, match="not public"):
+    result = _run(onboard_repo(db, REPO, funder=user, auto_dispatch_alerts=True))
+    link = reload(db)
+    assert result["changed"] is True
+    assert link.enabled is True
+    assert link.funder_user_id == user.id
+    assert link.visibility == visibility
+    assert link.auto_dispatch_alerts is True
+
+
+def test_onboard_refuses_unknown_visibility(db, gh, balance):
+    user = make_user()
+    db.sync.add(user)
+    seed(db.sync)
+    gh.repository = {"default_branch": "main"}
+    with pytest.raises(RepoAdminError, match="visibility is unknown") as raised:
         _run(onboard_repo(db, REPO, funder=user, auto_dispatch_alerts=True))
+    assert raised.value.code == "visibility_unknown"
     link = reload(db)
     assert link.enabled is False
     assert link.funder_user_id is None
-    assert link.visibility == visibility
+    assert link.visibility is None
     assert link.auto_dispatch_alerts is False

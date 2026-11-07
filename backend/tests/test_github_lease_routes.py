@@ -132,6 +132,31 @@ class FakeSession:
     async def rollback(self):
         self.rollbacks += 1
 
+    async def execute(self, statement, *args, **kwargs):
+        class _Empty:
+            def all(self):
+                return []
+
+            def scalars(self):
+                return self
+
+            def first(self):
+                return None
+
+            def scalar_one_or_none(self):
+                return None
+
+            def scalar(self):
+                return None
+
+        return _Empty()
+
+    async def get(self, model, ident, **kwargs):
+        user = getattr(self, "user", None)
+        if user is not None and getattr(user, "id", None) == ident:
+            return user
+        return None
+
 
 def _headers(*, bearer="good-token", lease=TOKEN, auth=True, lease_header=True):
     headers = {}
@@ -168,7 +193,9 @@ def api(monkeypatch):
         "expiries": [],
         "active_lease": None,
         "lease": lease,
-        "link": types.SimpleNamespace(installation_id=99, repo_full_name=REPO),
+        "link": types.SimpleNamespace(
+            installation_id=99, repo_full_name=REPO, visibility="public", enabled=True
+        ),
         "other_pr": None,
         "settlement": None,
         "status_binding": binding,
@@ -196,7 +223,8 @@ def api(monkeypatch):
         "lock_calls": [],
     }
 
-    async def fetch_advertised_bounties(db, *, language, limit):
+    async def fetch_advertised_bounties(db, *, language, limit, readable_repos=None):
+        assert readable_repos is None
         box["listing_calls"].append((language, limit))
         return list(box["rows"])
 
@@ -342,6 +370,11 @@ def api(monkeypatch):
         return set(ids) & box.setdefault("hidden", set())
 
     monkeypatch.setattr(github_leases, "hidden_bounty_ids", hidden_bounty_ids)
+
+    async def can_view_bounty(db, bounty_id, user):
+        return bounty_id not in box.setdefault("hidden", set())
+
+    monkeypatch.setattr(github_leases, "can_view_bounty", can_view_bounty)
     monkeypatch.setattr(github_leases, "fetch_spec", fetch_spec)
     monkeypatch.setattr(github_leases, "fetch_users_for_agent", fetch_users_for_agent)
     monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity_for_user)
@@ -368,6 +401,7 @@ def api(monkeypatch):
     monkeypatch.setattr(trust_gateway, "trust_denial", denial)
 
     session = FakeSession()
+    session.user = user
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
 
@@ -408,7 +442,9 @@ def test_list_bounties_shape_and_limit(api, monkeypatch):
         "amount_usd",
         "funding_status",
         "spec",
+        "visibility",
     }
+    assert item["visibility"] is None
     assert item["bounty_id"] == str(binding.bounty_id)
     assert item["repo"] == REPO
     assert item["issue_number"] == ISSUE
@@ -787,6 +823,30 @@ def test_submit_rejects_pr_already_bound_and_github_outage(api):
     api.box["link"] = None
     missing = _submit(api, lease, {"pr_url": f"https://github.com/{REPO}/pull/7"})
     _error(missing, 502, "github_unavailable")
+    assert api.session.commits == 0
+
+
+def test_submit_public_repo_skips_collaborator_check(api, monkeypatch):
+    async def boom(*args, **kwargs):
+        raise AssertionError("collaborator check")
+
+    monkeypatch.setattr(github_leases, "has_repo_read", boom)
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    assert response.status_code == 200
+
+
+def test_submit_revoked_private_access_is_403(api, monkeypatch):
+    async def denied(db, user, link):
+        assert user.id == api.box["user"].id
+        assert link.visibility == "private"
+        return False
+
+    monkeypatch.setattr(github_leases, "has_repo_read", denied)
+    api.box["link"].visibility = "private"
+    response = _submit(api, api.box["lease"], {"pr_url": f"https://github.com/{REPO}/pull/7"})
+    _error(response, 403, "repo_access_revoked")
+    assert api.box["lease"].status == "work"
+    assert api.box["pr_calls"] == []
     assert api.session.commits == 0
 
 

@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.github import is_public_visibility
 from app.models.user import User
 from app.services import exchange, github_app
 from app.services.github_bounty_service import (
@@ -74,6 +73,7 @@ STANDARD_LABELS: tuple[tuple[str, str, str], ...] = (
     ),
     ("tier: security", _SECURITY_COLOR, "SettleBridge: security tier (KYA 2+, EMA 0.85+)"),
 )
+_KNOWN_VISIBILITY = frozenset({"public", "private", "internal"})
 _FORBIDDEN_PROBES = (
     ".github/workflows/ci.yml",
     ".github/actions/setup/action.yml",
@@ -299,6 +299,8 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
             if any(c["name"] == "__init__.py" and c["type"] == "file" for c in children):
                 package_dirs.append(directory)
         allowed_paths = sorted(set(allowed_paths) | {f"{d}/*" for d in package_dirs})
+    raw_forking = repository.get("allow_forking")
+    allow_forking = raw_forking if isinstance(raw_forking, bool) else None
     return {
         "repo": name,
         "installation_id": installation_id,
@@ -311,6 +313,7 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
         "ecosystem": ecosystem,
         "package_dirs": package_dirs,
         "allowed_paths": allowed_paths,
+        "allow_forking": allow_forking,
     }
 
 
@@ -406,8 +409,8 @@ async def onboard_repo(
     """
     detected = await detect_defaults(db, repo)
     link = await _require_link(db, repo)
-    if not is_public_visibility(link.visibility):
-        raise OnboardError(f"{link.repo_full_name} is not public", code="repo_not_public")
+    if link.visibility not in _KNOWN_VISIBILITY:
+        raise OnboardError("repository visibility is unknown", code="visibility_unknown")
     if link.funder_user_id is not None and link.funder_user_id != funder.id and not replace_funder:
         raise FunderConflictError(f"{link.repo_full_name} is already funded by another user")
 

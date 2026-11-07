@@ -175,6 +175,29 @@ def _repo_options(link: GitHubRepoLink) -> dict:
     }
 
 
+def _private_access_steps(link: GitHubRepoLink, detected: dict) -> list[dict]:
+    """Non-blocking notes for a private or internal repo. Public repos get none."""
+    if link.visibility not in {"private", "internal"}:
+        return []
+    steps = [
+        _step(
+            "private_repo_access",
+            "Anyone with read access on GitHub can see and claim these bounties. "
+            "Add solvers as collaborators.",
+            blocking=False,
+        )
+    ]
+    if detected.get("allow_forking") is False:
+        steps.append(
+            _step(
+                "forking_disabled",
+                "This repo does not allow forks. Solvers need write access to push a branch.",
+                blocking=False,
+            )
+        )
+    return steps
+
+
 def _funder_cannot_solve_step(login: str) -> dict:
     return _step(
         "funder_cannot_solve",
@@ -249,8 +272,10 @@ async def setup_status(
         "auto_dispatch_alerts": None,
         "auto_merge_acceptable": None,
         "strict_tests": None,
+        "visibility": None,
         "urls": urls,
     }
+    private_steps: list[dict] = []
     if identity is None:
         steps.append(
             _step(
@@ -275,6 +300,8 @@ async def setup_status(
             except RepoAdminError as exc:
                 raise _service_error(exc) from exc
             result["detected"] = detected
+            result["visibility"] = link.visibility
+            private_steps = _private_access_steps(link, detected)
             if not detected["required_checks"]:
                 steps.append(
                     _step(
@@ -308,6 +335,7 @@ async def setup_status(
     steps.extend(funding)
     if identity is not None:
         steps.append(_funder_cannot_solve_step(identity.login))
+    steps.extend(private_steps)
     result["next_steps"] = steps
     result["ready"] = not any(step["blocking"] for step in steps)
     return result

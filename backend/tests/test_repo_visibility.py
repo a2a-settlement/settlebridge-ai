@@ -25,6 +25,7 @@ from app.middleware.auth import get_optional_user
 from app.models.bounty import Bounty, BountyStatus, Difficulty, ProvenanceTier
 from app.models.github import (
     GitHubBountyBinding,
+    GitHubIdentity,
     GitHubInstallation,
     GitHubLease,
     GitHubRepoLink,
@@ -77,6 +78,9 @@ class _Bridge:
 class _CaptureResult:
     def scalar(self):
         return 0
+
+    def scalar_one_or_none(self):
+        return None
 
     def scalars(self):
         return self
@@ -232,6 +236,7 @@ def _engine():
         )
     for model in (
         User,
+        GitHubIdentity,
         GitHubInstallation,
         GitHubRepoLink,
         GitHubBountyBinding,
@@ -604,8 +609,10 @@ def test_list_route_applies_the_same_filter():
         signed_in = client.get("/api/bounties")
         assert signed_in.status_code == 200
         signed_sql = [_pg(stmt) for stmt in db.stmts]
-        assert signed_sql
-        assert all(f"requester_id = '{holder['user'].id}'" in sql for sql in signed_sql)
+        bounty_sql = [sql for sql in signed_sql if "bounties" in sql]
+        assert bounty_sql
+        assert all(f"requester_id = '{holder['user'].id}'" in sql for sql in bounty_sql)
+        assert all("visibility = 'public'" in sql for sql in bounty_sql)
     finally:
         client.close()
 
@@ -683,18 +690,20 @@ def test_solver_setup_excludes_hidden(monkeypatch):
         return binding, bounty, spec
 
     visible = advertised(uuid.uuid4(), 0.2, "Visible title")
-    hidden_easy = advertised(uuid.uuid4(), 0.2, "Hidden title")
-    hidden_hard = advertised(uuid.uuid4(), 50, "Hidden hard")
-    hidden_owned = advertised(user_id, 0, "Hidden mine")
 
     async def fetch_identity(_db, uid):
         assert uid == user_id
         return SimpleNamespace(login="octo")
 
-    async def fetch_bounties(_db, *, language, limit):
+    async def readable_private_repos(_db, viewer):
+        assert viewer.id == user_id
+        return set()
+
+    async def fetch_bounties(_db, *, language, limit, readable_repos=None):
         assert language is None
         assert limit == 100
-        return [visible, hidden_easy, hidden_hard, hidden_owned]
+        assert not readable_repos
+        return [visible]
 
     class _Db:
         def __init__(self):
@@ -703,14 +712,12 @@ def test_solver_setup_excludes_hidden(monkeypatch):
         async def execute(self, stmt):
             self.stmts.append(stmt)
             sql = str(stmt)
-            if "github_bounty_bindings" in sql:
-                hidden = [hidden_easy[1].id, hidden_hard[1].id, hidden_owned[1].id]
-                return _IdRows(hidden)
             if "funder_user_id" in sql:
                 return _First(None)
             raise AssertionError(sql)
 
     monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity)
+    monkeypatch.setattr(solver_setup, "readable_private_repos", readable_private_repos)
     monkeypatch.setattr(github_leases, "fetch_advertised_bounties", fetch_bounties)
     monkeypatch.setattr(solver_setup.exchange, "get_balance", lambda _user: {"reputation": 1})
     monkeypatch.setattr(solver_setup.settings, "TRUST_GATEWAY_TOKEN_URL", "")
@@ -718,7 +725,7 @@ def test_solver_setup_excludes_hidden(monkeypatch):
     body = _run(solver_setup.setup_status(db, user))
     assert [item["title"] for item in body["eligible_bounties"]] == ["Visible title"]
     assert body["ineligible_count"] == 0
-    assert any("github_bounty_bindings" in str(stmt) for stmt in db.stmts)
+    assert all("github_bounty_bindings" not in str(stmt) for stmt in db.stmts)
 
 
 def test_training_card_404_for_hidden_bounty(monkeypatch):

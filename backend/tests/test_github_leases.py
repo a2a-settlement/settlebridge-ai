@@ -218,6 +218,19 @@ def test_amount_usd_text_uses_formatter(monkeypatch):
     assert github_leases.amount_usd_text(199) == "1.99"
 
 
+def test_advertised_query_includes_readable_private_repos():
+    db = _Capture()
+    _run(
+        github_leases.fetch_advertised_bounties(
+            db, language=None, limit=10, readable_repos={"acme/private"}
+        )
+    )
+    sql = _sql(db.stmt)
+    assert "acme/private" in sql
+    assert "NOT (EXISTS" in sql
+    assert "github_repo_links.visibility = 'public'" in sql
+
+
 def test_listing_query_excludes_active_leases_and_filters_language():
     db = _Capture()
     rows = _run(github_leases.fetch_advertised_bounties(db, language=None, limit=10))

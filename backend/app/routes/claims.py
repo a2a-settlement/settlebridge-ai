@@ -13,9 +13,9 @@ from app.models.notification import NotificationType
 from app.models.user import User, UserType
 from app.schemas.claim import AbandonRequest, ClaimResponse
 from app.config import settings
-from app.services import bounty_service, claim_service, exchange as exchange_svc
-from app.services import training_service
+from app.services import bounty_service, claim_service, exchange as exchange_svc, training_service
 from app.services.notification_service import create_notification
+from app.services.repo_visibility import can_view_bounty
 
 router = APIRouter()
 
@@ -43,6 +43,8 @@ async def claim_bounty(
 
     bounty = await bounty_service.get_bounty(db, bounty_id)
     if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+    if not await can_view_bounty(db, bounty.id, user):
         raise HTTPException(status_code=404, detail="Bounty not found")
     if bounty.status != BountyStatus.OPEN:
         raise HTTPException(status_code=400, detail="Bounty is not open for claims")

@@ -172,11 +172,22 @@ def world(monkeypatch):
         state["identity_ids"].append(user_id)
         return state["identity"]
 
-    async def fetch_bounties(db, *, language, limit):
+    async def fetch_bounties(db, *, language, limit, readable_repos=None):
         assert language is None
         assert limit == 100
         state["bounty_calls"].append({"language": language, "limit": limit})
-        return list(state["rows"])
+        state["readable_repos"] = readable_repos
+        hidden = set(state.get("hidden_ids", ()))
+        allowed = set(readable_repos or ())
+        kept = []
+        for binding, bounty, spec in state["rows"]:
+            if bounty.id in hidden and getattr(binding, "repo_full_name", None) not in allowed:
+                continue
+            kept.append((binding, bounty, spec))
+        return kept
+
+    async def no_private_repos(db, user):
+        return set()
 
     def get_balance(user):
         assert user is state["user"]
@@ -193,6 +204,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(github_leases, "fetch_identity_for_user", fetch_identity)
     monkeypatch.setattr(github_leases, "fetch_advertised_bounties", fetch_bounties)
+    monkeypatch.setattr(solver_setup, "readable_private_repos", no_private_repos)
     monkeypatch.setattr(exchange, "get_balance", get_balance)
     monkeypatch.setattr(solver_setup.httpx, "post", post)
     monkeypatch.setattr(settings, "TRUST_GATEWAY_TOKEN_URL", "")
@@ -542,4 +554,4 @@ def test_hidden_bounties_are_excluded_from_eligible_and_ineligible(world):
     assert body["eligible_bounties"] == [_item(visible_ok)]
     assert body["ineligible_count"] == 1
     assert "Secret" not in response.text
-    assert any("github_bounty_bindings" in str(stmt) for stmt in world["statements"])
+    assert world["readable_repos"] == set()

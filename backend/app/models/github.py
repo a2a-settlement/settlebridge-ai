@@ -63,6 +63,7 @@ class JobKind(str, enum.Enum):
     ADVANCE_SETTLEMENT = "advance_settlement"
     SECURITY_ALERT = "security_alert"
     REFUND_HOLD = "refund_hold"
+    REPOSITORY = "repository"
 
 
 class SettlementState(str, enum.Enum):
