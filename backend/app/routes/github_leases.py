@@ -93,6 +93,7 @@ async def list_github_bounties(
 async def claim_bounty_lease(
     bounty_id: uuid.UUID,
     authorization: Annotated[str | None, Header()] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     claims = _agent_claims(authorization)
@@ -101,7 +102,8 @@ async def claim_bounty_lease(
     denied = _require_read_scope(claims)
     if denied is not None:
         return denied
-    return _response(await github_leases.claim_lease(db, bounty_id, claims))
+    result = await github_leases.claim_lease(db, bounty_id, claims, idempotency_key)
+    return _response(result)
 
 
 @router.post("/github/leases/{lease_id}/renew")
@@ -144,6 +146,7 @@ async def submit_bounty_lease(
     request: Request,
     authorization: Annotated[str | None, Header()] = None,
     x_lease_token: Annotated[str | None, Header()] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     claims = _agent_claims(authorization)
@@ -155,7 +158,9 @@ async def submit_bounty_lease(
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body
-    result = await github_leases.submit_lease(db, lease_id, claims, x_lease_token, body)
+    result = await github_leases.submit_lease(
+        db, lease_id, claims, x_lease_token, body, idempotency_key
+    )
     return _response(result)
 
 
