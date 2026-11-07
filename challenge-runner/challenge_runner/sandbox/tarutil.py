@@ -178,14 +178,7 @@ def _write_file(
     source = tar.extractfile(member)
     if source is None:
         raise UnsafeArchive("refusing special file")
-    parts = rel.split("/")
-    current = dest_root
-    for part in parts[:-1]:
-        current = current / part
-        if current.is_symlink():
-            raise UnsafeArchive("refusing symlink escape")
-        current.mkdir(exist_ok=True)
-    target = current / parts[-1]
+    target = _member_path(dest_root, rel)
     if target.is_symlink():
         raise UnsafeArchive("refusing symlink escape")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -210,11 +203,22 @@ def _write_file(
     return written
 
 
+def _member_path(dest_root: Path, rel: str) -> Path:
+    """Create the parents of ``rel``, refusing any parent that is a symlink."""
+    parts = rel.split("/")
+    current = dest_root
+    for part in parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise UnsafeArchive("refusing symlink escape")
+        current.mkdir(exist_ok=True)
+    return current / parts[-1]
+
+
 def _make_symlink(dest_root: Path, rel: str, linkname: str) -> None:
     if not _symlink_stays_inside(rel, linkname):
         raise UnsafeArchive("refusing symlink escape")
-    target = dest_root.joinpath(*rel.split("/"))
-    target.parent.mkdir(parents=True, exist_ok=True)
+    target = _member_path(dest_root, rel)
     if target.exists() or target.is_symlink():
         raise UnsafeArchive("refusing symlink escape")
     os.symlink(linkname, target)
@@ -234,10 +238,8 @@ def _make_hardlink(dest_root: Path, rel: str, linkname: str) -> None:
         source_resolved = source.resolve()
     except OSError as exc:
         raise UnsafeArchive("refusing hardlink escape") from exc
-    if not source_resolved.is_relative_to(dest_root) or not source_resolved.is_file():
+    # dest_root is resolved, so any symlink on the source path changes the resolved path.
+    if source_resolved != source or not source_resolved.is_file():
         raise UnsafeArchive("refusing hardlink escape")
-    if source.is_symlink():
-        raise UnsafeArchive("refusing hardlink escape")
-    target = dest_root.joinpath(*rel.split("/"))
-    target.parent.mkdir(parents=True, exist_ok=True)
+    target = _member_path(dest_root, rel)
     os.link(source_resolved, target)

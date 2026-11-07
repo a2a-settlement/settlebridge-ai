@@ -136,3 +136,49 @@ def test_challenger_bundle_must_stay_under_challenge_tests(tmp_path: Path):
         raise AssertionError("challenger symlink was extracted")
     linked = dest / "challenge_tests" / "link"
     assert not linked.exists()
+
+
+def _link(name: str, target: str, kind: bytes) -> tuple[tarfile.TarInfo, None]:
+    info = tarfile.TarInfo(name)
+    info.type = kind
+    info.linkname = target
+    return info, None
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [_link("challenge_tests/conftest.py", "x.py", tarfile.SYMTYPE)],
+        [
+            _file("challenge_tests/sub/f.py", b"x"),
+            _link("challenge_tests/conftest.py", "challenge_tests/sub/f.py", tarfile.LNKTYPE),
+        ],
+    ],
+    ids=["symlink", "hardlink"],
+)
+def test_source_symlink_cannot_redirect_the_challenger_prefix(tmp_path: Path, members):
+    dest = tmp_path / "work"
+    source = _save(tmp_path, [_link("challenge_tests", ".", tarfile.SYMTYPE)])
+    safe_extract(source, dest)
+    assert (dest / "challenge_tests").is_symlink()
+    challenger = tmp_path / "challenger.tar"
+    challenger.write_bytes(_tar(members).getvalue())
+    with pytest.raises(UnsafeArchive, match="symlink"):
+        safe_extract(challenger, dest, required_prefix="challenge_tests")
+    assert not (dest / "conftest.py").exists()
+    assert not (dest / "conftest.py").is_symlink()
+
+
+def test_hardlink_source_through_a_symlinked_directory_is_refused(tmp_path: Path):
+    dest = tmp_path / "out"
+    archive = _save(
+        tmp_path,
+        [
+            _file("real/secret.txt", b"s"),
+            _link("alias", "real", tarfile.SYMTYPE),
+            _link("copy.txt", "alias/secret.txt", tarfile.LNKTYPE),
+        ],
+    )
+    with pytest.raises(UnsafeArchive, match="hardlink"):
+        safe_extract(archive, dest)
+    assert not (dest / "copy.txt").exists()
