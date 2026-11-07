@@ -37,7 +37,6 @@ from app.models.github import (
     LeaseStatus,
     LedgerStatus,
     SettlementState,
-    is_public_visibility,
 )
 from app.models.user import User
 from app.services import exchange, github_app, github_comments, github_settlement, mediator
@@ -82,6 +81,7 @@ REASON_CHECKS_NOT_PASSING = (
 )
 REASON_SETTLEMENT_DISABLED = "settlement disabled"
 REASON_NOT_PUBLIC = "repository is not public"
+REASON_VISIBILITY_UNKNOWN = "repository visibility is unknown"
 _REPOSITORY_VISIBILITIES = frozenset({"public", "private", "internal"})
 _WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 _SETTLED_STATES = frozenset(
@@ -580,17 +580,16 @@ async def _record_repository_visibility(
     _apply_known_visibility(await get_repo_link(db, repo), repository)
 
 
-async def _ensure_public_repository(link, installation_id: int, repo: str) -> bool:
-    """Refresh a non-public link once. True only when the stored visibility is public.
+async def _ensure_visibility_known(link, installation_id: int, repo: str) -> bool:
+    """Refresh an unknown link once. True when visibility is public, private, or internal.
 
-    A GitHub outage raises the retryable job error from ``_reraise_external`` and
-    leaves the bounty unadvertised.
+    A GitHub failure raises through ``_github_call`` and does not mark the repo public.
     """
-    if is_public_visibility(getattr(link, "visibility", None)):
+    if getattr(link, "visibility", None) in _REPOSITORY_VISIBILITIES:
         return True
     payload = await _github_call(github_app.get_repository(installation_id, repo))
     link.visibility = visibility_from_repository(payload)
-    return is_public_visibility(getattr(link, "visibility", None))
+    return getattr(link, "visibility", None) in _REPOSITORY_VISIBILITIES
 
 
 def _repo_records(entries: object) -> list[tuple[str, dict | None]]:
@@ -1259,21 +1258,21 @@ async def _sync_issue_terms(db: AsyncSession, job: GitHubJob) -> None:
         await _flush(db)
         return
     _apply_known_visibility(link, data.get("repository"))
-    if not await _ensure_public_repository(link, installation_id, repo):
+    if not await _ensure_visibility_known(link, installation_id, repo):
         if binding is None:
             await _comment_not_advertised(
-                installation_id, repo, issue_number, REASON_NOT_PUBLIC
+                installation_id, repo, issue_number, REASON_VISIBILITY_UNKNOWN
             )
             await _flush(db)
             return
         if await get_active_lease(db, binding.id) is not None:
             logger.info(
-                "leaving %s#%s in place; repository is not public and a lease is active",
+                "leaving %s#%s in place; repository visibility is unknown and a lease is active",
                 repo,
                 issue_number,
             )
             return
-        await _cancel_binding(db, binding, installation_id, REASON_NOT_PUBLIC)
+        await _cancel_binding(db, binding, installation_id, REASON_VISIBILITY_UNKNOWN)
         return
     from app.services import github_alerts
 
@@ -1917,6 +1916,31 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
     await _flush(db)
 
 
+async def handle_repository_event(db: AsyncSession, job: GitHubJob) -> None:
+    """Store visibility after a repository is privatized or publicized.
+
+    Bindings stay as they are. Going private hides bounties through the visibility
+    column alone. A payload that does not name public, private, or internal is left
+    unchanged. ``publicized`` ends as public. ``privatized`` stores the payload
+    visibility when that value is one of those three, which is private for a
+    normal privatized event.
+    """
+    _event, action, data = _webhook_parts(job)
+    repo = _repository_full_name(data)
+    reported = visibility_from_repository(data.get("repository"))
+    if reported not in _REPOSITORY_VISIBILITIES:
+        return
+    if action == "publicized":
+        visibility = "public"
+    else:
+        visibility = reported
+    link = await get_repo_link(db, repo)
+    if link is None:
+        return
+    link.visibility = visibility
+    await _flush(db)
+
+
 async def handle_advance_settlement(db: AsyncSession, job: GitHubJob) -> None:
     payload = job.payload
     if not isinstance(payload, dict):
@@ -1941,6 +1965,7 @@ _HANDLERS = {
     JobKind.CHECKS_COMPLETED.value: handle_checks_completed,
     JobKind.REVIEW_CLEAR_COMMENT.value: handle_review_clear_comment,
     JobKind.ADVANCE_SETTLEMENT.value: handle_advance_settlement,
+    JobKind.REPOSITORY.value: handle_repository_event,
 }
 
 

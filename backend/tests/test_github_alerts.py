@@ -664,8 +664,8 @@ def test_malformed_alert_is_permanent(db, configured, github):
     [
         (False, "high", False, False),
         (None, "critical", False, False),
-        (True, "high", False, False),
-        (True, None, False, False),
+        (True, "high", True, True),
+        (True, None, True, False),
         (False, None, True, False),
         (False, "", True, False),
     ],
@@ -999,28 +999,32 @@ def _link_visibility(db: Bridge) -> str | None:
     return db.sync.execute(select(GitHubRepoLink)).scalar_one().visibility
 
 
-def test_private_dependabot_opens_no_issue(db, configured, github, caplog):
+def test_private_dependabot_is_not_skipped_for_visibility(db, configured, github, caplog):
     caplog.set_level(logging.INFO, logger="app.services.github_alerts")
     _seed(db)
     github.repository = {"visibility": "private", "private": True, "token": TOKEN}
     _dispatch(db, _job("dependabot_alert", _envelope(_dependabot(), private=True)))
-    assert github.calls == []
-    assert github.syncs == []
-    assert _run(_rows(db)) == []
-    assert github.repository_calls == [{"installation_id": INSTALLATION_ID, "repo": REPO}]
+    assert len(github.calls) == 1
+    assert github.calls[0]["labels"] == ["bounty: $15"]
+    assert "tier: security" not in github.calls[0]["labels"]
+    assert len(github.syncs) == 1
+    assert len(_run(_rows(db))) == 1
+    assert github.repository_calls == []
     assert _link_visibility(db) == "private"
     assert TOKEN not in caplog.text
+    assert TOKEN not in github.calls[0]["body"]
 
 
-def test_internal_code_scanning_opens_no_issue(db, configured, github):
+def test_internal_code_scanning_without_severity_opens(db, configured, github):
     _seed(db)
     github.repository = {"visibility": "internal", "private": True}
     data = _envelope(_code_alert(level=None), private=True)
     data["repository"]["visibility"] = "internal"
     _dispatch(db, _job("code_scanning_alert", data))
-    assert github.calls == []
-    assert github.syncs == []
-    assert _run(_rows(db)) == []
+    assert len(github.calls) == 1
+    assert github.calls[0]["labels"] == ["bounty: $25"]
+    assert "tier: security" not in github.calls[0]["labels"]
+    assert len(_run(_rows(db))) == 1
     assert _link_visibility(db) == "internal"
 
 
@@ -1030,6 +1034,19 @@ def test_unknown_visibility_refreshes_then_opens_a_public_dependabot(db, configu
     assert len(github.calls) == 1
     assert github.repository_calls == [{"installation_id": INSTALLATION_ID, "repo": REPO}]
     assert _link_visibility(db) == "public"
+
+
+def test_unknown_visibility_after_refresh_opens_nothing(db, configured, github, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.github_alerts")
+    _seed(db)
+    github.repository = {"private": "yes", "token": TOKEN}
+    _dispatch(db, _job("dependabot_alert", _envelope(_dependabot(), private=None)))
+    assert github.calls == []
+    assert github.syncs == []
+    assert _run(_rows(db)) == []
+    assert _link_visibility(db) is None
+    assert "repository visibility is unknown" in caplog.text
+    assert TOKEN not in caplog.text
 
 
 def test_visibility_refresh_failure_opens_nothing(db, configured, github):

@@ -30,6 +30,7 @@ from app.models.github import (
     JobKind,
     JobStatus,
     SettlementState,
+    is_public_visibility,
 )
 from app.services.github_errors import PermanentJobError
 
@@ -129,13 +130,17 @@ async def handle_security_alert(db: AsyncSession, job: GitHubJob) -> None:
     if link is None or not link.auto_dispatch_alerts:
         return
     installation_id = github_bounty_service._installation_id(data)
-    if not await github_bounty_service._ensure_public_repository(link, installation_id, repo):
-        logger.info("skipping %s alert on %s: repository is not public", event, repo)
+    if not await github_bounty_service._ensure_visibility_known(link, installation_id, repo):
+        logger.info("skipping %s alert on %s: repository visibility is unknown", event, repo)
         return
     if event == "dependabot_alert":
         plan = _dependabot_plan(data, repo)
     else:
-        plan = _code_scanning_plan(data, repo)
+        plan = _code_scanning_plan(
+            data,
+            repo,
+            private=not is_public_visibility(link.visibility),
+        )
     if plan is None:
         return
     await _open_dispatch(db, data, repo, installation_id, plan)
@@ -515,7 +520,7 @@ def _finding_location(alert: dict) -> str | None:
     return f"{path}:{line}"
 
 
-def _code_scanning_plan(data: dict, repo: str) -> _AlertPlan | None:
+def _code_scanning_plan(data: dict, repo: str, *, private: bool) -> _AlertPlan | None:
     alert = _alert_dict(data)
     number = _alert_number(alert)
     rule = alert.get("rule")
@@ -523,8 +528,8 @@ def _code_scanning_plan(data: dict, repo: str) -> _AlertPlan | None:
         raise PermanentJobError("code scanning alert is missing rule")
     level = rule.get("security_severity_level")
     # A public repo must not receive an issue that publishes an undisclosed security finding.
-    # Private and internal repos are refused before a plan is built.
-    if level:
+    # Private and internal repos (private=True) keep the finding inside the repo.
+    if level and not private:
         logger.info(
             "skipping public code scanning alert %s#%s with a security severity",
             repo,

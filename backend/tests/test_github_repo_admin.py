@@ -949,16 +949,19 @@ def test_cli_apply_persists_strict_tests_and_auto_flags(engine, monkeypatch, cap
     _assert_no_secrets(out + err)
 
 
-def test_enable_refuses_a_repo_that_is_not_public(db):
-    _ready(db, visibility="private")
-    with pytest.raises(RepoAdminError, match="not public"):
-        _run(set_repo_enabled(db, "acme/widget", True))
-    assert _run(_reload(db, REPO)).enabled is False
+@pytest.mark.parametrize("visibility", ["private", "internal"])
+def test_enable_allows_a_private_or_internal_repo(db, visibility):
+    _ready(db, visibility=visibility)
+    result = _run(set_repo_enabled(db, REPO, True))
+    assert result["after"]["enabled"] is True
+    row = _run(_reload(db, REPO))
+    assert row.enabled is True
+    assert row.visibility == visibility
 
 
 def test_enable_refuses_unknown_visibility(db):
     _ready(db, visibility=None)
-    with pytest.raises(RepoAdminError, match="not public"):
+    with pytest.raises(RepoAdminError, match="visibility is unknown"):
         _run(set_repo_enabled(db, REPO, True))
     assert _run(_reload(db, REPO)).enabled is False
 
@@ -971,16 +974,12 @@ def test_disable_allows_a_repo_that_is_not_public(db):
     assert _run(_reload(db, REPO)).visibility == "internal"
 
 
-def test_auto_dispatch_refuses_a_repo_that_is_not_public(db):
+def test_auto_dispatch_allows_a_private_repo(db):
     _add(db, _installation(10), _link(10, visibility="private"))
-    with pytest.raises(RepoAdminError, match="not public"):
-        _run(
-            configure_repo_link(
-                db, REPO, auto_dispatch_alerts=True, allowed_paths=["keep/*"]
-            )
-        )
+    result = _run(configure_repo_link(db, REPO, auto_dispatch_alerts=True))
+    assert result["after"]["auto_dispatch_alerts"] is True
     row = _run(_reload(db, REPO))
-    assert row.auto_dispatch_alerts is False
+    assert row.auto_dispatch_alerts is True
     assert row.default_policy["allowed_paths"] == ["old/*"]
 
 

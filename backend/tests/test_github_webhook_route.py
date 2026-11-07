@@ -382,6 +382,9 @@ def test_job_insert_satisfies_delivery_foreign_key():
             None,
         ),
         ("push", {"after": "abc"}, None),
+        ("repository", {"action": "privatized"}, "repository"),
+        ("repository", {"action": "publicized"}, "repository"),
+        ("repository", {"action": "edited"}, None),
     ],
 )
 def test_event_action_mapping(event, payload, kind):
