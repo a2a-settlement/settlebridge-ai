@@ -5,7 +5,12 @@ import { usePathname } from "next/navigation";
 import { LogOut, Menu, X, Shield } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { useView } from "@/hooks/useView";
+import { useWorkContext } from "@/hooks/useWorkContext";
+import { withContext } from "@/lib/workContext";
+import { ContextBar } from "@/components/ContextBar";
 import NotificationBell from "@/components/NotificationBell";
+import { RoleSwitch } from "@/components/RoleSwitch";
 import WalletWidget from "@/components/WalletWidget";
 
 const NAV = [
@@ -22,6 +27,8 @@ const focusRing =
 
 export default function MarketplaceHeader() {
   const { user, logout } = useAuth();
+  const { view, setView } = useView();
+  const { context, clearRepo, clearTask } = useWorkContext();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -30,12 +37,14 @@ export default function MarketplaceHeader() {
       ? pathname === "/" || pathname.startsWith("/bounties")
       : pathname.startsWith(href);
 
+  const link = (href: string) => withContext(href, context);
+
   return (
     <header className="bg-navy-900 text-white sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+        <div className="flex min-h-16 flex-wrap items-center justify-between">
           <div className="flex items-center gap-8">
-            <Link href="/bounties" className="flex items-center gap-2 font-bold text-lg">
+            <Link href={link("/bounties")} className="flex items-center gap-2 font-bold text-lg">
               <Shield className="w-6 h-6 text-money" />
               <span>SettleBridge</span>
             </Link>
@@ -43,7 +52,7 @@ export default function MarketplaceHeader() {
               {NAV.map(({ href, label }) => (
                 <Link
                   key={href}
-                  href={href}
+                  href={link(href)}
                   aria-current={isActive(href) ? "page" : undefined}
                   className={`px-3 py-1.5 rounded-md transition ${focusRing} ${
                     isActive(href)
@@ -57,13 +66,16 @@ export default function MarketplaceHeader() {
             </nav>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <div className="hidden md:block">
+              <RoleSwitch value={view} onChange={setView} />
+            </div>
             {user ? (
               <>
                 <WalletWidget />
                 <NotificationBell />
                 <Link
-                  href="/dashboard"
+                  href={link("/dashboard")}
                   aria-current={isActive("/dashboard") ? "page" : undefined}
                   className={`px-3 py-1.5 rounded-md text-sm transition ${focusRing} ${
                     isActive("/dashboard")
@@ -88,13 +100,13 @@ export default function MarketplaceHeader() {
             ) : (
               <div className="flex items-center gap-3">
                 <Link
-                  href="/login"
+                  href={link("/login")}
                   className="text-gray-300 hover:text-white text-sm transition"
                 >
                   Sign in
                 </Link>
                 <Link
-                  href="/register"
+                  href={link("/register")}
                   className="px-4 py-2 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition"
                 >
                   Get Started
@@ -115,14 +127,22 @@ export default function MarketplaceHeader() {
         </div>
       </div>
 
+      <ContextBar
+        repo={context.repo}
+        task={context.task}
+        onClearRepo={clearRepo}
+        onClearTask={clearTask}
+      />
+
       <nav
         id="mobile-nav"
         hidden={!mobileOpen}
         className="md:hidden border-t border-navy-800 px-4 py-3 space-y-1"
       >
+        <RoleSwitch value={view} onChange={setView} className="w-full" />
         {user && (
           <Link
-            href="/dashboard"
+            href={link("/dashboard")}
             aria-current={isActive("/dashboard") ? "page" : undefined}
             className={`block py-2 px-2 rounded-md text-sm ${focusRing} ${
               isActive("/dashboard") ? "bg-white/10 text-white" : "text-gray-300"
@@ -135,7 +155,7 @@ export default function MarketplaceHeader() {
         {NAV.map(({ href, label }) => (
           <Link
             key={href}
-            href={href}
+            href={link(href)}
             aria-current={isActive(href) ? "page" : undefined}
             className={`block py-2 px-2 rounded-md text-sm ${focusRing} ${
               isActive(href) ? "bg-white/10 text-white" : "text-gray-300"

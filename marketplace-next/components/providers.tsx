@@ -2,6 +2,7 @@
 
 import { type ReactNode, useMemo } from "react";
 import { AuthProvider } from "@/hooks/useAuth";
+import { WorkContextProvider } from "@/hooks/useWorkContext";
 import {
   AppConfigContext,
   type AppConfig,
@@ -22,7 +23,9 @@ function AppConfigBridge({ children }: { children: ReactNode }) {
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <AuthProvider>
-      <AppConfigBridge>{children}</AppConfigBridge>
+      <WorkContextProvider>
+        <AppConfigBridge>{children}</AppConfigBridge>
+      </WorkContextProvider>
     </AuthProvider>
   );
 }
