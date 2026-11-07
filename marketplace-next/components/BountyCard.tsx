@@ -68,6 +68,11 @@ export default function BountyCard({ bounty }: Props) {
         >
           {bounty.status.replace("_", " ")}
         </span>
+        {(bounty.github_visibility === "private" || bounty.github_visibility === "internal") && (
+          <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-800 text-white">
+            Private repo
+          </span>
+        )}
         <span
           className={`text-xs font-medium px-2.5 py-1 rounded-full ${difficultyColors[bounty.difficulty] ?? "bg-gray-100"}`}
         >
