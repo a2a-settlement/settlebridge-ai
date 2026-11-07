@@ -54,7 +54,7 @@ export default function BountyCard({ bounty }: Props) {
         </h3>
         <div className="flex-shrink-0 flex items-center gap-1.5 bg-money/10 text-money-dark px-3 py-1.5 rounded-lg font-bold text-sm">
           <Coins className="w-4 h-4" />
-          {bounty.reward_amount} ATE
+          {bounty.reward_amount} ATE (test)
         </div>
       </div>
 

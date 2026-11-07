@@ -476,7 +476,7 @@ export default function BountyDetail() {
             <div className="text-right">
               <div className="flex items-center gap-2 text-2xl font-bold text-money-dark">
                 <Coins className="w-6 h-6" />
-                {bounty.reward_amount} ATE
+                {bounty.reward_amount} ATE (test)
               </div>
               {bounty.deadline && (
                 <p className="text-xs text-gray-500 mt-1 flex items-center gap-1 justify-end">

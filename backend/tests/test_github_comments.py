@@ -50,7 +50,7 @@ def test_advertised_checks_balance_and_does_not_claim_funds_reserved():
     body = _advertised()
     assert body.splitlines()[0] == bounty_marker(BOUNTY)
     assert "### SettleBridge bounty — advertised" in body
-    assert "5000 ATE (~$50.00)" in body
+    assert "Amount: 5000 ATE (test) (~$50.00)" in body
     assert "balance checked; funds not reserved" in body
     assert "Spec version: 3" in body
     assert SPEC_HASH[:12] in body
@@ -233,8 +233,8 @@ def test_paid_and_cancelled():
     assert paid.splitlines()[0] == bounty_marker(BOUNTY)
     assert "Payment completed" in paid
     assert "escrow-9" in paid
-    assert "5000 ATE" in paid
-    assert "Exchange fee: 500 ATE (paid by the funder)" in paid
+    assert "Amount: 5000 ATE (test)" in paid
+    assert "Exchange fee: 500 ATE (test) (paid by the funder)" in paid
     assert "fee" not in render_paid(
         bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=5000, fee_ate=None
     ).lower()
@@ -276,3 +276,48 @@ def test_templates_are_deterministic():
     assert pending == render_accepted_payment_pending(
         bounty_id=BOUNTY, head_sha=SHA, reason="solver not attributed"
     )
+
+
+def _amount_lines(body: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith(("Amount:", "Exchange fee:"))]
+
+
+def test_every_amount_line_says_ate_test():
+    advertised = _advertised(amount_ate=40, amount_usd="0.40")
+    paid = render_paid(bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=40, fee_ate=2)
+    paid_without_fee = render_paid(
+        bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=40, fee_ate=None
+    )
+    comments = [
+        _advertised(),
+        advertised,
+        paid,
+        paid_without_fee,
+        render_paid(bounty_id=BOUNTY, escrow_id="escrow-9", amount_ate=5000, fee_ate=500),
+        render_evaluation(
+            bounty_id=BOUNTY,
+            outcome="ACCEPTABLE",
+            head_sha=SHA,
+            spec_version=1,
+            findings=[],
+        ),
+        render_not_advertised(reason="insufficient balance"),
+        render_not_payable(bounty_id=BOUNTY, reason="no lease-bound submission"),
+        render_accepted_payment_pending(bounty_id=BOUNTY, head_sha=SHA),
+        render_cancelled(bounty_id=BOUNTY, reason="issue closed"),
+    ]
+    seen: list[str] = []
+    for body in comments:
+        for line in body.splitlines():
+            if "ATE" not in line:
+                continue
+            seen.append(line)
+            assert "ATE (test)" in line
+            assert "ATE" not in line.replace("ATE (test)", "")
+    assert _amount_lines(advertised) == ["Amount: 40 ATE (test) (~$0.40)"]
+    assert _amount_lines(paid) == [
+        "Amount: 40 ATE (test)",
+        "Exchange fee: 2 ATE (test) (paid by the funder)",
+    ]
+    assert _amount_lines(paid_without_fee) == ["Amount: 40 ATE (test)"]
+    assert seen

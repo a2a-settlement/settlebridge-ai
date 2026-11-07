@@ -94,7 +94,7 @@ function formatCount(value: number): string {
 }
 
 function formatAte(value: number): string {
-  return `${formatCount(value)} ATE`;
+  return `${formatCount(value)} ATE (test)`;
 }
 
 function formatWhen(value: string, dateOnly = false): string {
@@ -275,7 +275,7 @@ export default function Wallet() {
           <div>
             <h1 className="font-semibold text-navy-900">Wallet</h1>
             <p className="text-xs text-gray-500">
-              ATE balance, bounty activity, and escrow holds.
+              Test ATE balance, bounty activity, and escrow holds.
             </p>
           </div>
         </div>
@@ -315,13 +315,13 @@ export default function Wallet() {
               detail={
                 <>
                   <p className="text-xs text-gray-500 mt-2">
-                    Bounty holds {formatCount(ledger.held_breakdown.bounty_holds)}, other holds{" "}
-                    {formatCount(ledger.held_breakdown.other_holds)}
+                    Bounty holds {formatAte(ledger.held_breakdown.bounty_holds)}, other holds{" "}
+                    {formatAte(ledger.held_breakdown.other_holds)}
                   </p>
                   {ledger.held_breakdown.unexplained !== 0 && (
                     <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
-                      {formatCount(ledger.held_breakdown.unexplained)} ATE of the held balance is
-                      not explained by these rows.
+                      {formatAte(ledger.held_breakdown.unexplained)} of the held balance is not
+                      explained by these rows.
                     </p>
                   )}
                 </>
