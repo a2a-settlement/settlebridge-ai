@@ -1155,7 +1155,7 @@ async def claim_lease(
     if await hidden_bounty_ids(db, [bounty_id]):
         user, github_user_id, early = await _claim_caller(db, claims)
         if early is not None:
-            return early
+            return _err(404, "not_found")
         if not await can_view_bounty(db, bounty_id, user):
             return _err(404, "not_found")
     denial = trust_gateway.trust_denial(
