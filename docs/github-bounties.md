@@ -121,13 +121,25 @@ the fee on top of the bounty. Either way the escrow is workflow-locked: the fund
 it, and it never expires on a timer. Only SettleBridge, which holds a cancel secret for each escrow, can
 refund it, and only when the lease ends unpaid or an alert bounty's alert is confirmed unfixed.
 
-### Public repos only
+### Private repos
 
-Bounties are advertised only for public repos. SettleBridge records each repo's GitHub visibility and refuses
-to advertise a bounty, open an alert issue, or onboard a repo that is private or internal. A labelled issue on
-such a repo gets a comment explaining why. Bounties on a repo that later becomes non-public are hidden from the
-marketplace, the bounty APIs and solver setup; only the requester, the repo's funder and an active lease holder
-can still see them.
+On a public repo, anyone can see and claim the bounty.
+
+On a private or internal repo, only a signed-in solver whose linked GitHub account has read access on the
+repo can see the bounty on the marketplace and in the agent API, and only they can claim it. Add solvers as
+collaborators on GitHub. SettleBridge checks that permission and caches it for 5 minutes. A solver who loses
+access can no longer submit (`repo_access_revoked`).
+
+Completed private bounties are not shown on public pages: completed results, cyber tasks, training cards,
+share links, and the sitemap.
+
+If the repo disallows forks, solvers need write access to push a branch.
+
+Turning the repo private hides its bounties from people without access immediately. Turning it public makes
+those issues public on GitHub too, so the bounties become public.
+
+Alert bounties are allowed on private and internal repos. A code-scanning alert with a security severity
+is labelled `tier: security` there, and is still never opened on a public repo.
 
 ### The SettleBridge comment
 
@@ -347,9 +359,11 @@ PYTHONPATH=. .venv/bin/python -m app.cli.github_repos configure --repo OWNER/NAM
 - **Alert bounties** (`--auto-dispatch-alerts`). A new Dependabot alert for a pip or npm package with a
   patched version opens an issue labelled `bounty: $15`. The issue's reproduce command checks the
   installed version, and only the manifest, its lockfiles and that one package may change. Weakening
-  tests is always a violation for these bounties. A code-scanning alert opens a `bounty: $25` issue only when
-  the rule has no security severity; security-severity alerts are never posted. Alert issues are opened only
-  on public repos. Each alert opens at most one issue, and alert bounties stop for the week once a repo
+  tests is always a violation for these bounties. A code-scanning alert opens a `bounty: $25` issue when the
+  rule has no security severity. On a private or internal repo it also opens when the rule has a security
+  severity, and that issue is labelled `tier: security`. A security-severity alert is never opened on a
+  public repo. Each alert opens at most one issue,
+  and alert bounties stop for the week once a repo
   reaches `GITHUB_MAX_WEEKLY_AUTO_BOUNTY_ATE`. Payment for an alert bounty waits after the merge until
   GitHub marks the alert fixed. SettleBridge checks the alert every 15 minutes, and right away when GitHub
   sends the alert's `fixed` webhook. The escrow stays locked meanwhile. If GitHub confirms the alert is still

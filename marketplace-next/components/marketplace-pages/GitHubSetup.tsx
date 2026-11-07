@@ -404,35 +404,40 @@ export default function GitHubSetup() {
           )}
 
           {status.next_steps.length > 0 && (
-            <ul className="space-y-2">
-              {status.next_steps.map((step) => (
-                <li
-                  key={step.code}
-                  className={`text-sm rounded-lg p-3 ${
-                    step.blocking ? "bg-amber-50 text-amber-900" : "bg-gray-50 text-gray-700"
-                  }`}
-                >
-                  {step.message}
-                  {step.action === "add_funds" && info?.add_funds.enabled ? (
-                    <button
-                      type="button"
-                      onClick={handleAddFunds}
-                      disabled={funding}
-                      className="ml-2 px-3 py-1 rounded-md bg-navy-900 text-white text-xs font-semibold hover:bg-navy-800 disabled:opacity-50"
-                    >
-                      {funding ? "Adding…" : `Add ${info.add_funds.amount_ate} test ATE`}
-                    </button>
-                  ) : step.url && (
-                    <a
-                      href={step.url}
-                      className="ml-2 inline-flex items-center gap-1 font-medium underline"
-                    >
-                      Open <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-2">
+              {status.next_steps.some((step) => step.code === "private_repo_access") && (
+                <h3 className="text-sm font-semibold text-navy-900">Private repository</h3>
+              )}
+              <ul className="space-y-2">
+                {status.next_steps.map((step) => (
+                  <li
+                    key={step.code}
+                    className={`text-sm rounded-lg p-3 ${
+                      step.blocking ? "bg-amber-50 text-amber-900" : "bg-gray-50 text-gray-700"
+                    }`}
+                  >
+                    {step.message}
+                    {step.action === "add_funds" && info?.add_funds.enabled ? (
+                      <button
+                        type="button"
+                        onClick={handleAddFunds}
+                        disabled={funding}
+                        className="ml-2 px-3 py-1 rounded-md bg-navy-900 text-white text-xs font-semibold hover:bg-navy-800 disabled:opacity-50"
+                      >
+                        {funding ? "Adding…" : `Add ${info.add_funds.amount_ate} test ATE`}
+                      </button>
+                    ) : step.url && (
+                      <a
+                        href={step.url}
+                        className="ml-2 inline-flex items-center gap-1 font-medium underline"
+                      >
+                        Open <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {fundedMessage && (
