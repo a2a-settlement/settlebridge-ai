@@ -101,3 +101,11 @@ Next action copy:
 - Runner: same interpreter, from `challenge-runner/`.
 - Frontend: `npx --no-install tsc --noEmit -p .`, `npx --no-install eslint <your files>`, `npm run -s test:unit` from `marketplace-next/`. Never `next build` in a worker.
 - No network in tests, no live APIs, no databases. Mock `httpx` and subprocess calls.
+
+## Wave 2 addendum (coordinator)
+
+- `components/RepoCard.tsx` (frozen): default `RepoCard(RepoCardProps)` and `sortRepoCards(cards)`; attention sorts first. P0-F3 and P0-F4 import it and never edit it.
+- `components/marketplace-pages/MyClaims.tsx` (frozen): the existing claims list moved out of `Dashboard.tsx`.
+- `components/marketplace-pages/SolverHome.tsx` (P0-F4 owns): default export, no props. `Dashboard.tsx` (P0-F3 owns) renders it for the `solve` view.
+- Spend: charged usage is capped at `reserved_cents`; `reservation_exhausted(reservation)` is true once the hold is used, and the orchestrator must stop that attempt.
+- Lease claim replays rotate the lease token; a client holding a stale token replays the claim with the same `Idempotency-Key` to get a fresh one.
