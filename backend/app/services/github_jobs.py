@@ -242,6 +242,25 @@ async def enqueue_pending_settlements(db: AsyncSession) -> int:
     return added
 
 
+async def enqueue_job(
+    db: AsyncSession,
+    *,
+    kind: str,
+    payload: dict,
+    dedupe_key: str | None = None,
+    run_at: datetime | None = None,
+) -> GitHubJob | None:
+    """S0 (owner: S1-min). Insert a pending job, or return None when an open job
+    (pending or running) already holds ``dedupe_key``. Does not commit."""
+    raise NotImplementedError
+
+
+async def cancel_jobs(db: AsyncSession, *, dedupe_key_prefix: str) -> int:
+    """S0 (owner: S1-min). Mark open jobs whose key starts with the prefix cancelled.
+    A running job finishes its current step and then sees the cancellation."""
+    raise NotImplementedError
+
+
 async def run_github_job_loop() -> None:
     """Poll forever. An iteration error is logged; the loop stays up."""
     logger.info(

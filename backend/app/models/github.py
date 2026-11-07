@@ -49,6 +49,7 @@ class JobStatus(str, enum.Enum):
     DONE = "done"
     FAILED = "failed"
     DEAD = "dead"
+    CANCELLED = "cancelled"
 
 
 class JobKind(str, enum.Enum):
@@ -64,6 +65,12 @@ class JobKind(str, enum.Enum):
     SECURITY_ALERT = "security_alert"
     REFUND_HOLD = "refund_hold"
     REPOSITORY = "repository"
+    CHALLENGE_FETCH = "challenge_fetch"
+    CHALLENGE_DEPS = "challenge_deps"
+    CHALLENGE_BASELINE = "challenge_baseline"
+    CHALLENGE_ATTEMPT = "challenge_attempt"
+    CHALLENGE_VALIDATE = "challenge_validate"
+    CHALLENGE_REPORT = "challenge_report"
 
 
 class SettlementState(str, enum.Enum):
@@ -120,6 +127,13 @@ class GitHubLease(Base):
             unique=True,
             postgresql_where=text("status IN ('work', 'submitted')"),
         ),
+        Index(
+            "uq_github_leases_agent_claim_key",
+            "agent_id",
+            "claim_idempotency_key",
+            unique=True,
+            postgresql_where=text("claim_idempotency_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -127,6 +141,9 @@ class GitHubLease(Base):
         UUID(as_uuid=True), ForeignKey("github_bounty_bindings.id"), nullable=False, index=True
     )
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    # Idempotency-Key of the claim request. A replay by the same agent rotates the token.
+    claim_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    submit_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -343,6 +360,17 @@ class GitHubWebhookDelivery(Base):
 
 class GitHubJob(Base):
     __tablename__ = "github_jobs"
+    __table_args__ = (
+        # At most one open job per dedupe key; finished jobs keep their key for history.
+        Index(
+            "uq_github_jobs_open_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text(
+                "dedupe_key IS NOT NULL AND status IN ('pending', 'running')"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     delivery_id: Mapped[str | None] = mapped_column(
@@ -350,6 +378,7 @@ class GitHubJob(Base):
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=JobStatus.PENDING.value, index=True
     )

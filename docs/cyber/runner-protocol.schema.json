@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "job": {
+    "$defs": {
+      "ResourceLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "cpu_seconds": {
+            "exclusiveMinimum": 0,
+            "maximum": 3600,
+            "title": "Cpu Seconds",
+            "type": "integer"
+          },
+          "disk_mb": {
+            "exclusiveMinimum": 0,
+            "maximum": 20480,
+            "title": "Disk Mb",
+            "type": "integer"
+          },
+          "max_processes": {
+            "default": 256,
+            "exclusiveMinimum": 0,
+            "maximum": 4096,
+            "title": "Max Processes",
+            "type": "integer"
+          },
+          "memory_mb": {
+            "exclusiveMinimum": 0,
+            "maximum": 8192,
+            "title": "Memory Mb",
+            "type": "integer"
+          },
+          "wall_seconds": {
+            "exclusiveMinimum": 0,
+            "maximum": 3600,
+            "title": "Wall Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cpu_seconds",
+          "memory_mb",
+          "wall_seconds",
+          "disk_mb"
+        ],
+        "title": "ResourceLimits",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "allowlist_hosts": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Allowlist Hosts",
+        "type": "array"
+      },
+      "canaries_digest": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Canaries Digest"
+      },
+      "challenger_bundle": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Challenger Bundle"
+      },
+      "execution_id": {
+        "maxLength": 128,
+        "minLength": 8,
+        "title": "Execution Id",
+        "type": "string"
+      },
+      "fixtures_digest": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Fixtures Digest"
+      },
+      "install_command": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Install Command",
+        "type": "array"
+      },
+      "limits": {
+        "$ref": "#/$defs/ResourceLimits"
+      },
+      "observers": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Observers",
+        "type": "array"
+      },
+      "protocol": {
+        "const": "challenge-runner/v1",
+        "default": "challenge-runner/v1",
+        "title": "Protocol",
+        "type": "string"
+      },
+      "python_version": {
+        "default": "3.11",
+        "title": "Python Version",
+        "type": "string"
+      },
+      "source_tarball": {
+        "title": "Source Tarball",
+        "type": "string"
+      },
+      "stage": {
+        "enum": [
+          "dependencies",
+          "execute"
+        ],
+        "title": "Stage",
+        "type": "string"
+      },
+      "task_id": {
+        "title": "Task Id",
+        "type": "string"
+      },
+      "test_command": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Test Command",
+        "type": "array"
+      },
+      "wheelhouse_manifest": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Wheelhouse Manifest"
+      }
+    },
+    "required": [
+      "execution_id",
+      "stage",
+      "task_id",
+      "source_tarball",
+      "limits"
+    ],
+    "title": "RunnerJob",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "ObserverEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "canary_seen",
+              "state_changed",
+              "sentinel_triggered",
+              "threshold_exceeded"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "observer": {
+            "title": "Observer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "observer",
+          "kind",
+          "detail",
+          "location"
+        ],
+        "title": "ObserverEvent",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "cpu_seconds": {
+        "default": 0,
+        "title": "Cpu Seconds",
+        "type": "integer"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Error"
+      },
+      "execution_id": {
+        "title": "Execution Id",
+        "type": "string"
+      },
+      "exit_code": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Exit Code"
+      },
+      "image_digest": {
+        "title": "Image Digest",
+        "type": "string"
+      },
+      "log_digest": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Log Digest"
+      },
+      "observer_events": {
+        "items": {
+          "$ref": "#/$defs/ObserverEvent"
+        },
+        "title": "Observer Events",
+        "type": "array"
+      },
+      "protocol": {
+        "const": "challenge-runner/v1",
+        "default": "challenge-runner/v1",
+        "title": "Protocol",
+        "type": "string"
+      },
+      "source_digest": {
+        "title": "Source Digest",
+        "type": "string"
+      },
+      "stage": {
+        "enum": [
+          "dependencies",
+          "execute"
+        ],
+        "title": "Stage",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "ok",
+          "test_failed",
+          "limit_exceeded",
+          "sandbox_error",
+          "cancelled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "wall_seconds": {
+        "default": 0,
+        "title": "Wall Seconds",
+        "type": "integer"
+      },
+      "wheelhouse_manifest": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Wheelhouse Manifest"
+      }
+    },
+    "required": [
+      "execution_id",
+      "stage",
+      "status",
+      "image_digest",
+      "source_digest"
+    ],
+    "title": "RunnerResult",
+    "type": "object"
+  },
+  "title": "challenge-runner/v1"
+}

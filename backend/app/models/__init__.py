@@ -17,7 +17,18 @@ from app.models.github import (
     GitHubSettlement,
     GitHubWebhookDelivery,
 )
+from app.models.challenge import (
+    ChallengeArtifact,
+    ChallengeAttempt,
+    ChallengeClaim,
+    ChallengeContract,
+    ChallengeParticipant,
+    ChallengeTask,
+    ChallengeVerdict,
+    Finding,
+)
 from app.models.notification import Notification
+from app.models.spend import AccountBudget, ExecutionUsage, SpendReservation
 from app.models.score_history import ScoreHistory, ScoreMode
 from app.models.snapshot import Snapshot
 from app.models.submission import Submission
@@ -34,4 +45,7 @@ __all__ = [
     "GitHubIdentity", "GitHubLease", "GitHubAlertDispatch",
     "ScoreHistory", "ScoreMode",
     "TrainingRun", "TrainingRunStatus", "TrainingTranscript",
+    "ChallengeTask", "ChallengeContract", "ChallengeParticipant", "ChallengeAttempt",
+    "ChallengeClaim", "ChallengeArtifact", "ChallengeVerdict", "Finding",
+    "AccountBudget", "SpendReservation", "ExecutionUsage",
 ]
