@@ -5,6 +5,9 @@ Rules:
   existing reservation and reserves nothing new.
 - ``record_usage`` is idempotent on ``execution_id``. Cause ``platform_retry`` is
   recorded with ``charged=False`` and never moves ``spent_cents``.
+- Charged usage never exceeds the reservation. ``ExecutionUsage.cost_cents`` keeps the
+  actual cost; the part above ``reserved_cents`` is absorbed by the platform, and the
+  orchestrator must stop once ``reservation_exhausted`` is true.
 - Budget counters change only under a row lock (or a conditional UPDATE on SQLite).
 """
 
@@ -13,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import object_session
@@ -288,7 +291,16 @@ async def record_usage(
                     update(SpendReservation)
                     .where(SpendReservation.id == reservation.id)
                     .where(SpendReservation.status == ReservationStatus.RESERVED.value)
-                    .values(used_cents=SpendReservation.used_cents + cost_cents)
+                    .values(
+                        used_cents=case(
+                            (
+                                SpendReservation.used_cents + cost_cents
+                                > SpendReservation.reserved_cents,
+                                SpendReservation.reserved_cents,
+                            ),
+                            else_=SpendReservation.used_cents + cost_cents,
+                        )
+                    )
                 )
                 if updated.rowcount != 1:
                     raise ValueError("reservation is not reserved")
@@ -303,6 +315,11 @@ async def record_usage(
         raise
     await db.refresh(reservation, attribute_names=["used_cents"])
     return usage
+
+
+def reservation_exhausted(reservation: SpendReservation) -> bool:
+    """True once charged usage has reached the hold; no further work should run on it."""
+    return reservation.used_cents >= reservation.reserved_cents
 
 
 async def _close(db: AsyncSession, reservation_id: uuid.UUID, new_status: str) -> SpendReservation:

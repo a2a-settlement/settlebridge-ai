@@ -27,6 +27,7 @@ from app.services.spend import (
     release_reservation,
     expire_reservations,
     budget_status,
+    reservation_exhausted,
 )
 
 PERIOD = 1000
@@ -442,15 +443,37 @@ def test_reconcile_and_release_account_and_are_idempotent(db):
     assert used == 40
     assert rel_status == "released"
     assert rel_used == 25
-    assert over_used == 80
+    assert over_used == 50
     assert over_held == 50
     assert status == {
         "period_cap_cents": 1000,
         "reserved_cents": 0,
-        "spent_cents": 145,
-        "available_cents": 855,
+        "spent_cents": 115,
+        "available_cents": 885,
         "paused": False,
     }
+
+
+def test_usage_above_the_hold_is_capped_and_marks_the_reservation_exhausted(db):
+    async def body():
+        budget = _add_budget(db, period=1000, per_job=100, concurrent=1)
+        reservation = await _reserve(db, budget, cents=50, key="spend:cap")
+        first = await _use(db, reservation, "exec:cap:1", cost=30)
+        partial = (reservation.used_cents, reservation_exhausted(reservation))
+        second = await _use(db, reservation, "exec:cap:2", cost=45)
+        after_second = (reservation.used_cents, reservation_exhausted(reservation))
+        third = await _use(db, reservation, "exec:cap:3", cost=10)
+        closed = await reconcile_reservation(db, reservation.id)
+        status = await budget_status(db, budget.user_id)
+        return first, partial, second, after_second, third, closed.used_cents, status
+
+    first, partial, second, after_second, third, used, status = _run(body())
+    assert partial == (30, False)
+    assert after_second == (50, True)
+    assert (first.cost_cents, second.cost_cents, third.cost_cents) == (30, 45, 10)
+    assert used == 50
+    assert status["spent_cents"] == 50
+    assert status["reserved_cents"] == 0
 
 
 def test_release_without_usage_returns_the_hold(db):
