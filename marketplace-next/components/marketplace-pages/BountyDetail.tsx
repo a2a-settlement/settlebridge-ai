@@ -21,9 +21,15 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api from "@/services/api";
 import type { Bounty, Claim } from "@/lib/types";
+import { CHECKS_CAPTION, type CyberTaskDetail, type TaskProgressInput } from "@/lib/cyberContracts";
+import { buildTaskProgress } from "@/lib/taskProgress";
 import { useAuth } from "@/hooks/useAuth";
+import { useView } from "@/hooks/useView";
 import ProvenanceBadge from "@/components/ProvenanceBadge";
 import DeliverableViewer from "@/components/DeliverableViewer";
+import { FundingBadge } from "@/components/StatusBadge";
+import { NextActionPanel } from "@/components/NextActionPanel";
+import { TaskProgress } from "@/components/TaskProgress";
 
 /** Insert markdown paragraph breaks before each "…), `next_key`" clause so dense API text scans as a spec, not one blob. */
 function acceptanceCriteriaToMarkdown(raw: string): string {
@@ -269,6 +275,67 @@ function SubmissionCard({
   );
 }
 
+function cyberProgressInput(task: CyberTaskDetail): TaskProgressInput {
+  return {
+    work_state: task.work_state,
+    funding_state: task.funding_state,
+    checks: {
+      state: task.checks.state,
+      head_sha: task.checks.head_sha,
+    },
+    evaluation: task.evaluation,
+    challenge_verdict: task.challenge_verdict,
+    open_findings: task.open_findings,
+    reward_ate: task.reward_ate,
+    work_expires_at: task.work_expires_at,
+    pr_url: task.pr_url,
+    bounty_id: task.bounty_id,
+  };
+}
+
+function CyberTaskSection({ bountyId }: { bountyId: string }) {
+  const { view } = useView();
+  const [task, setTask] = useState<CyberTaskDetail | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTask(null);
+    api
+      .get<CyberTaskDetail>(`/v1/cyber/tasks/${encodeURIComponent(bountyId)}`)
+      .then(({ data }) => {
+        if (!cancelled && data && typeof data.bounty_id === "string" && data.checks) {
+          setTask(data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTask(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bountyId]);
+
+  if (!task) return null;
+  const model = buildTaskProgress(cyberProgressInput(task), view);
+
+  return (
+    <section
+      className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:p-5"
+      aria-label="Cyber task progress"
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-navy-900">Task progress</h2>
+        <FundingBadge state={task.funding_state} />
+      </div>
+      <TaskProgress steps={model.detail} variant="detailed" />
+      <p className="mt-4 text-xs leading-relaxed text-gray-500">{CHECKS_CAPTION}</p>
+      <div className="mt-4">
+        <NextActionPanel action={model.nextAction} />
+      </div>
+    </section>
+  );
+}
+
 export default function BountyDetail() {
   const params = useParams();
   const id = params.id as string;
@@ -476,7 +543,7 @@ export default function BountyDetail() {
             <div className="text-right">
               <div className="flex items-center gap-2 text-2xl font-bold text-money-dark">
                 <Coins className="w-6 h-6" />
-                {bounty.reward_amount} ATE
+                {bounty.reward_amount} ATE (test)
               </div>
               {bounty.deadline && (
                 <p className="text-xs text-gray-500 mt-1 flex items-center gap-1 justify-end">
@@ -486,6 +553,8 @@ export default function BountyDetail() {
               )}
             </div>
           </div>
+
+          <CyberTaskSection bountyId={bounty.id} />
 
           <div className="prose prose-sm max-w-none text-gray-700 prose-headings:text-navy-900 prose-a:text-navy-600 prose-strong:text-navy-900 prose-code:text-navy-700 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none mb-8">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>

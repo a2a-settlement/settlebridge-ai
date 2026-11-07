@@ -40,7 +40,7 @@ from app.models.github import (
 )
 from app.models.user import User
 from app.services import exchange, github_app, github_comments, github_settlement, mediator
-from app.services.github_errors import PermanentJobError, RetryableJobError
+from app.services.github_errors import GitHubRateLimited, PermanentJobError, RetryableJobError
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +419,7 @@ def parse_closing_reference(pr_body: str | None, repo: str) -> int | None:
 
 
 def _reraise_external(exc: Exception) -> None:
-    if isinstance(exc, (RetryableJobError, PermanentJobError)):
+    if isinstance(exc, (RetryableJobError, PermanentJobError, GitHubRateLimited)):
         raise exc
     if isinstance(exc, github_app.GitHubAPIError):
         code = exc.status_code
@@ -1887,16 +1887,27 @@ async def handle_pull_request_closed(db: AsyncSession, job: GitHubJob) -> None:
             state=SettlementState.PENDING.value,
             idempotency_prefix=f"gh:{binding.id}:{lease.spec_id}",
         )
-        db.add(settlement)
-        await _flush(db)
-        db.add(
-            GitHubJob(
-                id=uuid.uuid4(),
-                kind=JobKind.ADVANCE_SETTLEMENT.value,
-                payload={"settlement_id": str(settlement.id)},
-                status=JobStatus.PENDING.value,
+        # A unique binding_id conflict rolls back only this insert, not the merge.
+        nested = db.begin_nested()
+        if asyncio.iscoroutine(nested):
+            nested = await nested
+        try:
+            async with nested:
+                db.add(settlement)
+                await db.flush()
+        except IntegrityError:
+            existing = await get_settlement_for_binding(db, binding.id)
+            if existing is None:
+                raise
+        else:
+            db.add(
+                GitHubJob(
+                    id=uuid.uuid4(),
+                    kind=JobKind.ADVANCE_SETTLEMENT.value,
+                    payload={"settlement_id": str(settlement.id)},
+                    status=JobStatus.PENDING.value,
+                )
             )
-        )
     lease.status = LeaseStatus.SETTLED.value
     binding.state = BindingState.SETTLEMENT_PENDING.value
     body = github_comments.render_accepted_payment_pending(

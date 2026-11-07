@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,6 +251,39 @@ async def _github(call):
         raise OnboardGitHubError(f"GitHub read failed: {exc}") from exc
 
 
+def _is_nontest_automation(run: object) -> bool:
+    """True for dependency-graph, Dependabot, and GitHub Pages runs, which are not tests.
+
+    Matched case-insensitively on the run name. Dependabot also matches ``app.slug``,
+    which is only present on the check run, before candidates are reduced to name and app id.
+    """
+    if not isinstance(run, dict):
+        return False
+    app = run.get("app") if isinstance(run.get("app"), dict) else {}
+    slug = app.get("slug")
+    if isinstance(slug, str) and slug.strip().casefold() == "dependabot":
+        return True
+    name = run.get("name")
+    if not isinstance(name, str):
+        return False
+    folded = name.strip().casefold()
+    if re.fullmatch(r"update-[a-z0-9_-]+-graph", folded):
+        return True
+    if any(
+        phrase in folded
+        for phrase in (
+            "dependency-graph",
+            "dependency graph",
+            "dependency submission",
+            "automatic dependency submission",
+        )
+    ):
+        return True
+    if folded.startswith("dependabot"):
+        return True
+    return folded == "pages build and deployment"
+
+
 async def detect_defaults(db: AsyncSession, repo: str) -> dict:
     """What onboarding would use for ``repo``, read from GitHub.
 
@@ -287,7 +321,7 @@ async def detect_defaults(db: AsyncSession, repo: str) -> dict:
     candidates: list[dict] = []
     if head_sha:
         runs = await _github(github_app.list_check_runs(installation_id, name, head_sha))
-        candidates = candidate_checks(runs)
+        candidates = candidate_checks([run for run in runs if not _is_nontest_automation(run)])
     entries = await _github(github_app.list_root_entries(installation_id, name, branch_name))
     ecosystem, allowed_paths = paths_for(entries)
     package_dirs: list[str] = []

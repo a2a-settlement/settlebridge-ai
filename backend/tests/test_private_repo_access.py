@@ -815,8 +815,8 @@ def test_claim_visibility(world):
     assert mismatch.status_code == 404
 
     missing_identity = _claim(world, "no_github", "private")
-    assert missing_identity.status_code == 409
-    assert missing_identity.json()["error"] == "no_github_identity"
+    assert missing_identity.status_code == 404
+    assert missing_identity.json()["error"] == "not_found"
 
     lessee_open = _claim(world, "lessee", "private")
     assert lessee_open.status_code == 404

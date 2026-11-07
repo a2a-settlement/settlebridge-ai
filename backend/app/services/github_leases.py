@@ -999,7 +999,148 @@ async def _claim_caller(db: AsyncSession, claims):
     return user, github_user_id, None
 
 
-async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResult:
+def _idempotency_key(value: object) -> tuple[str | None, APIResult | None]:
+    """A missing key is unchanged. A present key is 1..128 printable ASCII."""
+    if value is None:
+        return None, None
+    if (
+        not isinstance(value, str)
+        or len(value) < 1
+        or len(value) > 128
+        or any(ord(char) < 32 or ord(char) > 126 for char in value)
+    ):
+        return None, _err(400, "invalid_idempotency_key")
+    return value, None
+
+
+def _claim_body(binding, spec, lease, token: str, *, funds_reserved: bool) -> dict:
+    body = {
+        "lease_id": str(lease.id),
+        "lease_token": token,
+        "bounty_id": str(binding.bounty_id),
+        "repo": binding.repo_full_name,
+        "issue_number": binding.issue_number,
+        "issue_url": _issue_url(binding.repo_full_name, binding.issue_number),
+        "spec": spec_view(spec),
+        "test_command": spec.test_command,
+        "work_expires_at": _iso(lease.work_expires_at),
+        "hard_expires_at": _iso(lease.hard_expires_at),
+    }
+    if funds_reserved:
+        body["funds_reserved"] = True
+    return body
+
+
+def _submit_success(lease) -> APIResult:
+    return APIResult(
+        200,
+        {
+            "lease_id": str(lease.id),
+            "status": "submitted",
+            "pr_number": lease.pr_number,
+            "hold_expires_at": _iso(lease.hold_expires_at),
+        },
+    )
+
+
+def _submit_trace(body: dict) -> str | None | APIResult:
+    if "otel_trace_id" not in body or body.get("otel_trace_id") is None:
+        return None
+    trace = body.get("otel_trace_id")
+    if not isinstance(trace, str):
+        return _err(409, "idempotency_body_mismatch")
+    return trace[:64]
+
+
+def _submit_body_conflict(lease, binding, body) -> APIResult | None:
+    """409 when a replay names a different pull request or trace than the one stored."""
+    if not isinstance(body, dict):
+        return _err(409, "idempotency_body_mismatch")
+    pr_url = body.get("pr_url")
+    parsed = parse_pr_url(pr_url) if isinstance(pr_url, str) else None
+    if parsed is None:
+        return _err(409, "idempotency_body_mismatch")
+    repo, number = parsed
+    if repo.casefold() != _text(binding.repo_full_name).casefold() or number != lease.pr_number:
+        return _err(409, "idempotency_body_mismatch")
+    trace = _submit_trace(body)
+    if isinstance(trace, APIResult) or trace != lease.otel_trace_id:
+        return _err(409, "idempotency_body_mismatch")
+    return None
+
+
+def _funds_reserved(lease) -> bool:
+    marker = getattr(lease, "hold_escrow_id", None)
+    return bool(marker) and not is_pending_hold(marker)
+
+
+async def _lease_for_claim_key(db: AsyncSession, agent_id: str, key: str):
+    stmt = (
+        select(GitHubLease)
+        .where(
+            GitHubLease.agent_id == agent_id,
+            GitHubLease.claim_idempotency_key == key,
+        )
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def _replay_claim(db: AsyncSession, lease, bounty_id: uuid.UUID) -> APIResult:
+    binding = await fetch_binding(db, lease.binding_id)
+    if binding is None or binding.bounty_id != bounty_id:
+        return _err(409, "idempotency_key_reused")
+    status = _text(lease.status)
+    if status not in ACTIVE_LEASE_STATUSES:
+        return _err(409, "idempotency_key_reused", status=status)
+    spec = await fetch_spec(db, lease.spec_id)
+    if spec is None:
+        return _err(404, "not_found")
+    locked = await _locked_lease(db, lease)
+    if locked is None:
+        return _err(409, "lease_not_active")
+    status = _text(locked.status)
+    if status not in ACTIVE_LEASE_STATUSES:
+        await db.rollback()
+        return _err(409, "idempotency_key_reused", status=status)
+    # Only the hash was stored, so the lost response cannot be shown again.
+    token = "sbl_" + secrets.token_urlsafe(32)
+    locked.token_hash = hash_lease_token(token)
+    await db.commit()
+    return APIResult(
+        200,
+        _claim_body(binding, spec, locked, token, funds_reserved=_funds_reserved(locked)),
+    )
+
+
+async def _submit_replay(db, lease, key: str | None, body) -> APIResult | None:
+    if key is None or getattr(lease, "submit_idempotency_key", None) != key:
+        return None
+    if _text(lease.status) != LeaseStatus.SUBMITTED.value:
+        return None
+    binding = await fetch_binding(db, lease.binding_id)
+    if binding is None:
+        return _err(404, "not_found")
+    conflict = _submit_body_conflict(lease, binding, body)
+    if conflict is not None:
+        return conflict
+    return _submit_success(lease)
+
+
+async def claim_lease(
+    db: AsyncSession,
+    bounty_id: uuid.UUID,
+    claims,
+    idempotency_key: str | None = None,
+) -> APIResult:
+    key, key_error = _idempotency_key(idempotency_key)
+    if key_error is not None:
+        return key_error
+    if key is not None:
+        prior = await _lease_for_claim_key(db, claims.agent_id, key)
+        if prior is not None:
+            return await _replay_claim(db, prior, bounty_id)
     binding = await fetch_advertised_binding(db, bounty_id)
     if binding is None or binding.current_spec_id is None:
         return _err(404, "not_found")
@@ -1014,7 +1155,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     if await hidden_bounty_ids(db, [bounty_id]):
         user, github_user_id, early = await _claim_caller(db, claims)
         if early is not None:
-            return early
+            return _err(404, "not_found")
         if not await can_view_bounty(db, bounty_id, user):
             return _err(404, "not_found")
     denial = trust_gateway.trust_denial(
@@ -1034,6 +1175,11 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
     if denial_self is not None:
         return denial_self
     await lock_agent_for_claim(db, claims.agent_id)
+    # A same-key claim may have committed while this one waited on the lock.
+    if key is not None:
+        prior = await _lease_for_claim_key(db, claims.agent_id, key)
+        if prior is not None:
+            return await _replay_claim(db, prior, bounty_id)
     active = await count_active_leases(db, claims.agent_id)
     if active >= settings.LEASE_MAX_ACTIVE_PER_AGENT:
         return _err(409, "lease_limit")
@@ -1080,6 +1226,7 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         claim_reputation=claims.reputation,
         hold_escrow_id=pending_hold_marker(_hold_ttl_minutes()) if lock_funds else None,
         hold_cancel_secret=hold_secret,
+        claim_idempotency_key=key,
         created_at=now,
     )
     db.add(lease)
@@ -1087,26 +1234,18 @@ async def claim_lease(db: AsyncSession, bounty_id: uuid.UUID, claims) -> APIResu
         await db.commit()
     except IntegrityError:
         await db.rollback()
+        # Two claims with one key can both miss the lookup. The unique index
+        # keeps a single row; re-read it and answer as a replay.
+        if key is not None:
+            prior = await _lease_for_claim_key(db, claims.agent_id, key)
+            if prior is not None:
+                return await _replay_claim(db, prior, bounty_id)
         return _err(409, "lease_held")
     if lock_funds:
         hold_error = await _lock_claim_hold(db, lease, funder, spec.amount_ate)
         if hold_error is not None:
             return hold_error
-    body = {
-        "lease_id": str(lease.id),
-        "lease_token": token,
-        "bounty_id": str(binding.bounty_id),
-        "repo": binding.repo_full_name,
-        "issue_number": binding.issue_number,
-        "issue_url": _issue_url(binding.repo_full_name, binding.issue_number),
-        "spec": spec_view(spec),
-        "test_command": spec.test_command,
-        "work_expires_at": _iso(lease.work_expires_at),
-        "hard_expires_at": _iso(lease.hard_expires_at),
-    }
-    if lock_funds:
-        body["funds_reserved"] = True
-    return APIResult(201, body)
+    return APIResult(201, _claim_body(binding, spec, lease, token, funds_reserved=lock_funds))
 
 
 def _lower(previous, current):
@@ -1165,10 +1304,23 @@ async def release_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None
     return APIResult(200, {"lease_id": str(locked.id), "status": "released"})
 
 
-async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None, body) -> APIResult:
+async def submit_lease(
+    db,
+    lease_id: uuid.UUID,
+    claims,
+    lease_token: str | None,
+    body,
+    idempotency_key: str | None = None,
+) -> APIResult:
+    key, key_error = _idempotency_key(idempotency_key)
+    if key_error is not None:
+        return key_error
     lease, error = await _holder_lease(db, lease_id, claims, lease_token)
     if error is not None:
         return error
+    replay = await _submit_replay(db, lease, key, body)
+    if replay is not None:
+        return replay
     now = _now()
     if not _work_window_open(lease, now):
         return _err(409, "lease_not_active")
@@ -1220,9 +1372,14 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
         return _err(409, "pr_already_bound")
     now = _now()
     locked = await _locked_lease(db, lease)
-    if locked is None or not _work_window_open(locked, now):
-        if locked is not None:
-            await db.rollback()
+    if locked is None:
+        return _err(409, "lease_not_active")
+    replay = await _submit_replay(db, locked, key, body)
+    if replay is not None:
+        await db.rollback()
+        return replay
+    if not _work_window_open(locked, now):
+        await db.rollback()
         return _err(409, "lease_not_active")
     trace = body.get("otel_trace_id")
     locked.status = LeaseStatus.SUBMITTED.value
@@ -1232,6 +1389,8 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     # Auto-merge reads these; keep the lower of the claim and submit values.
     locked.claim_kya = _lower(getattr(locked, "claim_kya", None), claims.kya_level)
     locked.claim_reputation = _lower(getattr(locked, "claim_reputation", None), claims.reputation)
+    if key is not None:
+        locked.submit_idempotency_key = key
     binding.pr_number = pr_number
     binding.lease_holder_agent_id = locked.agent_id
     _clear_evaluation(binding)
@@ -1246,15 +1405,7 @@ async def submit_lease(db, lease_id: uuid.UUID, claims, lease_token: str | None,
     except IntegrityError:
         await db.rollback()
         return _err(409, "pr_already_bound")
-    return APIResult(
-        200,
-        {
-            "lease_id": str(locked.id),
-            "status": "submitted",
-            "pr_number": pr_number,
-            "hold_expires_at": _iso(locked.hold_expires_at),
-        },
-    )
+    return _submit_success(locked)
 
 
 def _evaluation_job(repo: str, installation_id: int, pr_number: int, head_sha: str) -> GitHubJob:

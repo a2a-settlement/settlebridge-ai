@@ -1,7 +1,8 @@
 """Crash-safe GitHub job queue.
 
-Claim with FOR UPDATE SKIP LOCKED, run the bounty dispatcher, and retry with
-a deterministic exponential backoff. The webhook request never does this work.
+Claim with FOR UPDATE SKIP LOCKED, run the bounty or challenge dispatcher, and
+retry with a deterministic exponential backoff. The webhook request never does
+this work.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.config import settings
 from app.database import async_session
@@ -24,7 +27,7 @@ from app.models.github import (
     SettlementState,
 )
 from app.services.github_bounty_service import handle_job
-from app.services.github_errors import PermanentJobError
+from app.services.github_errors import GitHubRateLimited, PermanentJobError
 from app.services.github_leases import expire_stale_leases
 
 logger = logging.getLogger(__name__)
@@ -69,9 +72,7 @@ def _due_jobs_stmt(now: datetime, limit: int):
     )
 
 
-async def claim_due_jobs(
-    db: AsyncSession, limit: int, lock_seconds: int = 300
-) -> list[uuid.UUID]:
+async def claim_due_jobs(db: AsyncSession, limit: int, lock_seconds: int = 300) -> list[uuid.UUID]:
     """Lock due jobs, mark them running, and commit the claim."""
     now = datetime.now(timezone.utc)
     result = await db.execute(_due_jobs_stmt(now, limit))
@@ -87,9 +88,19 @@ async def claim_due_jobs(
     return ids
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _safe_error(exc: BaseException) -> str:
     text = f"{type(exc).__name__}: {exc}"
-    for secret in (settings.GITHUB_WEBHOOK_SECRET, settings.GITHUB_APP_PRIVATE_KEY):
+    for secret in (
+        settings.GITHUB_WEBHOOK_SECRET,
+        settings.GITHUB_APP_PRIVATE_KEY,
+        settings.CHALLENGE_REPORT_SIGNING_KEY,
+    ):
         if secret:
             text = text.replace(secret, "[redacted]")
     if len(text) > _MAX_ERROR_CHARS:
@@ -105,8 +116,13 @@ async def _record_failure(session_factory, job_id: uuid.UUID, exc: Exception) ->
         if job is None:
             logger.error("GitHub job %s missing while recording failure", job_id)
             return
+        attempts = int(job.attempts or 0)
+        if isinstance(exc, GitHubRateLimited):
+            # claim_due_jobs already counted this run; a rate limit must not spend it.
+            attempts = max(0, attempts - 1)
+            job.attempts = attempts
         new_status, backoff = failure_transition(
-            int(job.attempts or 0),
+            attempts,
             settings.GITHUB_JOB_MAX_ATTEMPTS,
             permanent,
         )
@@ -114,9 +130,52 @@ async def _record_failure(session_factory, job_id: uuid.UUID, exc: Exception) ->
         job.last_error = message
         job.locked_until = None
         if backoff is not None:
-            job.next_run_at = datetime.now(timezone.utc) + backoff
+            scheduled = datetime.now(timezone.utc) + backoff
+            if isinstance(exc, GitHubRateLimited):
+                scheduled = max(scheduled, _as_utc(exc.retry_at))
+            job.next_run_at = scheduled
         await db.commit()
     logger.error("GitHub job %s -> %s: %s", job_id, new_status, message)
+
+
+def _is_challenge(job: GitHubJob) -> bool:
+    return _text(getattr(job, "kind", "")).startswith("challenge_")
+
+
+async def _reload_job(db: AsyncSession, job_id: uuid.UUID) -> GitHubJob | None:
+    """Re-read the row so a cancel committed during the handler is visible."""
+    job = await db.get(GitHubJob, job_id)
+    if job is None:
+        return None
+    refresh = getattr(db, "refresh", None)
+    if refresh is None:
+        return job
+    outcome = refresh(job)
+    if hasattr(outcome, "__await__"):
+        try:
+            await outcome
+        except ObjectDeletedError:
+            return None
+    return job
+
+
+async def _dispatch_job(db: AsyncSession, job: GitHubJob) -> bool:
+    """Run the handler. False when this function already finalized the job."""
+    if _is_challenge(job):
+        if not settings.CHALLENGE_ENGINE_ENABLED:
+            job.status = JobStatus.CANCELLED.value
+            job.locked_until = None
+            job.last_error = "challenge engine disabled"
+            await db.commit()
+            logger.info("GitHub job %s cancelled: challenge engine disabled", job.id)
+            return False
+        # Imported here: the orchestrator owns the handlers and may import this queue.
+        from app.services.challenge_orchestrator import handle_challenge_job
+
+        await handle_challenge_job(db, job)
+        return True
+    await handle_job(db, job)
+    return True
 
 
 async def run_job(session_factory, job_id: uuid.UUID) -> None:
@@ -126,16 +185,24 @@ async def run_job(session_factory, job_id: uuid.UUID) -> None:
         if job is None:
             logger.error("GitHub job %s not found", job_id)
             return
+        if _text(getattr(job, "status", "")) == JobStatus.CANCELLED.value:
+            logger.info("GitHub job %s cancelled; skipping", job_id)
+            return
         try:
-            await handle_job(db, job)
+            finished = await _dispatch_job(db, job)
         except Exception as exc:
             await db.rollback()
             await _record_failure(session_factory, job_id, exc)
             return
+        if not finished:
+            return
         # Settlement commits per step; reload so this write binds to the live row.
-        job = await db.get(GitHubJob, job_id)
+        job = await _reload_job(db, job_id)
         if job is None:
             logger.error("GitHub job %s disappeared after handler", job_id)
+            return
+        if _text(getattr(job, "status", "")) == JobStatus.CANCELLED.value:
+            logger.info("GitHub job %s cancelled while running", job_id)
             return
         job.status = JobStatus.DONE.value
         job.locked_until = None
@@ -206,20 +273,28 @@ async def enqueue_pending_settlements(db: AsyncSession) -> int:
     if not settings.GITHUB_SETTLEMENT_ENABLED:
         return 0
     settlements = (
-        await db.execute(
-            select(GitHubSettlement).where(
-                GitHubSettlement.state.in_(_RESUMABLE_SETTLEMENT_STATES)
+        (
+            await db.execute(
+                select(GitHubSettlement).where(
+                    GitHubSettlement.state.in_(_RESUMABLE_SETTLEMENT_STATES)
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     jobs = (
-        await db.execute(
-            select(GitHubJob).where(
-                GitHubJob.kind == JobKind.ADVANCE_SETTLEMENT.value,
-                GitHubJob.status.in_(_OPEN_JOB_STATUSES),
+        (
+            await db.execute(
+                select(GitHubJob).where(
+                    GitHubJob.kind == JobKind.ADVANCE_SETTLEMENT.value,
+                    GitHubJob.status.in_(_OPEN_JOB_STATUSES),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     covered = _open_advance_targets(jobs)
     added = 0
     for settlement in settlements:
@@ -240,6 +315,67 @@ async def enqueue_pending_settlements(db: AsyncSession) -> int:
         logger.info("queued %s pending GitHub settlement job(s)", added)
         await db.commit()
     return added
+
+
+async def enqueue_job(
+    db: AsyncSession,
+    *,
+    kind: str,
+    payload: dict,
+    dedupe_key: str | None = None,
+    run_at: datetime | None = None,
+) -> GitHubJob | None:
+    """Insert a pending job, or return None when an open job already holds ``dedupe_key``.
+
+    Does not commit. The partial unique index ``uq_github_jobs_open_dedupe_key``
+    covers the race on Postgres; the SELECT is what SQLite tests see.
+    """
+    if dedupe_key is not None:
+        existing = await db.execute(
+            select(GitHubJob).where(
+                GitHubJob.dedupe_key == dedupe_key,
+                GitHubJob.status.in_(_OPEN_JOB_STATUSES),
+            )
+        )
+        if existing.scalars().first() is not None:
+            return None
+    job = GitHubJob(
+        id=uuid.uuid4(),
+        kind=_text(kind),
+        payload=payload,
+        dedupe_key=dedupe_key,
+        status=JobStatus.PENDING.value,
+        next_run_at=run_at if run_at is not None else datetime.now(timezone.utc),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(job)
+            await db.flush()
+    except IntegrityError:
+        return None
+    return job
+
+
+async def cancel_jobs(db: AsyncSession, *, dedupe_key_prefix: str) -> int:
+    """Mark open jobs whose key starts with the prefix cancelled.
+
+    A running job finishes its current step and then sees the cancellation.
+    Does not commit. ``%`` and ``_`` in the prefix match literally.
+    """
+    if not dedupe_key_prefix:
+        raise ValueError("dedupe_key_prefix must not be empty")
+    result = await db.execute(
+        select(GitHubJob).where(
+            GitHubJob.status.in_(_OPEN_JOB_STATUSES),
+            GitHubJob.dedupe_key.startswith(dedupe_key_prefix, autoescape=True),
+        )
+    )
+    jobs = result.scalars().all()
+    for job in jobs:
+        job.status = JobStatus.CANCELLED.value
+        job.locked_until = None
+        job.last_error = "cancelled"
+    return len(jobs)
 
 
 async def run_github_job_loop() -> None:

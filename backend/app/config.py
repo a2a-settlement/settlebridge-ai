@@ -100,6 +100,25 @@ class Settings(BaseSettings):
     GITHUB_EXCHANGE_FEE_PERCENT: str = "0.25"
     GITHUB_EXCHANGE_MIN_FEE: int = 1
     GITHUB_JOB_MAX_ATTEMPTS: int = 8
+    # Challenge engine (M2). Off in production until the runner host is approved.
+    CHALLENGE_ENGINE_ENABLED: bool = False
+    # Content-addressed artifact store on the runner host; never a production path.
+    CHALLENGE_ARTIFACT_ROOT: str = "/var/lib/settlebridge-challenges"
+    # Interpreter that runs `python -m challenge_runner`.
+    CHALLENGE_RUNNER_PYTHON: str = "python3"
+    # Docker runtime name for gVisor.
+    CHALLENGE_SANDBOX_RUNTIME: str = "runsc"
+    # Allowlisting egress proxy for dependency acquisition, e.g. http://127.0.0.1:3128.
+    CHALLENGE_DEPS_PROXY_URL: str = ""
+    # PEM EC P-256 private key for signing evidence reports. Never logged.
+    CHALLENGE_REPORT_SIGNING_KEY: str = ""
+    CHALLENGE_REPORT_KEY_ID: str = "challenge-report-1"
+    # Comma-separated user UUIDs allowed to create challenges. Empty means nobody.
+    CHALLENGE_OPERATOR_USER_IDS: str = ""
+    # Default per-account caps when a budget row is created.
+    SPEND_DEFAULT_PERIOD_CAP_CENTS: int = 5000
+    SPEND_DEFAULT_PER_JOB_CAP_CENTS: int = 2500
+    SPEND_DEFAULT_MAX_CONCURRENT_JOBS: int = 2
     GITHUB_JOB_POLL_INTERVAL_S: int = 5
     MARKET_URL: str = "https://market.settlebridge.ai"
     SETTLEBRIDGE_HOSTED_MCP_URL: str = "https://mcp.a2a-settlement.org/mcp"

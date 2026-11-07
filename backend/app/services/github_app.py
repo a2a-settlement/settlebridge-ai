@@ -115,6 +115,83 @@ def _parse_expiry(value: str) -> datetime:
     return parsed
 
 
+_RATE_LIMIT_FALLBACK = timedelta(seconds=60)
+_RATE_LIMIT_CAP = timedelta(hours=1)
+
+
+def _header_text(response: httpx.Response, name: str) -> str | None:
+    value = response.headers.get(name)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _nonnegative_seconds(value: str) -> float | None:
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    if seconds < 0 or seconds != seconds or seconds == float("inf"):
+        return None
+    return seconds
+
+
+def _epoch_datetime(value: str) -> datetime | None:
+    try:
+        stamp = float(value)
+    except ValueError:
+        return None
+    if stamp < 0 or stamp != stamp or stamp == float("inf"):
+        return None
+    return datetime.fromtimestamp(stamp, tz=timezone.utc)
+
+
+def _cap_retry_at(moment: datetime, now: datetime) -> datetime:
+    cap = now + _RATE_LIMIT_CAP
+    if moment > cap:
+        return cap
+    return moment
+
+
+def _retry_at_from(response: httpx.Response) -> datetime:
+    """When to try again: Retry-After seconds, else X-RateLimit-Reset, else 60s."""
+    now = _now()
+    retry_after = _header_text(response, "retry-after")
+    if retry_after is not None:
+        seconds = _nonnegative_seconds(retry_after)
+        if seconds is not None:
+            return _cap_retry_at(now + timedelta(seconds=seconds), now)
+    reset = _header_text(response, "x-ratelimit-reset")
+    if reset is not None:
+        moment = _epoch_datetime(reset)
+        if moment is not None:
+            return _cap_retry_at(moment, now)
+    return now + _RATE_LIMIT_FALLBACK
+
+
+def _is_rate_limited(response: httpx.Response) -> bool:
+    if 200 <= response.status_code < 400:
+        return False
+    if _header_text(response, "retry-after") is not None:
+        return True
+    if response.status_code == 429:
+        return True
+    return response.status_code == 403 and _header_text(response, "x-ratelimit-remaining") == "0"
+
+
+def _rate_limited(response: httpx.Response):
+    from app.services.github_errors import GitHubRateLimited
+
+    method = response.request.method
+    path = response.request.url.path
+    return GitHubRateLimited(
+        f"GitHub API {response.status_code} for {method} {path}",
+        retry_at=_retry_at_from(response),
+        status_code=response.status_code,
+    )
+
+
 def _ensure_ok(response: httpx.Response) -> None:
     if 200 <= response.status_code < 300:
         return
@@ -146,7 +223,10 @@ async def _send(
     kwargs: dict[str, Any] = {"headers": _headers(token, accept=accept)}
     if json_body is not None:
         kwargs["json"] = json_body
-    return await client.request(method, url, **kwargs)
+    response = await client.request(method, url, **kwargs)
+    if _is_rate_limited(response):
+        raise _rate_limited(response)
+    return response
 
 
 def _next_url(response: httpx.Response) -> str | None:
@@ -354,7 +434,9 @@ async def ensure_label(
     token = await installation_token(installation_id)
     body = {"name": name, "color": color, "description": description}
     async with _client() as client:
-        response = await _send(client, "POST", f"{_api_root()}/repos/{repo}/labels", token, json_body=body)
+        response = await _send(
+            client, "POST", f"{_api_root()}/repos/{repo}/labels", token, json_body=body
+        )
     if _already_exists(response):
         return "exists"
     _ensure_ok(response)
@@ -501,7 +583,9 @@ async def find_issue_with_marker(
 
 async def get_issue(installation_id: int, repo: str, issue_number: int) -> dict:
     repo = _validate_repo(repo)
-    data = await _get_json(installation_id, f"{_api_root()}/repos/{repo}/issues/{int(issue_number)}")
+    data = await _get_json(
+        installation_id, f"{_api_root()}/repos/{repo}/issues/{int(issue_number)}"
+    )
     if not isinstance(data, dict):
         raise GitHubAPIError("unexpected issue payload")
     return data
