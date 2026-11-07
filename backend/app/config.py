@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     # PEM EC P-256 private key for signing evidence reports. Never logged.
     CHALLENGE_REPORT_SIGNING_KEY: str = ""
     CHALLENGE_REPORT_KEY_ID: str = "challenge-report-1"
+    # Comma-separated user UUIDs allowed to create challenges. Empty means nobody.
+    CHALLENGE_OPERATOR_USER_IDS: str = ""
     # Default per-account caps when a budget row is created.
     SPEND_DEFAULT_PERIOD_CAP_CENTS: int = 5000
     SPEND_DEFAULT_PER_JOB_CAP_CENTS: int = 2500

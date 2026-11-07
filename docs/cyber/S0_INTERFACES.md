@@ -109,3 +109,4 @@ Next action copy:
 - `components/marketplace-pages/SolverHome.tsx` (P0-F4 owns): default export, no props. `Dashboard.tsx` (P0-F3 owns) renders it for the `solve` view.
 - Spend: charged usage is capped at `reserved_cents`; `reservation_exhausted(reservation)` is true once the hold is used, and the orchestrator must stop that attempt.
 - Lease claim replays rotate the lease token; a client holding a stale token replays the claim with the same `Idempotency-Key` to get a fresh one.
+- `CHALLENGE_OPERATOR_USER_IDS` (config, comma-separated UUIDs, default empty): the only users who may `POST /api/v1/challenges`. Others get 403. With `CHALLENGE_ENGINE_ENABLED=False`, the POST answers 503 `challenge_engine_disabled` and creates nothing. GET routes stay read-only.
