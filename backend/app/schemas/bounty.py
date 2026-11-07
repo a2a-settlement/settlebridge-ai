@@ -96,6 +96,7 @@ class BountyResponse(BaseModel):
     updated_at: datetime
     funded_at: datetime | None = None
     completed_at: datetime | None = None
+    github_visibility: str | None = None
 
     model_config = {"from_attributes": True}
 

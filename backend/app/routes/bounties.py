@@ -8,8 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, get_optional_user
-from app.models.bounty import BountyStatus, Difficulty, ProvenanceTier
-from app.models.notification import NotificationType
+from app.models.bounty import BountyStatus, Difficulty
 from app.models.user import User
 from app.schemas.bounty import (
     BountyCreateRequest,
@@ -18,8 +17,12 @@ from app.schemas.bounty import (
     BountyUpdateRequest,
 )
 from app.services import bounty_service, exchange as exchange_svc
-from app.services.notification_service import create_notification
-from app.services.repo_visibility import bounty_public_clause, can_view_bounty
+from app.services.repo_visibility import (
+    bounty_public_clause,
+    can_view_bounty,
+    github_visibility_for_bounties,
+    readable_private_repos,
+)
 
 router = APIRouter()
 
@@ -30,6 +33,15 @@ def _bounty_resp(bounty, active_claims_count: int = 0):
     r = _BR.model_validate(bounty)
     r.active_claims_count = active_claims_count
     return r
+
+
+async def _with_github_visibility(db, responses: list) -> list:
+    if not responses:
+        return responses
+    visibility = await github_visibility_for_bounties(db, [item.id for item in responses])
+    for item in responses:
+        item.github_visibility = visibility.get(item.id)
+    return responses
 
 
 @router.get("", response_model=BountyListResponse)
@@ -47,6 +59,7 @@ async def list_bounties(
     db: AsyncSession = Depends(get_db),
 ):
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    readable = await readable_private_repos(db, user) if user is not None else None
     rows, total = await bounty_service.list_bounties(
         db,
         statuses=status_filter,
@@ -59,9 +72,12 @@ async def list_bounties(
         page=page,
         page_size=page_size,
         viewer_id=user.id if user else None,
+        readable_repos=readable,
     )
+    responses = [_bounty_resp(b, c) for b, c in rows]
+    await _with_github_visibility(db, responses)
     return BountyListResponse(
-        bounties=[_bounty_resp(b, c) for b, c in rows],
+        bounties=responses,
         total=total,
         page=page,
         page_size=page_size,
@@ -131,7 +147,9 @@ async def my_posted(
     db: AsyncSession = Depends(get_db),
 ):
     rows = await bounty_service.user_posted_bounties(db, user.id)
-    return [_bounty_resp(b, c) for b, c in rows]
+    responses = [_bounty_resp(b, c) for b, c in rows]
+    await _with_github_visibility(db, responses)
+    return responses
 
 
 @router.get("/{bounty_id}", response_model=BountyResponse)
@@ -152,7 +170,9 @@ async def get_bounty(
     # 404, not 403, so a hidden private-repo bounty is not confirmed to exist.
     if not await can_view_bounty(db, bounty.id, user):
         raise HTTPException(status_code=404, detail="Bounty not found")
-    return BountyResponse.model_validate(bounty)
+    response = BountyResponse.model_validate(bounty)
+    await _with_github_visibility(db, [response])
+    return response
 
 
 @router.post("", response_model=BountyResponse, status_code=status.HTTP_201_CREATED)

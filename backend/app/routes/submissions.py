@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
@@ -375,6 +374,8 @@ async def get_submission(
 ):
     sub = await submission_service.get_submission(db, submission_id)
     if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if user.id != sub.agent_user_id and not await can_view_bounty(db, sub.bounty_id, user):
         raise HTTPException(status_code=404, detail="Submission not found")
     return SubmissionResponse.model_validate(sub)
 
@@ -782,7 +783,6 @@ async def get_shared_submission(
     """Public read-only view — returns HTML for browsers, JSON for API clients."""
     from app.models.submission import Submission
     from app.models.user import User as UserModel
-    import json as _json
 
     result = await db.execute(
         select(Submission).where(
@@ -893,6 +893,8 @@ async def get_share_badge(
                         headers={"Cache-Control": "no-cache"})
 
     bounty = await bounty_service.get_bounty(db, sub.bounty_id)
+    if bounty is not None and not await can_view_bounty(db, bounty.id, None):
+        raise HTTPException(status_code=404, detail="Shared submission not found")
     reward = bounty.reward_amount if bounty else None
 
     svg = _build_badge_svg(sub.status, sub.score, reward)
