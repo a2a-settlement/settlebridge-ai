@@ -533,8 +533,12 @@ function LeaseRow({ lease, href }: { lease: SolverLeaseInput; href: string }) {
         ) : (
           <span className="text-sm text-gray-500">No pull request</span>
         )}
-        <PayoutLine payout={lease.payout} />
-        <EvaluationLine evaluation={lease.evaluation} />
+        <span className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+          Payment <PayoutLine payout={lease.payout} />
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+          Evaluation <EvaluationLine evaluation={lease.evaluation} />
+        </span>
       </div>
       <p className="text-xs text-gray-500">{workWindowText(lease.work_expires_at)}</p>
     </article>
