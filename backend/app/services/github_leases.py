@@ -1175,6 +1175,11 @@ async def claim_lease(
     if denial_self is not None:
         return denial_self
     await lock_agent_for_claim(db, claims.agent_id)
+    # A same-key claim may have committed while this one waited on the lock.
+    if key is not None:
+        prior = await _lease_for_claim_key(db, claims.agent_id, key)
+        if prior is not None:
+            return await _replay_claim(db, prior, bounty_id)
     active = await count_active_leases(db, claims.agent_id)
     if active >= settings.LEASE_MAX_ACTIVE_PER_AGENT:
         return _err(409, "lease_limit")

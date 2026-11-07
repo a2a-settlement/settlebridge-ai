@@ -432,7 +432,7 @@ def test_claim_integrity_error_race_returns_the_replay(world, monkeypatch):
     original = first.json()
     real_key = github_leases._lease_for_claim_key
     real_held = github_leases.fetch_active_lease_for_binding
-    pending = {"key": 1, "held": 1}
+    pending = {"key": 2, "held": 1}
 
     async def miss_key(db, agent_id, key):
         if pending["key"]:
@@ -460,6 +460,31 @@ def test_claim_integrity_error_race_returns_the_replay(world, monkeypatch):
     assert rejected.status_code == 403, _shown(rejected)
     renewed = _renew(world, original["lease_id"], body["lease_token"])
     assert renewed.status_code == 200, _shown(renewed)
+
+
+def test_same_key_claim_committed_while_waiting_on_the_agent_lock_is_a_replay(world, monkeypatch):
+    first = _claim(world, world["bounty_a"], key=CLAIM_KEY)
+    assert first.status_code == 201, _shown(first)
+    original = first.json()
+    real_key = github_leases._lease_for_claim_key
+    pending = {"key": 1}
+
+    async def miss_key(db, agent_id, key):
+        if pending["key"]:
+            pending["key"] -= 1
+            return None
+        return await real_key(db, agent_id, key)
+
+    async def held_must_not_run(db, binding_id):
+        raise AssertionError("replay should answer before the binding check")
+
+    monkeypatch.setattr(github_leases, "_lease_for_claim_key", miss_key)
+    monkeypatch.setattr(github_leases, "fetch_active_lease_for_binding", held_must_not_run)
+    raced = _claim(world, world["bounty_a"], key=CLAIM_KEY)
+    assert raced.status_code == 200, _shown(raced)
+    assert raced.json()["lease_id"] == original["lease_id"]
+    assert pending == {"key": 0}
+    assert len(_leases(world["bridge"])) == 1
 
 
 def test_submit_replay_returns_the_same_result_without_a_second_side_effect(world, monkeypatch):
