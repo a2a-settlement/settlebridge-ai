@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.config import settings
 from app.schemas.challenge import ResourceLimits, RunnerJob
 from app.services.challenge_runner_client import (
     RunnerInvocationError,
@@ -76,6 +77,24 @@ def test_run_writes_a_job_file_and_parses_the_result(monkeypatch, tmp_path):
     assert "token" not in json.loads(captured["job"])
 
 
+def test_run_passes_the_pinned_image_and_runtime(monkeypatch, tmp_path):
+    pinned = "python@sha256:" + ("12" * 32)
+    monkeypatch.setattr("app.config.settings.CHALLENGE_SANDBOX_IMAGE", pinned)
+    monkeypatch.setattr("app.config.settings.CHALLENGE_SANDBOX_RUNTIME", "runsc")
+    monkeypatch.setenv("CHALLENGE_SANDBOX_IMAGE", "ignored:latest")
+    captured: dict = {}
+
+    def fake_run(cmd, input=None, env=None, **_kwargs):
+        captured["env"] = env
+        Path(cmd[cmd.index("--out") + 1]).write_text(json.dumps(_result()), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("app.services.challenge_runner_client.subprocess.run", fake_run)
+    run_runner(_job(), artifact_root=str(tmp_path))
+    assert captured["env"]["CHALLENGE_SANDBOX_IMAGE"] == pinned
+    assert captured["env"]["CHALLENGE_SANDBOX_RUNTIME"] == "runsc"
+
+
 def test_run_rejects_a_token_hidden_in_the_job(tmp_path):
     job = _job().model_copy(update={"install_command": ["pip", "install", SECRET]})
     with pytest.raises(RunnerInvocationError) as caught:
@@ -110,6 +129,8 @@ def test_fetch_passes_the_token_only_on_stdin(monkeypatch, tmp_path):
     )
     assert fetched.source_digest == DIGEST
     assert captured["cmd"][1:4] == ["-m", "challenge_runner", "fetch"]
+    root = captured["cmd"].index("--artifact-root")
+    assert captured["cmd"][root + 1] == settings.CHALLENGE_ARTIFACT_ROOT
     assert captured["input"] == SECRET + "\n"
     assert SECRET not in " ".join(captured["cmd"])
     assert "GH_TOKEN" not in captured["env"]

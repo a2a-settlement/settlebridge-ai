@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import ValidationError
@@ -667,9 +667,26 @@ async def _digest_for_role(
         ChallengeArtifact.kind == kind,
     )
     for artifact in (await db.execute(stmt)).scalars().all():
-        if (artifact.meta or {}).get("role") == role:
+        if role in _artifact_roles(artifact):
             return f"sha256:{artifact.content_hash}"
     return None
+
+
+def _artifact_roles(artifact: ChallengeArtifact) -> set[str]:
+    meta = artifact.meta or {}
+    roles = {str(item) for item in meta.get("roles") or []}
+    if meta.get("role"):
+        roles.add(str(meta["role"]))
+    return roles
+
+
+async def _add_role(db: AsyncSession, artifact: ChallengeArtifact, role: str) -> None:
+    # Base and target often share identical bytes (same dependencies), so one row serves both.
+    roles = _artifact_roles(artifact)
+    if role in roles:
+        return
+    artifact.meta = {**(artifact.meta or {}), "roles": sorted(roles | {role})}
+    await db.flush()
 
 
 def _claim_hash(claim: ClaimIn) -> str:
@@ -1006,16 +1023,28 @@ async def submit_claim(
     return row
 
 
+async def _task_spent_cents(db: AsyncSession, task_id: uuid.UUID) -> int:
+    stmt = select(func.coalesce(func.sum(ExecutionUsage.cost_cents), 0)).where(
+        ExecutionUsage.execution_id.like(f"exec:{task_id}:%"),
+        ExecutionUsage.charged.is_(True),
+    )
+    return int((await db.execute(stmt)).scalar_one())
+
+
 async def _reserve(
     db: AsyncSession, task: ChallengeTask, subject: str, version: int
 ) -> SpendReservation:
+    # budget_cents caps the whole task, so each stage holds only what earlier stages left.
+    remaining = int(task.budget_cents) - await _task_spent_cents(db, task.id)
+    if remaining <= 0:
+        raise _AttemptStopped("budget exhausted")
     try:
         return await reserve_spend(
             db,
             user_id=task.owner_user_id,
             subject=subject,
             idempotency_key=f"spend:{subject}:{version}",
-            cents=int(task.budget_cents),
+            cents=remaining,
             expires_at=_as_utc(task.deadline_at),
         )
     except BudgetExceeded:
@@ -1354,7 +1383,7 @@ async def _remember_fetch(
 
     file = Path(fetched.source_tarball)
     size = file.stat().st_size if file.is_file() else 0
-    await _store_artifact(
+    row = await _store_artifact(
         db,
         task,
         kind=ArtifactKind.SOURCE_TARBALL.value,
@@ -1363,6 +1392,7 @@ async def _remember_fetch(
         storage_path=str(file),
         meta={"role": role, "sha": sha},
     )
+    await _add_role(db, row, role)
     if fetched.history_digest and fetched.history_bundle:
         history_hex = _split_digest(fetched.history_digest)
         await _store_artifact(
@@ -1399,7 +1429,7 @@ async def _handle_fetch(db: AsyncSession, job: GitHubJob) -> None:
                 repo_full_name=stage.task.repo_full_name,
                 sha=sha,
                 token=token,
-                workdir=str(workdir),
+                workdir=str(workdir / role),
                 include_history=include_history,
             )
             if hasattr(fetched, "__await__"):
@@ -1436,7 +1466,7 @@ async def _store_wheelhouse(
 ) -> None:
     if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
         return
-    await _store_artifact(
+    row = await _store_artifact(
         db,
         task,
         kind=ArtifactKind.WHEELHOUSE_MANIFEST.value,
@@ -1445,6 +1475,7 @@ async def _store_wheelhouse(
         storage_path=f"digest:{digest}",
         meta={"role": role},
     )
+    await _add_role(db, row, role)
 
 
 async def _handle_deps(db: AsyncSession, job: GitHubJob) -> None:

@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     CHALLENGE_RUNNER_PYTHON: str = "python3"
     # Docker runtime name for gVisor.
     CHALLENGE_SANDBOX_RUNTIME: str = "runsc"
+    # Sandbox image pinned by digest, e.g. python@sha256:<64 hex>. The runner refuses an unpinned image.
+    CHALLENGE_SANDBOX_IMAGE: str = ""
     # Allowlisting egress proxy for dependency acquisition, e.g. http://127.0.0.1:3128.
     CHALLENGE_DEPS_PROXY_URL: str = ""
     # PEM EC P-256 private key for signing evidence reports. Never logged.

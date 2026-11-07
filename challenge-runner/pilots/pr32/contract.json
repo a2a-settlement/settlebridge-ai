@@ -1,0 +1,46 @@
+{
+  "task": {
+    "repo_full_name": "a2a-settlement/settlebridge-ai",
+    "pr_number": 32,
+    "base_sha": "b16a485587281ef29c8409367db4170293954e14",
+    "target_sha": "520b6b6f19bb7e6c7c4c39b00da5c63008152152",
+    "property_text": "A bounty on a private repository is visible and claimable only by a signed-in user whose linked GitHub account has read access on that repository.",
+    "failure_classes": ["authorization_confidentiality"],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": ["property_clause", "documented_rule"],
+    "oracle_texts": {
+      "documented_rule": {
+        "docs/github-bounties.md#private-repos": "On a private or internal repo, only a signed-in solver whose linked GitHub account has read access on the repo can see the bounty on the marketplace and in the agent API, and only they can claim it. Add solvers as collaborators on GitHub. SettleBridge checks that permission and caches it for 5 minutes. A solver who loses access can no longer submit (`repo_access_revoked`).",
+        "docs/github-bounties.md#completed-private": "Completed private bounties are not shown on public pages: completed results, cyber tasks, training cards, share links, and the sitemap."
+      }
+    },
+    "observers": ["authorization_confidentiality"],
+    "python": "3.11",
+    "install": ["-r", "backend/requirements.txt", "email-validator==2.3.0", "pytest==9.0.2"],
+    "test_command": ["python", "/verifier/run.py"],
+    "commands": {
+      "positive": ["python", "/verifier/run.py", "/verifier/controls/test_positive.py"],
+      "negative": ["python", "/verifier/run.py", "/verifier/controls/test_negative.py"],
+      "rederive": ["python", "/verifier/run.py", "/verifier/probes"]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The SettleBridge backend HTTP API in this repository (backend/app). The MCP server and the Next.js marketplace frontend, including its sitemap, are not running in the sandbox. Funders and requesters of a bounty are its owners and may always see it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. Dependencies from backend/requirements.txt and pytest are installed. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier.",
+      "sbc_world runs the real FastAPI app (backend/app/main.py) against an in-memory SQLite database seeded with tenant B's data. Repos: tenantb/public-app (public), tenantb/private-app (private), tenantb/disabled-app (private, link disabled). Bounties, by key in sbc_world.ids: public; private (open, issue 7 on tenantb/private-app); completed (completed and paid, issue 9 on tenantb/private-app); held (open on tenantb/private-app, leased by lessee, issue 8); disabled (tenantb/disabled-app).",
+      "People, by name for sbc_world.client_as(name): requester and funder (owners of every bounty); reader (GitHub read access on tenantb/private-app); outsider (linked GitHub account, no access); lessee (holds an active lease on the held bounty only); mismatch (GitHub reports read access for a different GitHub user id); no_github (no linked GitHub account); submitter (author of the share-link submissions); None for an anonymous caller.",
+      "client_as(name) returns a client with get, post, put, patch, delete and request(method, url, **kwargs), like Starlette's TestClient. It signs in as that person for marketplace routes and sends that person's agent bearer token on every request unless you pass your own Authorization header. Also available: sbc_world.share_tokens and sbc_world.submission_ids (keys private, completed, public), sbc_world.private_repo, sbc_world.public_repo, sbc_world.disabled_repo, sbc_world.app, sbc_world.github_calls.",
+      "sbc_world.set_github_access(name, permission, github_user_id=None) changes what GitHub reports for that person on tenantb/private-app; permission is one of none, read, triage, write, maintain, admin. sbc_world.advance_past_access_cache() acts as if the documented 5-minute access cache has expired. GitHub lookups never reach the network.",
+      "The verdict does not depend on your test's assertions. The verifier records what each identity actually received and decides from that record. A test that shows a gap must make the requests that expose tenant B's private bounty material to a person who is not entitled to it under the property and the documented rules."
+    ]
+  }
+}

@@ -55,6 +55,10 @@ def _subprocess_env() -> dict[str, str]:
             env[key] = value
     env["PYTHONPATH"] = str(_runner_root())
     env["PYTHONNOUSERSITE"] = "1"
+    if settings.CHALLENGE_SANDBOX_IMAGE:
+        env["CHALLENGE_SANDBOX_IMAGE"] = settings.CHALLENGE_SANDBOX_IMAGE
+    if settings.CHALLENGE_SANDBOX_RUNTIME:
+        env["CHALLENGE_SANDBOX_RUNTIME"] = settings.CHALLENGE_SANDBOX_RUNTIME
     return env
 
 
@@ -160,6 +164,8 @@ def fetch_source(
         sha,
         "--workdir",
         workdir,
+        "--artifact-root",
+        settings.CHALLENGE_ARTIFACT_ROOT,
     ]
     if include_history:
         cmd.append("--history")

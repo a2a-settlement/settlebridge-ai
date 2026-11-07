@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     fetch_parser.add_argument("--sha", required=True)
     fetch_parser.add_argument("--workdir", required=True)
     fetch_parser.add_argument("--history", action="store_true")
+    fetch_parser.add_argument("--artifact-root")
 
     args = parser.parse_args(argv)
     if args.cmd == "run":
@@ -62,14 +63,31 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         workdir=Path(args.workdir),
         include_history=bool(args.history),
     )
+    source_tarball = output.source_tarball
+    history_bundle = output.history_bundle
+    if args.artifact_root:
+        # Sandbox stages read source by digest from the store, not from the workdir.
+        source_tarball = _store_copy(args.artifact_root, source_tarball, output.source_digest)
+        if history_bundle is not None and output.history_digest:
+            history_bundle = _store_copy(args.artifact_root, history_bundle, output.history_digest)
     payload = {
-        "source_tarball": str(output.source_tarball),
+        "source_tarball": str(source_tarball),
         "source_digest": output.source_digest,
-        "history_bundle": None if output.history_bundle is None else str(output.history_bundle),
+        "history_bundle": None if history_bundle is None else str(history_bundle),
         "history_digest": output.history_digest,
     }
     sys.stdout.write(json.dumps(payload, indent=2) + "\n")
     return 0
+
+
+def _store_copy(artifact_root: str, path: Path, expected: str) -> Path:
+    from challenge_runner.artifacts import ArtifactStore
+
+    store = ArtifactStore(Path(artifact_root))
+    digest = store.put_file(Path(path))
+    if digest != expected:
+        raise SystemExit("fetched bytes do not match their digest")
+    return store.get_path(digest)
 
 
 if __name__ == "__main__":

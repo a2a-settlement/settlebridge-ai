@@ -339,6 +339,35 @@ def test_max_claims_rejects_booleans_and_negatives(tmp_path: Path):
     assert client.calls == []
 
 
+def test_prompt_lists_citable_clauses_and_hides_frozen_digests(tmp_path: Path):
+    source = tmp_path / "src"
+    source.mkdir()
+    _source(source)
+    clause = "Only readers may see private bounties. SettleBridge caches access for 5 minutes."
+    contract = _contract(
+        oracle_sources=["property_clause", "documented_rule"],
+        oracle_texts={
+            "documented_rule": {"docs/rules.md#private": clause},
+            "issue_text": {"issue-1": "UNFUNDED_SOURCE_9f3a2c"},
+        },
+        environment={
+            "python": "3.11",
+            "canaries_digest": "sha256:" + "ab" * 32,
+            "fixtures_path": "/srv/FIXTURE_PATH_9f3a2c.tgz",
+        },
+    )
+    client = FakeClient("[]", usage=None)
+    bundle = ChallengeBundle(contract=contract, source_dir=source, diff_text=DIFF)
+    run_challenger(bundle, out_dir=tmp_path / "out", model_client=client)
+    prompt = client.calls[0]["prompt"]
+    assert "docs/rules.md#private" in prompt
+    assert clause in prompt
+    assert "UNFUNDED_SOURCE_9f3a2c" not in prompt
+    assert "ab" * 32 not in prompt
+    assert "FIXTURE_PATH_9f3a2c" not in prompt
+    assert '"python": "3.11"' in prompt
+
+
 def test_prompt_excludes_neighbor_fixtures_observers_and_canaries(tmp_path: Path):
     sentinels = {
         "fixture": "FIXTURE_FILE_9f3a2c",
