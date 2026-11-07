@@ -1,6 +1,12 @@
+"use client";
+
 import Link from "next/link";
 import { Coins } from "lucide-react";
+import type { TaskProgressInput } from "@/lib/cyberContracts";
 import type { CyberTask } from "@/lib/types";
+import { buildTaskProgress } from "@/lib/taskProgress";
+import { TaskProgress } from "@/components/TaskProgress";
+import { useView } from "@/hooks/useView";
 
 const SOURCE_LABELS: Record<string, string> = {
   dependabot: "Dependabot",
@@ -110,7 +116,25 @@ interface Props {
   task: CyberTask;
 }
 
+function listProgressInput(task: CyberTask): TaskProgressInput {
+  // The list payload has no check result, so the card cannot show checks as passed.
+  return {
+    work_state: task.work_state,
+    funding_state: task.funding_state,
+    checks: { state: "not_run", head_sha: null },
+    evaluation: null,
+    challenge_verdict: null,
+    open_findings: 0,
+    reward_ate: task.reward_ate,
+    work_expires_at: null,
+    pr_url: task.pr_url,
+    bounty_id: task.bounty_id,
+  };
+}
+
 export default function CyberTaskCard({ task }: Props) {
+  const { view } = useView();
+  const progress = buildTaskProgress(listProgressInput(task), view);
   const issueHref = httpUrl(task.issue_url);
   const prHref = httpUrl(task.pr_url);
   const source = enumLabel(SOURCE_LABELS, task.source);
@@ -185,6 +209,10 @@ export default function CyberTaskCard({ task }: Props) {
             {work}
           </span>
         ) : null}
+      </div>
+
+      <div className="mt-4">
+        <TaskProgress steps={progress.flow} variant="compact" />
       </div>
 
       {funding ? <p className="text-sm text-gray-600 mt-3">{funding}</p> : null}
