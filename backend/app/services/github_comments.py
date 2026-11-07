@@ -100,7 +100,7 @@ def render_advertised(
         "",
         "### SettleBridge bounty — advertised",
         "",
-        f"Amount: {amount_ate} ATE (~${amount_usd})",
+        f"Amount: {amount_ate} ATE (test) (~${amount_usd})",
         "Status: balance checked; funds not reserved",
         f"Spec version: {spec_version}",
         f"Spec hash: {spec_hash[:12]}",
@@ -198,10 +198,10 @@ def render_paid(
         "### Payment completed",
         "",
         f"Escrow: {escrow_id}",
-        f"Amount: {amount_ate} ATE",
+        f"Amount: {amount_ate} ATE (test)",
     ]
     if fee_ate is not None:
-        lines.append(f"Exchange fee: {fee_ate} ATE (paid by the funder)")
+        lines.append(f"Exchange fee: {fee_ate} ATE (test) (paid by the funder)")
     if house_agent:
         lines.append("Solver: SettleBridge house agent")
     return "\n".join(lines)
