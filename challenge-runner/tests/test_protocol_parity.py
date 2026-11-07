@@ -18,8 +18,9 @@ from challenge_runner.protocol import (
 )
 
 _SCHEMA = json.loads(
-    (Path(__file__).resolve().parents[2] / "docs" / "cyber" / "runner-protocol.schema.json")
-    .read_text()
+    (
+        Path(__file__).resolve().parents[2] / "docs" / "cyber" / "runner-protocol.schema.json"
+    ).read_text()
 )
 D = "sha256:" + "a" * 64
 
