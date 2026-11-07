@@ -112,3 +112,8 @@ Next action copy:
 - `CHALLENGE_OPERATOR_USER_IDS` (config, comma-separated UUIDs, default empty): the only users who may `POST /api/v1/challenges`. Others get 403. With `CHALLENGE_ENGINE_ENABLED=False`, the POST answers 503 `challenge_engine_disabled` and creates nothing. GET routes stay read-only.
 - Contract content (P1-V reads, P1-3 writes): `oracle_sources` (list of OracleSource values), `observers` (list of funded failure classes), `property` (text), and `oracle_texts[source][reference] = clause text`. A citation is valid only when its quote equals the whole clause text after whitespace normalization; reference `property` under `property_clause` resolves to `property`. The verifier copies the DoS threshold into `resources.jsonl`. Capture formats are documented in `challenge_runner/observers/__init__.py`.
 - Verdict and adjudication reasons are stored and signed verbatim. Any writer of a reason (the orchestrator, the adjudication input) rejects text containing "secure" (case-insensitive) instead of editing it.
+- Spend subjects also include `challenge_baseline:{task_id}`, shared by the deps and baseline phases and reconciled when the baseline phase ends.
+- Per-claim verifier execution purposes are `target` and `base`, distinct from `baseline-target` and `baseline-base`.
+- Until a diff artifact kind exists, the challenger's view of the change is recorded as `diff:{sha256(base_sha:target_sha)}` plus the two source tarballs.
+- The frozen contract carries `observers_digest` and a top-level `oracle_texts`.
+- M2 charge rate is `max(cpu_seconds, 1)` cents per execution, in test ATE only; `platform_retry` executions are never charged.
