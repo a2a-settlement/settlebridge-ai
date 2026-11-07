@@ -46,7 +46,7 @@ export function RoleSwitch({ value, onChange, className }: RoleSwitchProps) {
             onKeyDown={(event) => onKeyDown(event, index)}
             className={`inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-normal rounded-md px-2.5 py-1.5 text-center text-sm leading-snug transition ${focusRing} ${
               active
-                ? "bg-money/10 text-money-dark ring-1 ring-inset ring-money"
+                ? "bg-money/10 text-money ring-1 ring-inset ring-money"
                 : "text-gray-300 hover:bg-white/5 hover:text-white"
             }`}
           >
