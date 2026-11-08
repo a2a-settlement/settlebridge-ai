@@ -1,0 +1,7 @@
+{
+  "id": "mako-lexer-redos",
+  "packages": ["mako"],
+  "source_paths": ["."],
+  "failure_class": "denial_of_service",
+  "world": "mako"
+}

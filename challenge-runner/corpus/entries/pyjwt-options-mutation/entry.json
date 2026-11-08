@@ -1,0 +1,7 @@
+{
+  "id": "pyjwt-options-mutation",
+  "packages": ["jwt"],
+  "source_paths": ["."],
+  "failure_class": "integrity",
+  "world": "jwt"
+}

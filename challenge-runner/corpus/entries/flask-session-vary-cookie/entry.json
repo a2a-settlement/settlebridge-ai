@@ -1,0 +1,7 @@
+{
+  "id": "flask-session-vary-cookie",
+  "packages": ["flask"],
+  "source_paths": ["src", "."],
+  "failure_class": "authorization_confidentiality",
+  "world": "flask"
+}

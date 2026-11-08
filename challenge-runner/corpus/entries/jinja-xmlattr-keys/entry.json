@@ -1,0 +1,7 @@
+{
+  "id": "jinja-xmlattr-keys",
+  "packages": ["jinja2"],
+  "source_paths": ["src", "."],
+  "failure_class": "injection_execution",
+  "world": "jinja2"
+}
