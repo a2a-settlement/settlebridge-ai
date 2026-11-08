@@ -127,3 +127,36 @@ def test_top_up_stops_at_the_model_cap():
     assert len(calls) == 2
     assert budget["spent"] == 50.0
     assert budget["spent"] > 30
+
+
+def test_published_token_prices():
+    short = arms._usage_cents({"input_tokens": 100_000, "output_tokens": 100_000})
+    assert short == (100_000, 100_000, 120.0)
+    cached = arms._usage_cents(
+        {"input_tokens": 100_000, "cached_input_tokens": 100_000, "output_tokens": 0}
+    )
+    assert cached[2] == 1.0
+    long = arms._usage_cents({"input_tokens": 1_000_000, "output_tokens": 1_000_000})
+    assert long == (1_000_000, 1_000_000, 1900.0)
+
+
+def test_execution_charge_uses_the_m2_floor():
+    totals = arms._fresh_totals()
+    arms._add_execution(totals, 0.4)
+    arms._add_execution(totals, 4.9)
+    totals["model_cents"] = 2.2
+    assert totals["cpu_cents"] == 5
+    assert arms._compute_cents(totals) == 7
+
+
+def test_container_paths_split_verifier_and_work(tmp_path: Path):
+    vroot = tmp_path / "verifier"
+    work = tmp_path / "work"
+    (vroot / "controls").mkdir(parents=True)
+    (work / "challenge_tests").mkdir(parents=True)
+    positive = vroot / "controls" / "test_positive.py"
+    claim = work / "challenge_tests" / "test_claim.py"
+    positive.write_text("x", encoding="utf-8")
+    claim.write_text("x", encoding="utf-8")
+    assert arms._container_path(positive, vroot, work) == "/verifier/controls/test_positive.py"
+    assert arms._container_path(claim, vroot, work) == "/work/challenge_tests/test_claim.py"

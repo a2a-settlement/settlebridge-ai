@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import os
 import re
@@ -41,6 +42,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import uuid
@@ -54,7 +56,11 @@ FLASK_DEPS = Path(os.environ.get("SBC_FLASK_DEPS", "/tmp/sbc-corpus/flaskdeps"))
 AIOHTTP_DEPS = Path(os.environ.get("SBC_AIOHTTP_DEPS", "/tmp/sbc-corpus/aiohttpdeps"))
 SECRETS = Path.home() / ".config/settlebridge-pilot"
 PY = os.environ.get("SBC_PY", sys.executable)
-ZERO_DIGEST = "sha256:" + "0" * 64
+SANDBOX_IMAGE = (
+    "python:3.11-slim@sha256:65bd3d9f1d7fa268dd1909973ba7eb4bdf41f6dcf2cfbe76ba9528b170f3fd79"
+)
+ARTIFACTS = Path(os.environ.get("SBC_ARTIFACTS", "/tmp/sbc-corpus/artifacts"))
+WHEELHOUSE = Path(os.environ.get("SBC_WHEELHOUSE", "/tmp/sbc-corpus/wheelhouse"))
 
 # base, target, and optional follow-up directory name under CHECKOUTS.
 CHECKOUT_IDS = {
@@ -137,11 +143,18 @@ _FINISHED_PYTEST = {0, 1, 5}
 _MAX_TOP_UP_PASSES = 40
 _MAX_TOP_UP_WALL = 30 * 60
 
-# Assumed prices (US cents per 1M tokens) until the fidelity pass replaces them
-# with the published rate for the model actually called. Report tokens either way.
-PRICE_IN_CENTS_PER_M = float(os.environ.get("SBC_PRICE_IN", "250"))
+# OpenAI standard prices for gpt-6.1-sol, US cents per 1M tokens.
+# https://developers.openai.com/api/docs/models/gpt-6.1-sol
+# Short context is at most 272_000 input tokens. A longer request is 2x input
+# and cache rates and 1.5x output for the whole request. Recorded input tokens
+# are priced as uncached unless cached_input_tokens is present.
+PRICE_IN_CENTS_PER_M = float(os.environ.get("SBC_PRICE_IN", "200"))
+PRICE_CACHED_CENTS_PER_M = float(os.environ.get("SBC_PRICE_CACHED", "10"))
 PRICE_OUT_CENTS_PER_M = float(os.environ.get("SBC_PRICE_OUT", "1000"))
-COMPUTE_CENTS_PER_WALL_SEC = float(os.environ.get("SBC_COMPUTE_RATE", "0.5"))
+LONG_CONTEXT_INPUT_TOKENS = 272_000
+# docs/cyber/S0_INTERFACES.md: an execution costs max(cpu_seconds, 1) cents.
+# Under --cpus=1 the runner's cpu_seconds is measured wall time.
+_WHEELHOUSE_DIGEST: str | None = None
 
 _REVIEW_SYSTEM = (
     "You review one patch against one stated property. "
@@ -314,7 +327,15 @@ def _usage_cents(usage: dict | None) -> tuple[int, int, float]:
     usage = usage or {}
     tin = int(usage.get("input_tokens", 0) or 0)
     tout = int(usage.get("output_tokens", 0) or 0)
-    cents = tin / 1e6 * PRICE_IN_CENTS_PER_M + tout / 1e6 * PRICE_OUT_CENTS_PER_M
+    cached = min(max(int(usage.get("cached_input_tokens", 0) or 0), 0), tin)
+    in_rate = PRICE_IN_CENTS_PER_M
+    cached_rate = PRICE_CACHED_CENTS_PER_M
+    out_rate = PRICE_OUT_CENTS_PER_M
+    if tin > LONG_CONTEXT_INPUT_TOKENS:
+        in_rate *= 2
+        cached_rate *= 2
+        out_rate *= 1.5
+    cents = (tin - cached) / 1e6 * in_rate + cached / 1e6 * cached_rate + tout / 1e6 * out_rate
     return tin, tout, cents
 
 
@@ -327,12 +348,18 @@ def _add_usage(totals: dict, usage: dict | None) -> tuple[int, int]:
     return tin, tout
 
 
+def _add_execution(totals: dict, wall_seconds: float) -> None:
+    totals["wall"] += wall_seconds
+    if wall_seconds > 0:
+        totals["cpu_cents"] += max(int(wall_seconds), 1)
+
+
 def _compute_cents(totals: dict) -> int:
-    return max(0, int(round(totals["model_cents"] + totals["wall"] * COMPUTE_CENTS_PER_WALL_SEC)))
+    return max(0, int(round(totals["model_cents"] + totals.get("cpu_cents", 0))))
 
 
 def _fresh_totals() -> dict:
-    return {"in": 0, "out": 0, "model_cents": 0.0, "wall": 0.0, "calls": 0}
+    return {"in": 0, "out": 0, "model_cents": 0.0, "wall": 0.0, "calls": 0, "cpu_cents": 0}
 
 
 def _over_model_cap(totals: dict, cap: float | None) -> bool:
@@ -417,43 +444,81 @@ def _baseline_pythonpath(entry_id: str, work: Path) -> str:
     return os.pathsep.join(parts)
 
 
-def _run_kit(vroot: Path, work: Path, test_paths: list[str], entry_id: str):
-    capture = Path(tempfile.mkdtemp(prefix="sbc-arms-cap-"))
-    env = {
-        **os.environ,
-        "SBC_VERIFIER_ROOT": str(vroot),
-        "SBC_WORK_DIR": str(work),
-        "SBC_CAPTURE_DIR": str(capture),
-        "PYTHONPATH": _pythonpath(entry_id),
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
-    started = time.monotonic()
-    proc = subprocess.run(
-        [PY, str(vroot / "run.py"), *test_paths],
-        env=env,
-        capture_output=True,
-        text=True,
-        cwd=str(work),
+def _tar_bytes(root: Path) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for path in sorted(root.rglob("*")):
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            tar.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
+    return buf.getvalue()
+
+
+def _ensure_image() -> None:
+    image = os.environ.get("CHALLENGE_SANDBOX_IMAGE", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}@sha256:[0-9a-f]{64}", image):
+        os.environ["CHALLENGE_SANDBOX_IMAGE"] = SANDBOX_IMAGE
+
+
+def _install_specs(entry_id: str) -> tuple[str, ...]:
+    path = RUNNER / "corpus" / "contracts" / f"{entry_id}.json"
+    if not path.is_file():
+        return ("pytest==9.0.2",)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    specs = [
+        item
+        for item in data.get("environment", {}).get("install", [])
+        if isinstance(item, str) and item
+    ]
+    return tuple(specs or ["pytest==9.0.2"])
+
+
+def _wheelhouse_manifest(store) -> str:
+    global _WHEELHOUSE_DIGEST
+    if _WHEELHOUSE_DIGEST:
+        return _WHEELHOUSE_DIGEST
+    from challenge_runner.sandbox.runner import _publish_wheelhouse
+
+    if not any(WHEELHOUSE.glob("*.whl")):
+        raise SystemExit(f"wheelhouse is empty: {WHEELHOUSE}")
+    _WHEELHOUSE_DIGEST = _publish_wheelhouse(store, WHEELHOUSE)
+    return _WHEELHOUSE_DIGEST
+
+
+def _container_path(path: Path, vroot: Path, work: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return "/verifier/" + resolved.relative_to(vroot.resolve()).as_posix()
+    except ValueError:
+        return "/work/" + resolved.relative_to(work.resolve()).as_posix()
+
+
+def _run_kit(vroot: Path, work: Path, test_paths: list[str], entry_id: str, failure_class: str):
+    from challenge_runner.artifacts import ArtifactStore
+    from challenge_runner.protocol import ResourceLimits, RunnerJob
+    from challenge_runner.sandbox import run_job
+
+    _ensure_paths()
+    _ensure_image()
+    store = ArtifactStore(ARTIFACTS)
+    command = (
+        "python",
+        "/verifier/run.py",
+        *[_container_path(Path(item), vroot, work) for item in test_paths],
     )
-    wall = time.monotonic() - started
-    return proc.returncode, capture, wall
-
-
-def _runner_result(failure_class: str, exit_code: int, capture: Path):
-    from challenge_runner.observers import get_observer
-    from challenge_runner.protocol import RunnerResult
-
-    status = "ok" if exit_code == 0 else "test_failed" if exit_code == 1 else "sandbox_error"
-    events = tuple(get_observer(failure_class).observe(str(capture)))
-    return RunnerResult(
-        execution_id=f"arms:{uuid.uuid4().hex[:12]}",
+    job = RunnerJob(
+        execution_id=f"arms{uuid.uuid4().hex[:16]}",
         stage="execute",
-        status=status,
-        image_digest=ZERO_DIGEST,
-        source_digest=ZERO_DIGEST,
-        exit_code=exit_code,
-        observer_events=events,
+        task_id=entry_id or "corpus",
+        source_tarball=store.put_bytes(_tar_bytes(work)),
+        limits=ResourceLimits(cpu_seconds=600, memory_mb=2048, wall_seconds=600, disk_mb=2048),
+        wheelhouse_manifest=_wheelhouse_manifest(store),
+        fixtures_digest=store.put_bytes(_tar_bytes(vroot)),
+        install_command=_install_specs(entry_id),
+        test_command=command,
+        observers=(failure_class,),
     )
+    return run_job(job, artifact_root=ARTIFACTS)
 
 
 def _diff(base_dir: Path, target_dir: Path) -> str:
@@ -668,17 +733,17 @@ def run_tests_and_scanners(entry: dict, timeout: float, verbose: bool):
     totals = _fresh_totals()
     defective, sound = _sides(entry)
     def_code, def_wall, def_note = _pytest_code(defective, entry["id"], timeout)
-    totals["wall"] += def_wall
+    _add_execution(totals, def_wall)
     if sound is None:
         sound_code = None
         sound_note = "absent"
     else:
         sound_code, sound_wall, sound_note = _pytest_code(sound, entry["id"], timeout)
-        totals["wall"] += sound_wall
+        _add_execution(totals, sound_wall)
     base, target, _follow = _entry_dirs(entry["id"])
     changed = _changed_py(base, target, defective)
     hit, scan_wall, scanner = _scanner_hit(defective, changed, timeout)
-    totals["wall"] += scan_wall
+    _add_execution(totals, scan_wall)
     verdict, controls_ok = baseline_verdict(def_code, sound_code, hit)
     if verbose:
         print(
@@ -712,9 +777,9 @@ def _controls_ok(positive, negative) -> bool:
 
 
 def _run_named(eid: str, fc: str, vroot: Path, work: Path, paths: list[str], totals: dict):
-    code, capture, wall = _run_kit(vroot, work, paths, eid)
-    totals["wall"] += wall
-    return _runner_result(fc, code, capture)
+    result = _run_kit(vroot, work, paths, eid, fc)
+    _add_execution(totals, float(result.wall_seconds or 0))
+    return result
 
 
 def run_second_model_review(
