@@ -1,0 +1,7 @@
+{
+  "id": "pyyaml-fullloader-rce",
+  "packages": ["yaml"],
+  "source_paths": ["lib3", "lib", "."],
+  "failure_class": "injection_execution",
+  "world": "yaml"
+}

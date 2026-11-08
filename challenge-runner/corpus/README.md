@@ -84,3 +84,26 @@ The gate is `seeded_challenger` only. All of these must hold. The report prints 
 - At least 20 scored rows, including at least 6 incomplete, 6 complete, and 3 regression.
 
 Ratios use integer cross-multiplication, so a value on the threshold passes.
+
+## Verifier kit
+
+`kit/` is the shared, verifier-owned harness mounted at `/verifier`. `kit/run.py` runs
+pytest with `sbc_kit.plugin`, which freezes a digest of the library source under `/work`
+and provides the entry's `sbc_world` fixture. Each entry under `entries/<id>/` supplies
+`entry.json` (packages and source paths), `sbc_entry_world.py` (a `World` class), and
+`controls/` (a positive and a negative control).
+
+Any library call that decides a verdict runs in a forked child that re-imports the
+library fresh from `/work`, refuses to run if the source digest changed, and blocks
+imports from `challenge_tests/`. The `World` writes observer captures (via `sbc_kit.capture`)
+from what the child actually did, never from a test's assertions.
+
+For injection whose real impact is not code or command execution (HTML attribute
+injection, SQL injection), the `World` parses the library's output with a trusted parser
+and records an injection sentinel only when attacker input provably reaches an executable
+position (an event-handler attribute, an unquoted SQL token). This convention is noted on
+each such entry.
+
+`kit/selftest.py` runs an entry's controls and a stand-in attack against checked-out
+commits and prints which observer events fired, so an entry can be checked against its
+base, fix and follow-up before it joins the manifest.
