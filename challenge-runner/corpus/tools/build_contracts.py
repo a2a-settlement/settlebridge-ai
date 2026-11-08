@@ -99,12 +99,18 @@ SPEC = {
     "pyjwt-options-mutation": {
         "install": [],
         "api": (
-            "sbc_world.decode_fresh(expired: bool = False) decodes one HS256 token with a "
-            "fresh {'verify_exp': True} options dict. sbc_world.decode_shared_options() "
-            "decodes a valid token and then an expired token reusing one options dict, "
-            "importing jwt fresh. The verifier records an unauthorized state change only "
-            "when a decode accepts an expired token. A test that shows the failure must "
-            "make the library accept an expired token."
+            "sbc_world.encode(claims: dict, key: str | None = None, algorithm: str = "
+            "'HS256') -> str returns a signed token; key defaults to the verifier's shared "
+            "secret. sbc_world.decode(token: str, key: str | None = None, algorithms: "
+            "list[str] | None = None, options: dict | None = None, options_id: str | None = "
+            "None) decodes one token, importing jwt fresh; when options_id is given the same "
+            "options dict object is kept and reused across calls with that id, so a mutation "
+            "one call makes is visible to the next. The returned outcome's `.accepted` is "
+            "True when the decode returned claims. The verifier records an unauthorized "
+            "account debit only when a decode accepts a token the verifier independently "
+            "determines is expired while the caller asked for expiration checking. A test "
+            "that shows the failure must compose calls so the library accepts an expired "
+            "token."
         ),
     },
 }
