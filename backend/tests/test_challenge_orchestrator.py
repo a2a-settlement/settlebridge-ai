@@ -12,6 +12,7 @@ import json
 import tarfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event, select, text, update
@@ -310,6 +311,7 @@ def _fetch(tmp_path):
     def fetch(*, repo_full_name, sha, token, workdir, include_history=False):
         assert token == SECRET
         assert include_history is False
+        assert Path(workdir).name in {"target", "base"}
         path = tmp_path / f"{sha}.tar"
         data = sha.encode()
         path.write_bytes(data)
@@ -589,6 +591,51 @@ def test_role_conflicts_and_challenger_visibility(db):
                 ["contract:terms", str(wheel.id)],
             )
         )
+
+
+def test_identical_wheelhouses_serve_both_baselines(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    shared = "sha256:" + "ee" * 32
+    executed = []
+
+    def runner(job, artifact_root=None):
+        result = _result(job)
+        if job.stage == "dependencies":
+            return result.model_copy(update={"wheelhouse_manifest": shared})
+        executed.append((_purpose(job.execution_id), job.wheelhouse_manifest))
+        return result
+
+    _patch_io(monkeypatch, runner=runner, fetch=_fetch(tmp_path))
+    task = _run(_make_task(db, budget_cents=1000))
+    _budget(db, task.owner_user_id)
+    task.environment = {"python": "3.11", "test_command": ["pytest", "-q"]}
+    db.sync.flush()
+    task = _run(freeze_contract(db, task.id))
+    for kind in ("challenge_fetch", "challenge_deps", "challenge_baseline"):
+        _run(handle_challenge_job(db, next(job for job in _jobs(db) if job.kind == kind)))
+    db.sync.expire_all()
+    assert db.sync.get(ChallengeTask, task.id).state == "open"
+    assert executed == [("baseline-base", shared), ("baseline-target", shared)]
+
+
+def test_stages_share_one_task_budget(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    _patch_io(
+        monkeypatch,
+        runner=lambda job, artifact_root=None: _result(job, cpu=7),
+        fetch=_fetch(tmp_path),
+    )
+    task = _run(_make_task(db, budget_cents=1000))
+    _budget(db, task.owner_user_id, period=1000, per_job=1000)
+    task.environment = {"python": "3.11", "test_command": ["pytest", "-q"]}
+    db.sync.flush()
+    task = _run(freeze_contract(db, task.id))
+    for kind in ("challenge_fetch", "challenge_deps", "challenge_baseline", "challenge_attempt"):
+        _run(handle_challenge_job(db, next(job for job in _jobs(db) if job.kind == kind)))
+    db.sync.expire_all()
+    assert db.sync.get(ChallengeTask, task.id).state == "closed"
+    holds = db.sync.scalars(select(SpendReservation)).all()
+    assert sorted(row.reserved_cents for row in holds) == [1000 - 4 * 7, 1000]
 
 
 def test_pipeline_dedupe_keys_verifier_and_no_token(db, monkeypatch, tmp_path, caplog):

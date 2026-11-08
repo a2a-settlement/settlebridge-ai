@@ -95,6 +95,30 @@ def test_request_shape_and_token_usage(monkeypatch):
     assert KEY not in repr(client)
 
 
+def test_reasoning_model_request_shape(monkeypatch):
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["payload"] = json.loads(req.data.decode())
+        body = {"choices": [{"message": {"content": "[]"}}]}
+        return _Response(json.dumps(body).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = ChatCompletionsClient(
+        "https://models.example/v1",
+        "reasoner",
+        KEY,
+        max_tokens_field="max_completion_tokens",
+        temperature=None,
+    )
+    assert client.complete(system="s", prompt="p", max_tokens=64) == "[]"
+    assert captured["payload"]["max_completion_tokens"] == 64
+    assert "max_tokens" not in captured["payload"]
+    assert "temperature" not in captured["payload"]
+    with pytest.raises(ValueError):
+        ChatCompletionsClient("https://models.example/v1", "m", KEY, max_tokens_field="limit")
+
+
 def test_accepts_input_and_output_token_names(monkeypatch):
     def fake_urlopen(req, timeout=None):
         body = {

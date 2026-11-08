@@ -148,3 +148,32 @@ def test_fetch_history_defaults_off(tmp_path: Path, monkeypatch, capsys):
     assert body["history_bundle"] is None
     assert body["history_digest"] is None
     assert "sbl_stdinsecret1234" not in json.dumps(body)
+
+
+def test_fetch_puts_the_tarball_in_the_store(tmp_path: Path, monkeypatch, capsys):
+    import hashlib
+
+    data = b"tarball-bytes"
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "source.tar.gz").write_bytes(data)
+
+    def fake_fetch(**_kwargs):
+        return FetchOutput(
+            source_tarball=work / "source.tar.gz",
+            source_digest=digest,
+            history_bundle=None,
+            history_digest=None,
+        )
+
+    monkeypatch.setattr("challenge_runner.fetcher.fetch_source", fake_fetch)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("sbl_stdinsecret1234\n"))
+    root = tmp_path / "store"
+    argv = ["fetch", "--repo", "acme/widgets", "--sha", "c" * 40, "--workdir", str(work)]
+    assert main([*argv, "--artifact-root", str(root)]) == 0
+    body = json.loads(capsys.readouterr().out)
+    stored = Path(body["source_tarball"])
+    assert stored == root / "sha256" / digest.split(":", 1)[1]
+    assert stored.read_bytes() == data
+    assert body["source_digest"] == digest

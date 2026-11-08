@@ -105,16 +105,42 @@ def _contract_view(contract: dict) -> dict:
         sources = sorted(ORACLE_SOURCES)
     environment = contract.get("environment")
     if isinstance(environment, dict):
-        environment = _plain(environment, 0)
+        visible = {
+            key: value
+            for key, value in environment.items()
+            if not (isinstance(key, str) and key.endswith(("_digest", "_path")))
+        }
+        environment = _plain(visible, 0)
     else:
         environment = None
     return {
         "property": _property_text(contract),
         "failure_classes": classes,
         "oracle_sources": sources,
+        "oracle_texts": _oracle_texts(contract, sources),
         "environment": environment,
         "budget_cents": _budget(contract),
     }
+
+
+def _oracle_texts(contract: dict, sources: list[str]) -> dict:
+    """Citable clauses: a quote must equal one of these texts exactly."""
+    raw = contract.get("oracle_texts")
+    if not isinstance(raw, dict):
+        return {}
+    texts: dict[str, dict[str, str]] = {}
+    for source in sources:
+        bucket = raw.get(source)
+        if not isinstance(bucket, dict):
+            continue
+        clean = {
+            ref: text
+            for ref, text in list(bucket.items())[:MAX_ENV_ITEMS]
+            if isinstance(ref, str) and ref and isinstance(text, str) and text.strip()
+        }
+        if clean:
+            texts[source] = clean
+    return _plain(texts, 0)
 
 
 def _property_text(contract: dict) -> str:

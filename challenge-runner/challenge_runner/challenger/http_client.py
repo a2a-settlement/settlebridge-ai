@@ -17,11 +17,25 @@ from challenge_runner.challenger.limits import MAX_RESPONSE_BYTES
 class ChatCompletionsClient:
     """ModelClient that POSTs to ``{base_url}/chat/completions``."""
 
-    def __init__(self, base_url: str, model: str, api_key: str, timeout: float = 60.0):
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str,
+        timeout: float = 60.0,
+        *,
+        max_tokens_field: str = "max_tokens",
+        temperature: float | None = 0,
+    ):
         self._base_url = _require_base_url(base_url)
         self._model = _require_text(model, "model")
         self._api_key = _require_text(api_key, "api_key")
         self._timeout = _require_timeout(timeout)
+        # Reasoning models take max_completion_tokens and reject a temperature.
+        if max_tokens_field not in ("max_tokens", "max_completion_tokens"):
+            raise ValueError("max_tokens_field is not supported")
+        self._max_tokens_field = max_tokens_field
+        self._temperature = temperature
         self.last_usage: dict[str, int] | None = None
 
     def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
@@ -36,9 +50,10 @@ class ChatCompletionsClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": max_tokens,
-            "temperature": 0,
+            self._max_tokens_field: max_tokens,
         }
+        if self._temperature is not None:
+            body["temperature"] = self._temperature
         request = urllib.request.Request(
             self._base_url + "/chat/completions",
             data=json.dumps(body).encode("utf-8"),
