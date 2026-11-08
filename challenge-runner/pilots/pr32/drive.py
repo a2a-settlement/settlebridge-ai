@@ -25,6 +25,7 @@ import gzip
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -256,7 +257,7 @@ async def _prepare_attempts(args) -> None:
     from app.models.challenge import ChallengeArtifact, ChallengeContract, ChallengeTask
     from app.models.github import GitHubJob, JobKind, JobStatus
     from challenge_runner.challenger import ChallengeBundle, run_challenger
-    from challenge_runner.challenger.limits import ARCHIVE_NAME
+    from challenge_runner.challenger.limits import ARCHIVE_NAME, MAX_COMPLETION_TOKENS
     from challenge_runner.sandbox.tarutil import safe_extract
 
     async with async_session() as db:
@@ -267,6 +268,8 @@ async def _prepare_attempts(args) -> None:
         for job in (await db.execute(stmt)).scalars().all():
             if "bundle_path" in (job.payload or {}):
                 continue
+            if not args.model:
+                raise SystemExit("the attempt is ready; rerun with --model <openai-model>")
             task = await db.get(ChallengeTask, uuid.UUID(job.payload["task_id"]))
             contract = await db.get(ChallengeContract, uuid.UUID(job.payload["contract_id"]))
             rows = await db.execute(
@@ -277,6 +280,7 @@ async def _prepare_attempts(args) -> None:
             )
             target = next(row for row in rows.scalars() if (row.meta or {}).get("role") == "target")
             work = HOME / "challenger" / str(job.id)
+            shutil.rmtree(work, ignore_errors=True)
             source = work / "src"
             source.mkdir(parents=True, exist_ok=True)
             safe_extract(Path(target.storage_path), source, max_bytes=512 * 1024 * 1024)
@@ -285,8 +289,6 @@ async def _prepare_attempts(args) -> None:
                 source_dir=source,
                 diff_text=_diff(task.base_sha, task.target_sha),
             )
-            if not args.model:
-                raise SystemExit("the attempt is ready; rerun with --model <openai-model>")
             client = _model_client(args.model, not args.chat_model)
             print(f"challenger: one call to {args.model}, at most {MAX_CLAIMS} claims")
             claims = run_challenger(
@@ -296,6 +298,10 @@ async def _prepare_attempts(args) -> None:
             (work / "model_usage.json").write_text(
                 json.dumps({"model": args.model, **usage}, indent=2) + "\n"
             )
+            if not claims and usage.get("output_tokens", 0) >= MAX_COMPLETION_TOKENS:
+                raise SystemExit(
+                    "the model hit its output cap with no claims; the attempt was not submitted"
+                )
             archive = next((work / "out").rglob(ARCHIVE_NAME))
             digest = _store().put_file(archive)
             job.payload = {
@@ -372,6 +378,9 @@ async def _run(state: dict, args) -> None:
     idle = 0
     for _ in range(MAX_STEPS):
         await _prepare_attempts(args)
+        if args.challenger_only:
+            print("stopped before validation; review with `drive.py claims`")
+            return
         ran = await github_jobs.run_due_jobs(async_session, limit=1)
         print(f"ran {ran} job(s); task is {await _task_state(state)}")
         if ran:
@@ -471,6 +480,11 @@ def main() -> None:
         "--chat-model",
         action="store_true",
         help="send max_tokens and temperature 0 (non-reasoning models)",
+    )
+    run.add_argument(
+        "--challenger-only",
+        action="store_true",
+        help="run the challenger for a ready attempt, then stop before validation",
     )
     sub.add_parser("claims")
     sub.add_parser("status")
