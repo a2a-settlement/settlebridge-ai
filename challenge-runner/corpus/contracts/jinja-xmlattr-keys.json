@@ -1,0 +1,59 @@
+{
+  "task": {
+    "repo_full_name": "pallets/jinja",
+    "base_sha": "d84a1743e4158733222105ff3b9c9d5da108868f",
+    "target_sha": "716795349a41d4983a9a4771f7d883c96ea17be7",
+    "property_text": "The xmlattr filter never emits a key that starts another attribute or ends the tag, whatever characters the key contains.",
+    "failure_classes": [
+      "injection_execution"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "The xmlattr filter never emits a key that starts another attribute or ends the tag, whatever characters the key contains."
+      }
+    },
+    "observers": [
+      "injection_execution"
+    ],
+    "python": "3.11",
+    "install": [
+      "markupsafe",
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The pallets/jinja library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.render(mapping: dict) renders Jinja's xmlattr filter over `mapping` (a dict of attribute name to value) inside `<p ...>CANARY</p>`, importing jinja2 fresh, and returns an outcome whose `.broke_out` is True when a key left the single `<p>` tag (a new attribute, a new tag, or the CANARY escaping). Values are always HTML-escaped. A test that shows the failure must pass a mapping whose KEY breaks out of the attribute."
+    ]
+  }
+}

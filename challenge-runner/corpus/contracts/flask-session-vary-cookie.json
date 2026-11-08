@@ -1,0 +1,62 @@
+{
+  "task": {
+    "repo_full_name": "pallets/flask",
+    "base_sha": "9532cba45d2339e90ebf04f178b1e4f2064e7328",
+    "target_sha": "70f906c51ce49c485f1d355703e9cc3386b1cc2b",
+    "property_text": "Flask adds Vary: Cookie whenever the session is accessed, so a caching proxy cannot serve one client's session cookie to another.",
+    "failure_classes": [
+      "authorization_confidentiality"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "Flask adds Vary: Cookie whenever the session is accessed, so a caching proxy cannot serve one client's session cookie to another."
+      }
+    },
+    "observers": [
+      "authorization_confidentiality"
+    ],
+    "python": "3.11",
+    "install": [
+      "werkzeug==2.3.8",
+      "itsdangerous==2.2.0",
+      "blinker==1.8.2",
+      "markupsafe",
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The pallets/flask library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.exchange(mode: str = 'refresh') runs a Flask request flow against an app built from the code under test. mode 'refresh' sets a permanent session on one request and then issues a request whose view never touches the session; 'plain' is an ordinary request; 'private' marks the response Cache-Control: private. The verifier applies an RFC 9111 shared-cache model to the real response headers and records a leak only when the victim's Set-Cookie would be served to another client. A test that shows the failure must call sbc_world.exchange('refresh')."
+    ]
+  }
+}

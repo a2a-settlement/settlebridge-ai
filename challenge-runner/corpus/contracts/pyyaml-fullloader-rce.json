@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "yaml/pyyaml",
+    "base_sha": "2f463cf5b0e98a52bc20e348d1e69761bf263b86",
+    "target_sha": "5080ba513377b6355a0502104846ee804656f1e0",
+    "property_text": "yaml.full_load and yaml.load with FullLoader do not execute Python code taken from an untrusted YAML document.",
+    "failure_classes": [
+      "injection_execution"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "yaml.full_load and yaml.load with FullLoader do not execute Python code taken from an untrusted YAML document."
+      }
+    },
+    "observers": [
+      "injection_execution"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The yaml/pyyaml library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.load(document: str, loader: str = 'full') loads `document` with PyYAML's FullLoader (loader='full'), SafeLoader ('safe') or UnsafeLoader ('unsafe'), importing the library fresh from the code under test, and returns an outcome whose `.executed` is True when the load ran code taken from the document. A test that shows the failure must make sbc_world.load(<your YAML>, 'full') execute code."
+    ]
+  }
+}
