@@ -1,0 +1,7 @@
+{
+  "id": "datamodel-codegen-validator-injection",
+  "packages": ["datamodel_code_generator"],
+  "source_paths": ["src"],
+  "failure_class": "injection_execution",
+  "world": "datamodel_code_generator"
+}

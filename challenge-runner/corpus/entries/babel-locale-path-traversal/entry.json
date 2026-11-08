@@ -1,0 +1,7 @@
+{
+  "id": "babel-locale-path-traversal",
+  "packages": ["babel"],
+  "source_paths": ["."],
+  "failure_class": "injection_execution",
+  "world": "babel"
+}

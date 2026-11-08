@@ -1,0 +1,7 @@
+{
+  "id": "starlette-multipart-field-dos",
+  "packages": ["starlette"],
+  "source_paths": ["."],
+  "failure_class": "denial_of_service",
+  "world": "starlette"
+}

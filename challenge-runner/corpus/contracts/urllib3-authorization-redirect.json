@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "urllib3/urllib3",
+    "base_sha": "c4f123dcdcad3582561373278d2772f819ec3cb8",
+    "target_sha": "560bd227b90f74417ffaedebf5f8d05a8ee4f532",
+    "property_text": "urllib3 does not send an Authorization header to a different host when it follows a cross-origin redirect.",
+    "failure_classes": [
+      "authorization_confidentiality"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "urllib3 does not send an Authorization header to a different host when it follows a cross-origin redirect."
+      }
+    },
+    "observers": [
+      "authorization_confidentiality"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The urllib3/urllib3 library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.issue() prepares a value the caller may pass to a later call. sbc_world.request(url: str, headers: dict | None = None, redirect: str | None = None) performs one request through urllib3, importing the library fresh. The verifier records an authorization failure when a credential is disclosed to a target the caller did not choose. A test that shows the failure composes issue() and request()."
+    ]
+  }
+}

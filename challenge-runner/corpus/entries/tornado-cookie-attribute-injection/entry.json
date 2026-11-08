@@ -1,0 +1,7 @@
+{
+  "id": "tornado-cookie-attribute-injection",
+  "packages": ["tornado"],
+  "source_paths": ["."],
+  "failure_class": "injection_execution",
+  "world": "tornado"
+}

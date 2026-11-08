@@ -51,6 +51,7 @@ RUNNER = HERE.parents[1]  # challenge-runner/
 BACKEND = RUNNER.parent / "backend"
 CHECKOUTS = Path(os.environ.get("SBC_CORPUS_CHECKOUTS", "/tmp/sbc-corpus/checkouts"))
 FLASK_DEPS = Path(os.environ.get("SBC_FLASK_DEPS", "/tmp/sbc-corpus/flaskdeps"))
+AIOHTTP_DEPS = Path(os.environ.get("SBC_AIOHTTP_DEPS", "/tmp/sbc-corpus/aiohttpdeps"))
 SECRETS = Path.home() / ".config/settlebridge-pilot"
 PY = os.environ.get("SBC_PY", sys.executable)
 ZERO_DIGEST = "sha256:" + "0" * 64
@@ -59,10 +60,70 @@ ZERO_DIGEST = "sha256:" + "0" * 64
 CHECKOUT_IDS = {
     "pyyaml-fullloader-rce": ("pyyaml-2f463cf5b", "pyyaml-5080ba513", "pyyaml-a001f27"),
     "jinja-xmlattr-keys": ("jinja-d84a1743e", "jinja-716795349", "jinja-0668239"),
+    "babel-locale-path-traversal": ("babel-5afe2b2f1", "babel-412015ef6"),
+    "requests-proxy-authorization": ("requests-302225334", "requests-74ea7cf7a"),
+    "urllib3-authorization-redirect": (
+        "urllib3-c4f123dcd",
+        "urllib3-560bd227b",
+        "urllib3-adb358f8e",
+    ),
     "mako-lexer-redos": ("mako-7c5b28ac4", "mako-925760291"),
+    "mistune-emphasis-redos": ("mistune-5638e4604", "mistune-a6d432151"),
+    "python-multipart-content-type-redos": (
+        "python-multipart-d3d16dae4",
+        "python-multipart-20f0ef6b4",
+    ),
+    "idna-long-input-dos": (
+        "idna-c1b315493",
+        "idna-1d365e17e",
+        "idna-e1cb465b6",
+    ),
     "flask-session-vary-cookie": ("flask-9532cba45", "flask-70f906c51"),
+    "webob-location-open-redirect": (
+        "webob-7bf29f1f9",
+        "webob-f689bcf4f",
+        "webob-ff8956064",
+    ),
     "waitress-header-regex-redos": ("waitress-ddb65b489", "waitress-0bf98dadd"),
     "pyjwt-options-mutation": ("pyjwt-9085670", "pyjwt-29fbfc3"),
+    "python-jose-hmac-key-confusion": (
+        "python-jose-638d0470f",
+        "python-jose-12f30c8c8",
+    ),
+    "starlette-multipart-field-dos": ("starlette-e11684013", "starlette-fd038f307"),
+    "authlib-oct-key-confusion": (
+        "authlib-a7d68b4c3",
+        "authlib-3bea812ac",
+        "authlib-e3bd41cb2",
+    ),
+    "pyjwt-pyjwk-algorithm-allowlist": ("pyjwt-c0a071dc0", "pyjwt-ab8176abe"),
+    "tornado-static-open-redirect": ("tornado-e0fa53ee9", "tornado-32ad07c54"),
+    "tornado-cookie-attribute-injection": (
+        "tornado-119a195e2",
+        "tornado-24a2d96ea",
+        "tornado-da284767e",
+    ),
+    "gunicorn-request-smuggling": ("gunicorn-0b10cbab1", "gunicorn-ac29c9b0a"),
+    "pyjwt-hmac-key-confusion": (
+        "pyjwt-24b29adfe",
+        "pyjwt-9c528670c",
+        "pyjwt-8b4e233a2",
+    ),
+    "waitress-request-smuggling": ("waitress-22c03947e", "waitress-9e0b8c801"),
+    "aiohttp-static-traversal": ("aiohttp-33ccdfb0a", "aiohttp-1c335944d"),
+    "datamodel-codegen-validator-injection": (
+        "datamodel-code-generator-8ee5860a0",
+        "datamodel-code-generator-a2b275625",
+    ),
+    "setuptools-package-index-redos": ("setuptools-579134321", "setuptools-43a9c9bfa"),
+    "sb-pr32": ("settlebridge-ai-b16a48558", "settlebridge-ai-520b6b6f1"),
+    "twisted-request-smuggling": ("twisted-de8e5a6e9", "twisted-592217e95"),
+    "django-truncator-html-redos": (
+        "django-39fc3f46a",
+        "django-be9c27c4d",
+        "django-3c9a2771c",
+    ),
+    "django-jsonfield-values-sqli": ("django-efea1ef7e", "django-f4af67b9b"),
 }
 
 ARM_NAMES = ("tests_and_scanners", "second_model_review", "seeded_challenger")
@@ -339,6 +400,8 @@ def _pythonpath(entry_id: str) -> str:
     parts = []
     if entry_id == "flask-session-vary-cookie" and FLASK_DEPS.is_dir():
         parts.append(str(FLASK_DEPS))
+    if entry_id == "aiohttp-static-traversal" and AIOHTTP_DEPS.is_dir():
+        parts.append(str(AIOHTTP_DEPS))
     return os.pathsep.join([*parts, os.environ.get("PYTHONPATH", "")]).strip(os.pathsep)
 
 

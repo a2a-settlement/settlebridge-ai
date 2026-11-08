@@ -1,0 +1,59 @@
+{
+  "task": {
+    "repo_full_name": "jpadilla/pyjwt",
+    "base_sha": "24b29adfebcb4f057a3cef5aaf35653bc0c1c8cc",
+    "target_sha": "9c528670c455b8d948aff95ed50e22940d1ad3fc",
+    "property_text": "PyJWT never accepts an asymmetric public key as an HMAC secret, so an HS256 token signed with the public key does not verify.",
+    "failure_classes": [
+      "integrity"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "PyJWT never accepts an asymmetric public key as an HMAC secret, so an HS256 token signed with the public key does not verify."
+      }
+    },
+    "observers": [
+      "integrity"
+    ],
+    "python": "3.11",
+    "install": [
+      "cryptography==50.0.2",
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The jpadilla/pyjwt library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.encode(claims: dict, key: str | None = None, algorithm: str = 'HS256') returns a signed token. sbc_world.decode(token: str, key: str | None = None, algorithms: list[str] | None = None) decodes one token, importing jwt fresh. The verifier records an integrity failure when an HS256 token signed with an asymmetric public key is accepted. A test that shows the failure composes encode() and decode()."
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "requests-proxy-authorization",
+  "packages": ["requests"],
+  "source_paths": ["."],
+  "failure_class": "authorization_confidentiality",
+  "world": "requests"
+}

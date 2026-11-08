@@ -1,0 +1,7 @@
+{
+  "id": "django-jsonfield-values-sqli",
+  "packages": ["django"],
+  "source_paths": ["."],
+  "failure_class": "injection_execution",
+  "world": "django"
+}

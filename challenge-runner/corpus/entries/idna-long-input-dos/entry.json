@@ -1,0 +1,7 @@
+{
+  "id": "idna-long-input-dos",
+  "packages": ["idna"],
+  "source_paths": ["."],
+  "failure_class": "denial_of_service",
+  "world": "idna"
+}

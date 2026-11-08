@@ -1,0 +1,7 @@
+{
+  "id": "webob-location-open-redirect",
+  "packages": ["webob"],
+  "source_paths": ["src"],
+  "failure_class": "integrity",
+  "world": "webob"
+}

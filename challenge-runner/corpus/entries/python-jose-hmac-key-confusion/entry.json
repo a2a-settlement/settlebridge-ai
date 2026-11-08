@@ -1,0 +1,7 @@
+{
+  "id": "python-jose-hmac-key-confusion",
+  "packages": ["jose"],
+  "source_paths": ["."],
+  "failure_class": "integrity",
+  "world": "jose"
+}

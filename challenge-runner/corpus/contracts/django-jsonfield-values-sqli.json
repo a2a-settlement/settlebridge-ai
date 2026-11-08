@@ -1,0 +1,60 @@
+{
+  "task": {
+    "repo_full_name": "django/django",
+    "base_sha": "efea1ef7e2190e3f77ca0651b5458297bc0f6a9f",
+    "target_sha": "f4af67b9b41e0f4c117a8741da3abbd1c869ab28",
+    "property_text": "QuerySet.values() and values_list() on a JSONField never put a caller-supplied key into SQL unquoted.",
+    "failure_classes": [
+      "injection_execution"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "QuerySet.values() and values_list() on a JSONField never put a caller-supplied key into SQL unquoted."
+      }
+    },
+    "observers": [
+      "injection_execution"
+    ],
+    "python": "3.11",
+    "install": [
+      "asgiref==3.13.0",
+      "sqlparse==0.6.1",
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The django/django library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.values_sql(key) and sbc_world.values_list_sql(key) compile a values or values_list selection for one JSONField key, importing django fresh. sbc_world.filter_sql(key) compiles a filter for that key. The verifier records an injection only when a caller-supplied key reaches the SQL text unquoted. A test that shows the failure composes values_sql() or values_list_sql()."
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "urllib3-authorization-redirect",
+  "packages": ["urllib3"],
+  "source_paths": ["src", "."],
+  "failure_class": "authorization_confidentiality",
+  "world": "urllib3"
+}

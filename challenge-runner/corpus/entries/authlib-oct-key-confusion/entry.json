@@ -1,0 +1,7 @@
+{
+  "id": "authlib-oct-key-confusion",
+  "packages": ["authlib"],
+  "source_paths": ["."],
+  "failure_class": "integrity",
+  "world": "authlib"
+}

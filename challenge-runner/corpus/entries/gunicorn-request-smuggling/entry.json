@@ -1,0 +1,7 @@
+{
+  "id": "gunicorn-request-smuggling",
+  "packages": ["gunicorn"],
+  "source_paths": ["."],
+  "failure_class": "integrity",
+  "world": "gunicorn"
+}

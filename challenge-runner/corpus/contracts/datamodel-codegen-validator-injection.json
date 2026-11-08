@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "koxudaxi/datamodel-code-generator",
+    "base_sha": "8ee5860a00ef28baf9a452392b4511cb07fcf280",
+    "target_sha": "a2b2756257d88a00c52b6dd31b8c4a3db7a6b2af",
+    "property_text": "Code generated from --extra-template-data never contains a Python expression taken from that data.",
+    "failure_classes": [
+      "injection_execution"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "Code generated from --extra-template-data never contains a Python expression taken from that data."
+      }
+    },
+    "observers": [
+      "injection_execution"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The koxudaxi/datamodel-code-generator library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.load_schema(schema) loads one schema, importing datamodel-code-generator fresh from src. sbc_world.generate(template_data) generates code from that schema and the supplied template data. The verifier records an injection only when generated code contains a Python expression taken from template_data. A test that shows the failure composes load_schema() and generate()."
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "twisted-request-smuggling",
+  "packages": ["twisted"],
+  "source_paths": ["src"],
+  "failure_class": "integrity",
+  "world": "twisted"
+}

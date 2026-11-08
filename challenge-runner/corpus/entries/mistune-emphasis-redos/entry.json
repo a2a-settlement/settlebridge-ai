@@ -1,0 +1,7 @@
+{
+  "id": "mistune-emphasis-redos",
+  "packages": ["mistune"],
+  "source_paths": ["."],
+  "failure_class": "denial_of_service",
+  "world": "mistune"
+}

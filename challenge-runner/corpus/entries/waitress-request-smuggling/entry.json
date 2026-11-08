@@ -1,0 +1,7 @@
+{
+  "id": "waitress-request-smuggling",
+  "packages": ["waitress"],
+  "source_paths": ["src"],
+  "failure_class": "integrity",
+  "world": "waitress"
+}

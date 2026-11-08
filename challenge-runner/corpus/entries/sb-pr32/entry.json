@@ -1,0 +1,7 @@
+{
+  "id": "sb-pr32",
+  "packages": ["app"],
+  "source_paths": ["backend"],
+  "failure_class": "authorization_confidentiality",
+  "world": "settlebridge"
+}

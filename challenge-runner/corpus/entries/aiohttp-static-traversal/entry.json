@@ -1,0 +1,7 @@
+{
+  "id": "aiohttp-static-traversal",
+  "packages": ["aiohttp"],
+  "source_paths": ["."],
+  "failure_class": "authorization_confidentiality",
+  "world": "aiohttp"
+}

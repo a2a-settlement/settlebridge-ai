@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "Pylons/waitress",
+    "base_sha": "22c03947e3bcd7631120aae40d3d844d4f35e49f",
+    "target_sha": "9e0b8c801e4d505c2ffc91b891af4ba48af715e0",
+    "property_text": "Waitress rejects chunk sizes and Content-Length values that a proxy could read differently.",
+    "failure_classes": [
+      "integrity"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "Waitress rejects chunk sizes and Content-Length values that a proxy could read differently."
+      }
+    },
+    "observers": [
+      "integrity"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The Pylons/waitress library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.receive(raw) supplies one raw request to Waitress, importing waitress fresh from src. sbc_world.apply(identity) applies one parsed request identity. The verifier records an integrity failure when a chunk size or Content-Length would be read differently by a proxy. A test that shows the failure composes receive() and apply()."
+    ]
+  }
+}

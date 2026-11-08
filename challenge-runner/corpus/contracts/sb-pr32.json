@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "a2a-settlement/settlebridge-ai",
+    "base_sha": "b16a485587281ef29c8409367db4170293954e14",
+    "target_sha": "520b6b6f19bb7e6c7c4c39b00da5c63008152152",
+    "property_text": "A bounty on a private repository is visible and claimable only by a signed-in user whose linked GitHub account has read access.",
+    "failure_classes": [
+      "authorization_confidentiality"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "A bounty on a private repository is visible and claimable only by a signed-in user whose linked GitHub account has read access."
+      }
+    },
+    "observers": [
+      "authorization_confidentiality"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The a2a-settlement/settlebridge-ai library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.read_bounty(actor, bounty) reads one bounty as that actor. sbc_world.read_submission(actor, bounty) reads one submission for that bounty. sbc_world.list_bounties(actor) lists bounties visible to that actor. The code under test is imported fresh from backend. The verifier records an authorization failure when a bounty on a private repository is visible or claimable by a signed-in user whose linked GitHub account lacks read access. A test that shows the failure composes these calls."
+    ]
+  }
+}

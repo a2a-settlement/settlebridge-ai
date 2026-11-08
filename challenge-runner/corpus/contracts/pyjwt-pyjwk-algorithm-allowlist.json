@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "jpadilla/pyjwt",
+    "base_sha": "c0a071dc0178542ad24e5a7b2e6103ba1d4c0517",
+    "target_sha": "ab8176abe21e550dbc1c9a6bb7e78ad80853bfb1",
+    "property_text": "jwt.decode with a PyJWK key verifies only with an algorithm in the caller's algorithms allow-list.",
+    "failure_classes": [
+      "integrity"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "jwt.decode with a PyJWK key verifies only with an algorithm in the caller's algorithms allow-list."
+      }
+    },
+    "observers": [
+      "integrity"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The jpadilla/pyjwt library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.encode(claims: dict, key: str | None = None, algorithm: str = 'HS256', header_algorithm: str | None = None) returns a signed token. sbc_world.jwk(key: str | None = None, algorithm: str = 'HS256') returns a PyJWK. sbc_world.decode(token: str, key: str | None = None, algorithms: list[str] | None = None, jwk=None) decodes one token, importing jwt fresh. The verifier records an integrity failure when decode with a PyJWK key accepts an algorithm outside the caller's algorithms allow-list. A test that shows the failure composes encode(), jwk(), and decode()."
+    ]
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "task": {
+    "repo_full_name": "python-babel/babel",
+    "base_sha": "5afe2b2f11dcdd6090c00231d342c2e9cd1bdaab",
+    "target_sha": "412015ef642bfcc0d8ba8f4d05cdbb6aac98d9b3",
+    "property_text": "Babel loads locale data only from its own locale directory, whatever locale identifier it is given.",
+    "failure_classes": [
+      "injection_execution"
+    ],
+    "budget_cents": 2500
+  },
+  "environment": {
+    "author_operator_id": "agent:cursor-coordinator",
+    "oracle_sources": [
+      "property_clause"
+    ],
+    "oracle_texts": {
+      "property_clause": {
+        "property": "Babel loads locale data only from its own locale directory, whatever locale identifier it is given."
+      }
+    },
+    "observers": [
+      "injection_execution"
+    ],
+    "python": "3.11",
+    "install": [
+      "pytest==9.0.2"
+    ],
+    "test_command": [
+      "python",
+      "/verifier/run.py"
+    ],
+    "commands": {
+      "positive": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_positive.py"
+      ],
+      "negative": [
+        "python",
+        "/verifier/run.py",
+        "/verifier/controls/test_negative.py"
+      ]
+    },
+    "limits": {
+      "cpu_seconds": 600,
+      "memory_mb": 2048,
+      "wall_seconds": 600,
+      "disk_mb": 2048,
+      "max_processes": 256
+    },
+    "scope": "The python-babel/babel library as built from this repository, imported fresh in a forked child. Only sbc_world may drive it.",
+    "harness": [
+      "Tests run as `python /verifier/run.py <your test path>` from /work, the repository root, in an offline sandbox. A verifier-owned pytest fixture named `sbc_world` is available to every test. Do not define a fixture with that name, do not add a conftest.py, and do not read or write anything under /verifier. Do not import the library under test yourself; drive it only through `sbc_world`. The verdict does not depend on your test's assertions: the verifier records what the library actually did and decides from that record.",
+      "sbc_world.exists(name: str) checks whether a locale name is present, importing babel fresh. sbc_world.load(name: str, merge_inherited: bool = True) loads that locale. The verifier records an injection only when the name reaches a path position the verifier parses. A test that shows the failure must pass a name the library treats as a path."
+    ]
+  }
+}
