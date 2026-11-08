@@ -638,6 +638,99 @@ def test_stages_share_one_task_budget(db, monkeypatch, tmp_path):
     assert sorted(row.reserved_cents for row in holds) == [1000 - 4 * 7, 1000]
 
 
+def _to_validation(db, monkeypatch, tmp_path, *, decide, runner=None):
+    calls = []
+
+    def run(job, artifact_root=None):
+        calls.append(job)
+        return _result(job)
+
+    _patch_io(monkeypatch, runner=runner or run, fetch=_fetch(tmp_path), decide=decide)
+    task = _run(_make_task(db, budget_cents=1000))
+    _budget(db, task.owner_user_id)
+    task.environment = {
+        "python": "3.11",
+        "observers": ["authorization_canary"],
+        "oracle_sources": ["property_clause"],
+        "test_command": ["pytest", "-q"],
+        "commands": {"rederive": ["python", "/verifier/probes"]},
+    }
+    db.sync.flush()
+    task = _run(freeze_contract(db, task.id))
+    for kind in ("challenge_fetch", "challenge_deps", "challenge_baseline"):
+        _run(handle_challenge_job(db, next(job for job in _jobs(db) if job.kind == kind)))
+    attempt_job = next(job for job in _jobs(db) if job.kind == "challenge_attempt")
+    bundle = tmp_path / "bundle.tar"
+    _tar(bundle, {"challenge_tests/test_gap.py": b"def test_gap():\n    assert False\n"})
+    attempt_job.payload = {
+        **attempt_job.payload,
+        "claims": [_claim_in().model_dump(mode="json")],
+        "bundle_path": str(bundle),
+    }
+    _run(handle_challenge_job(db, attempt_job))
+    validate_job = next(job for job in _jobs(db) if job.kind == "challenge_validate")
+    return task, validate_job, calls
+
+
+def test_validation_without_a_rederivation_runs_no_fixed_probe(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    captured = {}
+
+    def decide(**kwargs):
+        captured.update(kwargs)
+        return _confirmed()
+
+    _task, validate_job, calls = _to_validation(db, monkeypatch, tmp_path, decide=decide)
+    _run(handle_challenge_job(db, validate_job))
+    assert captured["rederivation"] is None
+    assert not [job for job in calls if _purpose(job.execution_id) == "rederive"]
+    assert (
+        db.sync.scalar(select(ChallengeArtifact).where(ChallengeArtifact.kind == "rederive_test"))
+        is None
+    )
+
+
+def test_rederiver_cannot_be_the_challenger(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    decided = []
+    task, validate_job, calls = _to_validation(
+        db, monkeypatch, tmp_path, decide=lambda **kw: decided.append(kw) or _confirmed()
+    )
+    rederive_bundle = tmp_path / "rederive.tar"
+    _tar(rederive_bundle, {"challenge_tests/test_r.py": b"def test_r():\n    pass\n"})
+    validate_job.payload = {
+        **validate_job.payload,
+        "rederive_bundle_path": str(rederive_bundle),
+        "rederive_test_path": "challenge_tests/test_r.py",
+        "rederive_operator": "platform:challenger",
+    }
+    _run(handle_challenge_job(db, validate_job))
+    assert not decided
+    db.sync.expire_all()
+    fresh = db.sync.get(ChallengeTask, task.id)
+    assert fresh.state_reason and "role conflict" in fresh.state_reason
+
+
+def test_rederive_bundle_outside_challenge_tests_is_ignored(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    captured = {}
+
+    def decide(**kwargs):
+        captured.update(kwargs)
+        return _confirmed()
+
+    _task, validate_job, calls = _to_validation(db, monkeypatch, tmp_path, decide=decide)
+    rederive_bundle = tmp_path / "rederive.tar"
+    _tar(rederive_bundle, {"conftest.py": b"x = 1\n", "challenge_tests/test_r.py": b"pass\n"})
+    validate_job.payload = {
+        **validate_job.payload,
+        "rederive_bundle_path": str(rederive_bundle),
+        "rederive_test_path": "challenge_tests/test_r.py",
+    }
+    _run(handle_challenge_job(db, validate_job))
+    assert captured["rederivation"] is None
+
+
 def test_pipeline_dedupe_keys_verifier_and_no_token(db, monkeypatch, tmp_path, caplog):
     _enable(monkeypatch, tmp_path)
     calls = []
@@ -710,6 +803,13 @@ def test_pipeline_dedupe_keys_verifier_and_no_token(db, monkeypatch, tmp_path, c
     assert attempt_jobs and attempt_jobs[0].fixtures_digest is None
     assert attempt_jobs[0].observers == []
 
+    rederive_bundle = tmp_path / "rederive.tar"
+    _tar(rederive_bundle, {"challenge_tests/test_rederived.py": b"def test_r():\n    pass\n"})
+    validate_job.payload = {
+        **validate_job.payload,
+        "rederive_bundle_path": str(rederive_bundle),
+        "rederive_test_path": "challenge_tests/test_rederived.py",
+    }
     _run(handle_challenge_job(db, validate_job))
     _run(handle_challenge_job(db, validate_job))
     assert captured["tamper_clean"] is True
@@ -730,7 +830,19 @@ def test_pipeline_dedupe_keys_verifier_and_no_token(db, monkeypatch, tmp_path, c
     assert _purpose(captured["minimized"].execution_id) == "minimized"
     assert captured["claim"].failure_class == "integrity"
     rederive = next(job for job in calls if _purpose(job.execution_id) == "rederive")
-    assert rederive.challenger_bundle is None
+    rederive_digest = "sha256:" + hashlib.sha256(rederive_bundle.read_bytes()).hexdigest()
+    assert rederive.challenger_bundle == rederive_digest
+    assert rederive.test_command == ["pytest", "-q", "challenge_tests/test_rederived.py"]
+    rederiver = db.sync.scalar(
+        select(ChallengeParticipant).where(ChallengeParticipant.operator_id == "platform:rederiver")
+    )
+    assert rederiver.role == "verifier"
+    assert f"scenario:{claim_id}" in rederiver.artifacts_seen
+    assert not any(item.startswith("bundle:") for item in rederiver.artifacts_seen)
+    stored = db.sync.scalar(
+        select(ChallengeArtifact).where(ChallengeArtifact.kind == "rederive_test")
+    )
+    assert stored.meta["claim_id"] == claim_id
     target = next(job for job in calls if _purpose(job.execution_id) == "target")
     assert target.observers == ["authorization_canary"]
     assert target.challenger_bundle is not None

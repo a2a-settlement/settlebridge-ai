@@ -141,6 +141,7 @@ class ArtifactKind(str, enum.Enum):
     HISTORY_BUNDLE = "history_bundle"
     WHEELHOUSE_MANIFEST = "wheelhouse_manifest"
     CHALLENGER_TEST = "challenger_test"
+    REDERIVE_TEST = "rederive_test"
     OBSERVER_OUTPUT = "observer_output"
     CONTROL_OUTPUT = "control_output"
     RUN_LOG = "run_log"

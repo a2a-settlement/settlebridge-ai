@@ -3,8 +3,13 @@
 Uses TASK_TRANSITIONS and CLAIM_TRANSITIONS from app.models.challenge and never moves
 a task or claim outside them. Role and conflict rule: the challenger, the verifier,
 and the adjudicator each have an operator different from the author and the solver,
-and from each other. Platform workers use ``platform:challenger`` and
-``platform:verifier``.
+and from each other. Platform workers use ``platform:challenger``,
+``platform:verifier`` and ``platform:rederiver``.
+
+Re-derivation runs a test written by a verifier-side operator who saw the claim's
+scenario and the contract, but not the challenger's narrative or test files. The
+validation job carries it as ``rederive_bundle_path`` and ``rederive_test_path``.
+Without one, the claim cannot be confirmed.
 
 Moves are conditional updates (``WHERE state = <expected>``) so two workers cannot
 both take the same step. Sandbox jobs never receive a fetch token.
@@ -81,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 PLATFORM_CHALLENGER = "platform:challenger"
 PLATFORM_VERIFIER = "platform:verifier"
+PLATFORM_REDERIVER = "platform:rederiver"
 _SCOPE_NOTE = "Under the stated property, environment, and budget."
 _NO_FAILURE = "No failure found under the stated property, environment, and budget."
 _UNKNOWN_DIGEST = "sha256:" + ("0" * 64)
@@ -1136,10 +1142,8 @@ def _observer_names(content: dict, failure_class: str | None) -> list[str]:
 
 def _test_command(env: dict, purpose: str, claim: ClaimIn | None) -> list[str]:
     commands = env.get("commands")
-    if isinstance(commands, dict) and purpose in commands:
+    if purpose != "rederive" and isinstance(commands, dict) and purpose in commands:
         return _argv(commands[purpose])
-    if purpose == "rederive":
-        return _argv(env.get("rederive_command")) or ["pytest", "-q"]
     base = _argv(env.get("test_command"))
     if claim is not None:
         path = claim.scenario.test_path
@@ -1153,7 +1157,7 @@ def _mount_verifier(purpose: str) -> bool:
 
 
 def _include_bundle(purpose: str) -> bool:
-    return purpose not in {"deps", "attempt", "rederive", "baseline-base", "baseline-target"}
+    return purpose not in {"deps", "attempt", "baseline-base", "baseline-target"}
 
 
 def _runner_job(
@@ -1699,6 +1703,46 @@ def _validation_purposes(content: dict) -> list[str]:
     return purposes
 
 
+_TEST_PATH = re.compile(r"^challenge_tests/[A-Za-z0-9_./-]+\.py$")
+
+
+async def _record_rederivation(
+    db: AsyncSession, stage: _Stage, claim_in: ClaimIn
+) -> tuple[str, ClaimIn] | None:
+    raw = stage.payload.get("rederive_bundle_path")
+    test_path = stage.payload.get("rederive_test_path")
+    if not isinstance(raw, str) or not raw or not isinstance(test_path, str):
+        return None
+    if not _TEST_PATH.fullmatch(test_path) or not _under_challenge_tests(test_path):
+        return None
+    file = Path(raw)
+    if not file.is_file() or not _bundle_only_challenge_tests(raw):
+        return None
+    seen = await _challenger_seen(db, stage.task, stage.contract)
+    seen.append(f"scenario:{stage.claim.id}")
+    operator = str(stage.payload.get("rederive_operator") or PLATFORM_REDERIVER)
+    await _record_participant(
+        db,
+        stage.task,
+        role=ParticipantRole.VERIFIER.value,
+        operator_id=operator,
+        artifacts_seen=seen,
+        platform_operated=operator.startswith("platform:"),
+    )
+    hexpart, size = _hash_file(file)
+    await _store_artifact(
+        db,
+        stage.task,
+        kind=ArtifactKind.REDERIVE_TEST.value,
+        content_hash=hexpart,
+        size_bytes=size,
+        storage_path=str(file),
+        meta={"claim_id": str(stage.claim.id), "role": "rederive_bundle", "test_path": test_path},
+    )
+    scenario = claim_in.scenario.model_copy(update={"test_path": test_path})
+    return f"sha256:{hexpart}", claim_in.model_copy(update={"scenario": scenario})
+
+
 def _reference_digest(content: dict) -> str | None:
     env = content.get("environment") if isinstance(content.get("environment"), dict) else {}
     value = env.get("reference_digest") or content.get("reference_digest")
@@ -1853,10 +1897,26 @@ async def _handle_validate(db: AsyncSession, job: GitHubJob) -> None:
         target = await _source_or_stop(db, stage.task.id, "target")
         base = await _source_or_stop(db, stage.task.id, "base")
         reference = _reference_digest(stage.contract.content)
-        results: dict[str, RunnerResult] = {}
+        rederivation = await _record_rederivation(db, stage, claim_in)
+        results: dict[str, RunnerResult | None] = {}
         for purpose in _validation_purposes(stage.contract.content):
             if reservation_exhausted(stage.reservation):
                 raise _AttemptStopped("budget exhausted")
+            if purpose == "rederive":
+                if rederivation is None:
+                    results[purpose] = None
+                    continue
+                rederive_digest, rederive_claim = rederivation
+                results[purpose] = await _run_purpose(
+                    db,
+                    stage,
+                    purpose,
+                    target,
+                    claim=rederive_claim,
+                    bundle_digest=rederive_digest,
+                    wheelhouse=await _wheelhouse(db, stage.task.id, "target"),
+                )
+                continue
             if purpose in {"base"}:
                 source = base
                 role = "base"

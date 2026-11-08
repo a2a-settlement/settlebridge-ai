@@ -246,7 +246,9 @@ def _verdict(
             _scope("The differential is inconsistent with the failure class"),
             False,
         )
-    if rederivation is None or not _fired(rederivation, failure_class):
+    if rederivation is None:
+        return "inconclusive", _scope("No independent re-derivation was submitted"), False
+    if not _fired(rederivation, failure_class):
         return "inconclusive", _scope("Independent re-derivation did not fire"), False
     if rederivation.status not in _COMPLETED:
         return "inconclusive", _scope("oracle or environment unreliable"), False

@@ -250,15 +250,92 @@ def _diff(base: str, target: str) -> str:
     return out.stdout
 
 
+async def _frozen_bundle(db, job, work: Path):
+    """Extract the frozen target source: the only repository view either model gets."""
+    from sqlalchemy import select
+
+    from app.models.challenge import ChallengeArtifact, ChallengeContract, ChallengeTask
+    from challenge_runner.challenger import ChallengeBundle
+    from challenge_runner.sandbox.tarutil import safe_extract
+
+    task = await db.get(ChallengeTask, uuid.UUID(job.payload["task_id"]))
+    contract = await db.get(ChallengeContract, uuid.UUID(job.payload["contract_id"]))
+    rows = await db.execute(
+        select(ChallengeArtifact).where(
+            ChallengeArtifact.task_id == task.id,
+            ChallengeArtifact.kind == "source_tarball",
+        )
+    )
+    target = next(row for row in rows.scalars() if (row.meta or {}).get("role") == "target")
+    shutil.rmtree(work, ignore_errors=True)
+    source = work / "src"
+    source.mkdir(parents=True, exist_ok=True)
+    safe_extract(Path(target.storage_path), source, max_bytes=512 * 1024 * 1024)
+    return ChallengeBundle(
+        contract=contract.content,
+        source_dir=source,
+        diff_text=_diff(task.base_sha, task.target_sha),
+    )
+
+
+async def _prepare_validations(args) -> None:
+    """Give each pending validation an independent re-derivation from the scenario alone."""
+    from sqlalchemy import select
+
+    from app.database import async_session
+    from app.models.challenge import ChallengeClaim
+    from app.models.github import GitHubJob, JobKind, JobStatus
+    from challenge_runner.challenger.rederive import run_rederiver
+
+    async with async_session() as db:
+        stmt = select(GitHubJob).where(
+            GitHubJob.kind == JobKind.CHALLENGE_VALIDATE.value,
+            GitHubJob.status == JobStatus.PENDING.value,
+        )
+        for job in (await db.execute(stmt)).scalars().all():
+            if "rederive_attempted" in (job.payload or {}):
+                continue
+            model = args.rederive_model or args.model
+            if not model:
+                raise SystemExit("a claim is ready to validate; rerun with --model <openai-model>")
+            claim = await db.get(ChallengeClaim, uuid.UUID(job.payload["claim_id"]))
+            work = HOME / "rederiver" / str(job.id)
+            bundle = await _frozen_bundle(db, job, work)
+            client = _model_client(model, not args.chat_model)
+            print(f"re-deriver: one call to {model} with the scenario only")
+            result = run_rederiver(
+                bundle,
+                {
+                    "failure_class": claim.failure_class,
+                    "scenario": claim.scenario,
+                    "oracle_citation": claim.oracle_citation,
+                },
+                out_dir=work / "out",
+                model_client=client,
+            )
+            usage = client.last_usage or {}
+            (work / "model_usage.json").write_text(
+                json.dumps({"model": model, **usage}, indent=2) + "\n"
+            )
+            payload = {**job.payload, "rederive_attempted": True}
+            if result is not None:
+                digest = _store().put_file(result.bundle_path)
+                payload["rederive_bundle_path"] = str(_store().get_path(digest))
+                payload["rederive_test_path"] = result.test_path
+            job.payload = payload
+            await db.commit()
+            print(
+                f"re-deriver: {'wrote ' + result.test_path if result else 'no usable test'}; usage {usage}"
+            )
+
+
 async def _prepare_attempts(args) -> None:
     from sqlalchemy import select
 
     from app.database import async_session
-    from app.models.challenge import ChallengeArtifact, ChallengeContract, ChallengeTask
     from app.models.github import GitHubJob, JobKind, JobStatus
-    from challenge_runner.challenger import ChallengeBundle, run_challenger
+    from challenge_runner.challenger import run_challenger
     from challenge_runner.challenger.limits import ARCHIVE_NAME, MAX_COMPLETION_TOKENS
-    from challenge_runner.sandbox.tarutil import safe_extract
 
     async with async_session() as db:
         stmt = select(GitHubJob).where(
@@ -270,25 +347,8 @@ async def _prepare_attempts(args) -> None:
                 continue
             if not args.model:
                 raise SystemExit("the attempt is ready; rerun with --model <openai-model>")
-            task = await db.get(ChallengeTask, uuid.UUID(job.payload["task_id"]))
-            contract = await db.get(ChallengeContract, uuid.UUID(job.payload["contract_id"]))
-            rows = await db.execute(
-                select(ChallengeArtifact).where(
-                    ChallengeArtifact.task_id == task.id,
-                    ChallengeArtifact.kind == "source_tarball",
-                )
-            )
-            target = next(row for row in rows.scalars() if (row.meta or {}).get("role") == "target")
             work = HOME / "challenger" / str(job.id)
-            shutil.rmtree(work, ignore_errors=True)
-            source = work / "src"
-            source.mkdir(parents=True, exist_ok=True)
-            safe_extract(Path(target.storage_path), source, max_bytes=512 * 1024 * 1024)
-            bundle = ChallengeBundle(
-                contract=contract.content,
-                source_dir=source,
-                diff_text=_diff(task.base_sha, task.target_sha),
-            )
+            bundle = await _frozen_bundle(db, job, work)
             client = _model_client(args.model, not args.chat_model)
             print(f"challenger: one call to {args.model}, at most {MAX_CLAIMS} claims")
             claims = run_challenger(
@@ -381,6 +441,7 @@ async def _run(state: dict, args) -> None:
         if args.challenger_only:
             print("stopped before validation; review with `drive.py claims`")
             return
+        await _prepare_validations(args)
         ran = await github_jobs.run_due_jobs(async_session, limit=1)
         print(f"ran {ran} job(s); task is {await _task_state(state)}")
         if ran:
@@ -476,6 +537,11 @@ def main() -> None:
     setup.add_argument("--fresh", action="store_true", help="start a new task")
     run = sub.add_parser("run")
     run.add_argument("--model", default=os.environ.get("SBC_PILOT_MODEL", ""))
+    run.add_argument(
+        "--rederive-model",
+        default="",
+        help="model for the independent re-derivation (default: --model)",
+    )
     run.add_argument(
         "--chat-model",
         action="store_true",

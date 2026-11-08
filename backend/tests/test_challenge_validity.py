@@ -280,7 +280,7 @@ CASES = [
         "rederivation absent",
         {"rederivation": "absent"},
         "inconclusive",
-        "re-derivation did not fire",
+        "No independent re-derivation was submitted",
     ),
     (
         "rederivation silent",
