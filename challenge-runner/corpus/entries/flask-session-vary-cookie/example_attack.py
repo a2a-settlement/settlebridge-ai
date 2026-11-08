@@ -2,6 +2,7 @@
 
 
 def test_refreshed_session_cookie_is_cross_served(sbc_world):
-    outcome = sbc_world.exchange("refresh")
+    cookie = sbc_world.establish()
+    outcome = sbc_world.request(cookie=cookie)
     assert outcome.status == "ok", outcome.error
     assert outcome.leaked

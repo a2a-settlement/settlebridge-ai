@@ -76,14 +76,14 @@ SPEC = {
     "flask-session-vary-cookie": {
         "install": ["werkzeug==2.3.8", "itsdangerous==2.2.0", "blinker==1.8.2", "markupsafe"],
         "api": (
-            "sbc_world.exchange(mode: str = 'refresh') runs a Flask request flow against an "
-            "app built from the code under test. mode 'refresh' sets a permanent session on "
-            "one request and then issues a request whose view never touches the session; "
-            "'plain' is an ordinary request; 'private' marks the response Cache-Control: "
-            "private. The verifier applies an RFC 9111 shared-cache model to the real "
-            "response headers and records a leak only when the victim's Set-Cookie would be "
-            "served to another client. A test that shows the failure must call "
-            "sbc_world.exchange('refresh')."
+            "sbc_world.establish() -> str prepares the verifier's Flask app from the code "
+            "under test and returns a string the caller may pass to a later call. "
+            "sbc_world.request(path: str = '/resource', cookie: str | None = None, "
+            "cache_control: str | None = None) performs one request against that app. "
+            "The verifier applies an RFC 9111 shared-cache model to the real response "
+            "headers and records a leak only when one client's Set-Cookie would be served "
+            "to another client. A test that shows the failure composes establish() and "
+            "request()."
         ),
     },
     "waitress-header-regex-redos": {

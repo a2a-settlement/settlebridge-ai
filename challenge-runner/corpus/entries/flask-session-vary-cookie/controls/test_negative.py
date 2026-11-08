@@ -8,7 +8,8 @@ silent.
 
 
 def test_private_response_is_not_cross_served(sbc_world):
-    outcome = sbc_world.exchange("private")
+    cookie = sbc_world.establish()
+    outcome = sbc_world.request(cookie=cookie, cache_control="private")
     assert outcome.status == "ok", outcome.error
     assert outcome.value["status"] == 200
     assert outcome.value["body"] == "resource"

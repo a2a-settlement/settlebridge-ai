@@ -5,12 +5,13 @@ permanent session cookie, including when the view never reads or writes the
 session. Otherwise a shared cache can store that response and replay one
 client's ``Set-Cookie`` to another.
 
-The forked child imports Flask from /work, runs the request flow, and returns
-the real status, headers, and session-cookie value. The parent registers that
-value as a tenant-b canary and applies a trusted RFC 9111 cache model to those
-headers. It records an authorization capture only when the model would serve
-the stored response, ``Set-Cookie`` included, to a different client. ``Vary:
-Cookie`` means the cache key includes the cookie, so the parent stays silent.
+Each public method runs one request in a forked child that imports Flask from
+/work. ``request`` returns the real status, headers, and session-cookie value.
+The parent registers that value as a tenant-b canary and applies a trusted RFC
+9111 cache model to those headers. It records an authorization capture only
+when the model would serve the stored response, ``Set-Cookie`` included, to a
+different client. ``Vary: Cookie`` means the cache key includes the cookie, so
+the parent stays silent.
 """
 
 from __future__ import annotations
@@ -18,14 +19,16 @@ from __future__ import annotations
 import io
 
 from sbc_kit import capture
-from sbc_kit.worldbase import BaseWorld
+from sbc_kit.worldbase import BaseWorld, require_text
 
 MAX_DELIVERED_BYTES = 8192
-_MODES = frozenset({"plain", "refresh", "private"})
+_PATHS = frozenset({"/plain", "/resource"})
 _BLOCKING = frozenset({"private", "no-store", "no-cache"})
 _MIN_TOKEN = 16
 _SECRET_KEY = "sbc-flask-session-vary-cookie"
 _COOKIE_NAME = "session"
+_MAX_COOKIE_BYTES = 4096
+_MAX_CACHE_CONTROL_BYTES = 128
 
 
 def _valid_canary(token: str) -> bool:
@@ -166,19 +169,37 @@ def _wsgi(app, path: str, method: str, cookie: str | None) -> tuple[int, list[li
     return int(status_line.split(" ", 1)[0]), pairs, body[:4096]
 
 
-def _exchange(mode: str) -> dict:
-    """Run the victim flow inside the forked child, against Flask from /work.
+def _require_path(path: object) -> str:
+    text = require_text(path, "path", 64)
+    if text not in _PATHS:
+        raise ValueError(f"path must be one of {sorted(_PATHS)}")
+    return text
 
-    ``SESSION_REFRESH_EACH_REQUEST`` stays at its default ``True``. ``POST
-    /establish`` stores a non-empty permanent session. The measured ``GET
-    /resource`` sends that cookie back and does not touch ``session``, so the
-    cookie is only refreshed. Vulnerable Flask adds ``Vary: Cookie`` only when
-    ``session.accessed`` is already true, and that check runs before
-    ``should_set_cookie`` reads ``session.permanent``. Fixed Flask also adds
-    ``Vary: Cookie`` when it writes the refreshed cookie.
-    """
-    if mode not in _MODES:
-        raise ValueError(f"mode must be one of {sorted(_MODES)}")
+
+def _require_cookie(cookie: object) -> str | None:
+    if cookie is None:
+        return None
+    text = require_text(cookie, "cookie", _MAX_COOKIE_BYTES)
+    if not text:
+        return None
+    if any(char.isspace() for char in text):
+        raise ValueError("cookie must not contain whitespace")
+    return text
+
+
+def _require_cache_control(cache_control: object) -> str | None:
+    if cache_control is None:
+        return None
+    text = require_text(cache_control, "cache_control", _MAX_CACHE_CONTROL_BYTES)
+    if not text:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("cache_control must be printable")
+    return text
+
+
+def _build_app(cache_control: str | None):
+    """One app. The GET views never read or write ``session``."""
     from flask import Flask
     from flask import session
 
@@ -192,26 +213,46 @@ def _exchange(mode: str) -> dict:
         session.permanent = True
         return "established"
 
+    def respond(body: str):
+        if cache_control:
+            return body, 200, {"Cache-Control": cache_control}
+        return body
+
     @app.get("/plain")
     def plain():
-        return "ok"
+        return respond("ok")
 
     @app.get("/resource")
     def resource():
-        # Do not read or write the session. ``private`` only marks the response
-        # unusable by a shared cache; it still refreshes the cookie.
-        if mode == "private":
-            return "resource", 200, {"Cache-Control": "private"}
-        return "resource"
+        return respond("resource")
 
-    if mode == "plain":
-        status, headers, body = _wsgi(app, "/plain", "GET", None)
-    else:
-        _status, established, _body = _wsgi(app, "/establish", "POST", None)
-        token = _session_token(_header_pairs(established))
-        if not token:
-            raise RuntimeError("establish did not set a session cookie")
-        status, headers, body = _wsgi(app, "/resource", "GET", f"{_COOKIE_NAME}={token}")
+    return app
+
+
+def _establish() -> str:
+    """One POST that stores a non-empty permanent session. Returns its cookie."""
+    app = _build_app(None)
+    status, headers, _body = _wsgi(app, "/establish", "POST", None)
+    token = _session_token(_header_pairs(headers))
+    if status != 200 or not token:
+        raise RuntimeError("establish did not set a session cookie")
+    return token
+
+
+def _request(path: str, cookie: str | None, cache_control: str | None) -> dict:
+    """One GET whose view does not read or write the session.
+
+    ``SESSION_REFRESH_EACH_REQUEST`` stays ``True``. A cookie from
+    ``establish`` is only refreshed. Vulnerable Flask adds ``Vary: Cookie``
+    only when ``session.accessed`` is already true, and that check runs before
+    ``should_set_cookie`` reads ``session.permanent``. Fixed Flask also adds
+    ``Vary: Cookie`` when it writes the refreshed cookie.
+    """
+    if path not in _PATHS:
+        raise ValueError(f"path must be one of {sorted(_PATHS)}")
+    app = _build_app(cache_control)
+    header = f"{_COOKIE_NAME}={cookie}" if cookie else None
+    status, headers, body = _wsgi(app, path, "GET", header)
     return {
         "status": status,
         "headers": headers,
@@ -220,37 +261,61 @@ def _exchange(mode: str) -> dict:
     }
 
 
-class World(BaseWorld):
-    def exchange(self, mode: str = "refresh"):
-        """Run ``mode`` and record a cross-client cache hit when the model says so.
-
-        ``refresh`` is the CVE flow. ``private`` is the same flow with
-        ``Cache-Control: private``. ``plain`` is one ordinary 200 response.
-        Returns the child outcome. ``outcome.leaked`` is true only when the
-        cache model delivers the victim cookie to tenant-a.
-        """
-        if mode not in _MODES:
-            raise ValueError(f"mode must be one of {sorted(_MODES)}")
-        outcome = self.call(_exchange, mode)
-        outcome.leaked = False
-        if outcome.status != "ok" or not isinstance(outcome.value, dict):
-            return outcome
-        pairs = _header_pairs(outcome.value.get("headers"))
-        token = _session_token(pairs)
-        status = outcome.value.get("status")
-        body = outcome.value.get("body")
-        if not isinstance(body, str):
-            body = ""
-        if token:
-            capture.canary(token, "tenant-b")
-        if isinstance(status, int) and token and _serves_cross_client(status, pairs):
-            delivered = _delivered(status, pairs, body)
-            if token in delivered:
-                capture.authorization(
-                    identity="tenant-a",
-                    channel="response",
-                    body=delivered,
-                    location="shared-cache",
-                )
-                outcome.leaked = True
+def _observe(outcome):
+    """Record a cross-client cache hit from the response the child returned."""
+    outcome.leaked = False
+    if outcome.status != "ok" or not isinstance(outcome.value, dict):
         return outcome
+    pairs = _header_pairs(outcome.value.get("headers"))
+    token = _session_token(pairs)
+    status = outcome.value.get("status")
+    body = outcome.value.get("body")
+    if not isinstance(body, str):
+        body = ""
+    if token:
+        capture.canary(token, "tenant-b")
+    if isinstance(status, int) and token and _serves_cross_client(status, pairs):
+        delivered = _delivered(status, pairs, body)
+        if token in delivered:
+            capture.authorization(
+                identity="tenant-a",
+                channel="response",
+                body=delivered,
+                location="shared-cache",
+            )
+            outcome.leaked = True
+    return outcome
+
+
+class World(BaseWorld):
+    def establish(self) -> str:
+        """Store one permanent session and return its cookie value.
+
+        One POST, one fresh Flask import. A later ``request`` sends this value
+        back as the session cookie.
+        """
+        outcome = self.call(_establish)
+        token = outcome.value
+        if outcome.status != "ok" or not isinstance(token, str) or not _valid_canary(token):
+            raise RuntimeError(outcome.error or "establish did not set a session cookie")
+        return token
+
+    def request(
+        self,
+        path: str = "/resource",
+        cookie: str | None = None,
+        cache_control: str | None = None,
+    ):
+        """Serve one GET and record a cross-client cache hit when the model says so.
+
+        ``path`` is ``/plain`` (body ``ok``) or ``/resource`` (body
+        ``resource``). The view does not read or write the session. ``cookie``
+        is a value returned by ``establish``. ``cache_control``, when set, is
+        the response ``Cache-Control`` header. Returns the child outcome.
+        ``outcome.leaked`` is true only when the cache model delivers the
+        victim cookie to tenant-a.
+        """
+        path = _require_path(path)
+        cookie = _require_cookie(cookie)
+        cache_control = _require_cache_control(cache_control)
+        return _observe(self.call(_request, path, cookie, cache_control))
