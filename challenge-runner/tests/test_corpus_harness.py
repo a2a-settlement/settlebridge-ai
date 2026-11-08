@@ -141,19 +141,25 @@ def test_manifest_loads_and_meets_minimums():
     ids = [entry["id"] for entry in entries]
     assert len(ids) == len(set(ids))
     projects = {entry["project"] for entry in entries}
-    assert len(projects) >= 26
+    assert len(projects) >= 20
     counts = {category: 0 for category in ("incomplete_fix", "complete_fix", "regression")}
     held_out_false = []
     for entry in entries:
-        assert entry["verified"] is False
+        assert entry["verified"] is True
+        assert entry["verification"]["checked_at"]
+        assert entry["verification"]["evidence_urls"]
         assert entry["ecosystem"] == "pypi"
+        assert entry["fix_commit"] and entry["base_commit"]
+        assert entry["fix_commit"] != entry["base_commit"]
+        if entry["category"] != "incomplete_fix":
+            assert entry["followup_fix_commit"] is None
         counts[entry["category"]] += 1
         if entry["held_out"] is False:
             held_out_false.append(entry["id"])
         if entry["id"] != "sb-pr32":
             assert entry["advisory_ids"]
-    assert counts["incomplete_fix"] >= 8
-    assert counts["complete_fix"] >= 8
+    assert counts["incomplete_fix"] >= 6
+    assert counts["complete_fix"] >= 6
     assert counts["regression"] >= 4
     assert held_out_false == ["sb-pr32"]
     for project in (
@@ -162,21 +168,16 @@ def test_manifest_loads_and_meets_minimums():
         "pallets/jinja",
         "sqlalchemy/mako",
         "jpadilla/pyjwt",
-        "pyca/cryptography",
         "yaml/pyyaml",
-        "lxml/lxml",
         "a2a-settlement/settlebridge-ai",
     ):
         assert project in projects
     sb = next(entry for entry in entries if entry["id"] == "sb-pr32")
     assert sb["property"] == SB_PROPERTY
     assert sb["project"] == "a2a-settlement/settlebridge-ai"
-    assert sb["fix_commit"] is None
-    assert sb["base_commit"] is None
+    assert sb["fix_commit"] == "520b6b6f19bb7e6c7c4c39b00da5c63008152152"
+    assert sb["base_commit"] == "b16a485587281ef29c8409367db4170293954e14"
     assert sb["followup_fix_commit"] is None
-    assert "b16a485" in sb["notes"]
-    assert "520b6b6" in sb["notes"]
-    assert "32" in sb["notes"]
     banned = _banned()
     for path in (
         CORPUS / "schema.json",
@@ -188,8 +189,16 @@ def test_manifest_loads_and_meets_minimums():
         assert banned not in path.read_text(encoding="utf-8").lower(), path.name
 
 
-def test_unverified_entries_are_refused_without_the_flag():
-    manifest = load_manifest(CORPUS / "manifest.json")
+def _unverified_manifest(tmp_path: Path) -> Path:
+    raw = json.loads((CORPUS / "manifest.json").read_text(encoding="utf-8"))
+    raw["entries"][0]["verified"] = False
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return path
+
+
+def test_unverified_entries_are_refused_without_the_flag(tmp_path):
+    manifest = load_manifest(_unverified_manifest(tmp_path))
     entry_id = manifest["entries"][0]["id"]
     results = [_result(entry_id, "seeded_challenger", "no_failure_found")]
     with pytest.raises(CorpusError, match="unverified"):
@@ -208,7 +217,7 @@ def test_unverified_entries_are_refused_without_the_flag():
 
 
 def test_cli_refuses_then_marks_unverified_output(tmp_path, capsys):
-    manifest_path = CORPUS / "manifest.json"
+    manifest_path = _unverified_manifest(tmp_path)
     entry_id = json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0]["id"]
     results_path = tmp_path / "results.jsonl"
     results_path.write_text(

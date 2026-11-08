@@ -2,7 +2,7 @@
   "schema_version": 1,
   "entries": [
     {
-      "id": "pyyaml-constructor-rce",
+      "id": "pyyaml-fullloader-rce",
       "project": "yaml/pyyaml",
       "ecosystem": "pypi",
       "advisory_ids": [
@@ -10,47 +10,28 @@
         "CVE-2020-14343"
       ],
       "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
+      "fix_commit": "5080ba513377b6355a0502104846ee804656f1e0",
+      "base_commit": "2f463cf5b0e98a52bc20e348d1e69761bf263b86",
+      "followup_fix_commit": "a001f2782501ad2d24986959f0239a354675f9dc",
       "failure_class": "injection_execution",
-      "property": "An untrusted YAML document loaded by PyYAML does not execute Python constructors named in that document.",
-      "oracle_source": "CVE-2020-14343 advisory and the PyYAML 5.4 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2020-1747 was addressed in 5.3.1. CVE-2020-14343 bypassed that change and was addressed in 5.4. Follow-up commit is unknown.",
+      "property": "yaml.full_load and yaml.load with FullLoader do not execute Python code taken from an untrusted YAML document.",
+      "oracle_source": "CVE-2020-1747 and CVE-2020-14343 advisories",
+      "notes": "CVE-2020-14343 says it exists because of an incomplete fix for CVE-2020-1747.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-6757-jp84-gxfx",
+          "https://github.com/advisories/GHSA-8q59-q68h-6hv4",
+          "https://github.com/yaml/pyyaml/commit/5080ba513377b6355a0502104846ee804656f1e0",
+          "https://github.com/yaml/pyyaml/commit/a001f2782501ad2d24986959f0239a354675f9dc"
+        ]
       }
     },
     {
-      "id": "pillow-imagemath-bypass",
-      "project": "python-pillow/Pillow",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2022-22816",
-        "CVE-2022-22817"
-      ],
-      "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "PIL.ImageMath.eval does not execute attacker-controlled Python from the expression argument.",
-      "oracle_source": "CVE-2022-22817 advisory and the Pillow 9.0.1 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2022-22816 was addressed in 9.0.0. CVE-2022-22817 bypassed that change and was addressed in 9.0.1. Follow-up commit is unknown.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "jinja-xmlattr-bypass",
+      "id": "jinja-xmlattr-keys",
       "project": "pallets/jinja",
       "ecosystem": "pypi",
       "advisory_ids": [
@@ -58,163 +39,359 @@
         "CVE-2024-34064"
       ],
       "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
+      "fix_commit": "716795349a41d4983a9a4771f7d883c96ea17be7",
+      "base_commit": "d84a1743e4158733222105ff3b9c9d5da108868f",
+      "followup_fix_commit": "0668239dc6b44ef38e7a6c9f91f312fd4ca581cb",
       "failure_class": "injection_execution",
-      "property": "The Jinja xmlattr filter does not emit HTML attributes that the template author did not name.",
-      "oracle_source": "CVE-2024-34064 advisory and the Jinja 3.1.4 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2024-22195 was addressed in 3.1.3. CVE-2024-34064 bypassed the xmlattr change and was addressed in 3.1.4. Follow-up commit is unknown. Templating library.",
+      "property": "The xmlattr filter never emits a key that starts another attribute or ends the tag, whatever characters the key contains.",
+      "oracle_source": "CVE-2024-22195 and CVE-2024-34064 advisories",
+      "notes": "CVE-2024-34064 says the fix for CVE-2024-22195 only addressed spaces but not other characters.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-h5c8-rqwp-cp95",
+          "https://github.com/advisories/GHSA-h75v-3vvj-5mfj",
+          "https://github.com/pallets/jinja/commit/716795349a41d4983a9a4771f7d883c96ea17be7",
+          "https://github.com/pallets/jinja/commit/0668239dc6b44ef38e7a6c9f91f312fd4ca581cb"
+        ]
       }
     },
     {
-      "id": "lxml-cleaner-bypass",
-      "project": "lxml/lxml",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2021-28957",
-        "CVE-2021-43818"
-      ],
-      "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "HTML passed through lxml's cleaner does not keep markup that runs script in a browser.",
-      "oracle_source": "CVE-2021-43818 advisory and the lxml 4.6.5 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2021-28957 was addressed in 4.6.3. CVE-2021-43818 bypassed the cleaner and was addressed in 4.6.5. Follow-up commit is unknown. Parser.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "urllib3-redirect-headers",
-      "project": "urllib3/urllib3",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-43804",
-        "CVE-2024-37891"
-      ],
-      "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "authorization_confidentiality",
-      "property": "A cross-origin redirect does not send Proxy-Authorization or Cookie request headers to the redirect target.",
-      "oracle_source": "CVE-2024-37891 advisory and the urllib3 2.2.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2023-43804 stripped Cookie on cross-origin redirects in 1.26.17 and 2.0.6. CVE-2024-37891 showed Proxy-Authorization was still forwarded; that was addressed in 1.26.19 and 2.2.2. Follow-up commit is unknown.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "gitpython-clone-bypass",
-      "project": "gitpython-developers/GitPython",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-40590",
-        "CVE-2023-41040"
-      ],
-      "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "A repository URL chosen by an untrusted caller cannot inject shell syntax into GitPython's clone command.",
-      "oracle_source": "CVE-2023-41040 advisory and the GitPython 3.1.37 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2023-40590 was addressed in 3.1.32. CVE-2023-41040 bypassed that clone-option change and was addressed in 3.1.37. An earlier related issue was CVE-2022-24439. Follow-up commit is unknown.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "sqlalchemy-order-by",
-      "project": "sqlalchemy/sqlalchemy",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2019-7164",
-        "CVE-2019-7548"
-      ],
-      "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "A caller-supplied string passed to SQLAlchemy order_by is not inserted into SQL as raw syntax.",
-      "oracle_source": "CVE-2019-7548 advisory and the SQLAlchemy 1.3.1 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2019-7164 was addressed in 1.2.18. CVE-2019-7548 was the follow-up order_by injection, addressed in the 1.3.1 line. Follow-up commit is unknown.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "django-truncator-redos",
+      "id": "django-truncator-html-redos",
       "project": "django/django",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2023-43665",
-        "CVE-2024-24680"
+        "CVE-2024-27351"
       ],
       "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
+      "fix_commit": "be9c27c4d18c2e6a5be8af4e53c0797440794473",
+      "base_commit": "39fc3f46a8777a499f6358c6f06b4bcfffabb137",
+      "followup_fix_commit": "3c9a2771cc80821e041b16eb36c1c37af5349d4a",
       "failure_class": "denial_of_service",
-      "property": "django.utils.text.Truncator does not take super-linear time on a string whose length or word count an attacker controls.",
-      "oracle_source": "CVE-2024-24680 advisory and the Django 5.0.2 release notes",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. CVE-2023-43665 was addressed in 4.2.4, 4.1.10, and 3.2.20. CVE-2024-24680 showed the Truncator regular expression was still super-linear and was addressed in 5.0.2, 4.2.10, and 3.2.24. Follow-up commit is unknown. Web framework.",
+      "property": "django.utils.text.Truncator chars() and words() with html=True finish in time roughly linear in the input length.",
+      "oracle_source": "CVE-2023-43665 and CVE-2024-27351 advisories",
+      "notes": "Both commits are the stable/4.2.x backports. CVE-2024-27351 says it exists because of an incomplete fix for CVE-2023-43665.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-h8gc-pgj2-vjm3",
+          "https://github.com/advisories/GHSA-vm8q-m57g-pff3",
+          "https://github.com/django/django/commit/be9c27c4d18c2e6a5be8af4e53c0797440794473",
+          "https://github.com/django/django/commit/3c9a2771cc80821e041b16eb36c1c37af5349d4a"
+        ]
       }
     },
     {
-      "id": "django-upload-validators",
-      "project": "django/django",
+      "id": "urllib3-authorization-redirect",
+      "project": "urllib3/urllib3",
       "ecosystem": "pypi",
       "advisory_ids": [
-        "CVE-2021-31542",
-        "CVE-2023-31047"
+        "CVE-2018-20060",
+        "CVE-2018-25091"
       ],
       "category": "incomplete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "560bd227b90f74417ffaedebf5f8d05a8ee4f532",
+      "base_commit": "c4f123dcdcad3582561373278d2772f819ec3cb8",
+      "followup_fix_commit": "adb358f8e06865406d1f05e581a16cbea2136fbc",
+      "failure_class": "authorization_confidentiality",
+      "property": "urllib3 does not send an Authorization header to a different host when it follows a cross-origin redirect.",
+      "oracle_source": "CVE-2018-20060 and CVE-2018-25091 advisories",
+      "notes": "CVE-2018-25091 says it exists because of an incomplete fix for CVE-2018-20060 (header case).",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-www2-v7xj-xrc6",
+          "https://github.com/advisories/GHSA-gwvm-45gx-3cf8",
+          "https://github.com/urllib3/urllib3/commit/560bd227b90f74417ffaedebf5f8d05a8ee4f532",
+          "https://github.com/urllib3/urllib3/commit/adb358f8e06865406d1f05e581a16cbea2136fbc"
+        ]
+      }
+    },
+    {
+      "id": "pyjwt-hmac-key-confusion",
+      "project": "jpadilla/pyjwt",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2022-29217",
+        "CVE-2026-102268"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "9c528670c455b8d948aff95ed50e22940d1ad3fc",
+      "base_commit": "24b29adfebcb4f057a3cef5aaf35653bc0c1c8cc",
+      "followup_fix_commit": "8b4e233a22206b34ec1186e912e75c0b2396ac07",
+      "failure_class": "integrity",
+      "property": "PyJWT never accepts an asymmetric public key as an HMAC secret, so an HS256 token signed with the public key does not verify.",
+      "oracle_source": "CVE-2022-29217 and CVE-2026-102268 advisories",
+      "notes": "CVE-2026-102268 is an asymmetric-PEM detection bypass of the CVE-2022-29217 guard.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-ffqj-6fqr-9h24",
+          "https://github.com/advisories/GHSA-ffc3-869f-jxw9",
+          "https://github.com/jpadilla/pyjwt/commit/9c528670c455b8d948aff95ed50e22940d1ad3fc",
+          "https://github.com/jpadilla/pyjwt/commit/8b4e233a22206b34ec1186e912e75c0b2396ac07"
+        ]
+      }
+    },
+    {
+      "id": "python-jose-hmac-key-confusion",
+      "project": "mpdavis/python-jose",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-33663",
+        "CVE-2026-85394"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "12f30c8c87b343ad4f9e27e8b5b9e0ef7d665cb3",
+      "base_commit": "638d0470fd2d3e1d5b86c3813271946c805090e3",
       "followup_fix_commit": null,
       "failure_class": "integrity",
-      "property": "A Django uploaded file is stored only under its upload handler destination, including when one form field carries several files.",
-      "oracle_source": "CVE-2023-31047 advisory and the Django 4.2.1 release notes",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Provisional pairing. CVE-2021-31542 (upload filename traversal, addressed in 3.2, 3.1.8, 3.0.12, and 2.2.20) and CVE-2023-31047 (multi-file field bypassing validators, addressed in 4.2.1, 4.1.9, and 3.2.19) are both real. The coordinator should keep incomplete_fix only if the later advisory is a bypass of the earlier control. Follow-up commit is unknown.",
+      "property": "python-jose never accepts an asymmetric public key as an HMAC secret, so an HS256 token signed with the public key does not verify.",
+      "oracle_source": "CVE-2024-33663 and CVE-2026-85394 advisories",
+      "notes": "CVE-2026-85394 says the CVE-2024-33663 guard is bypassed by DER-encoded keys. No fixed release is listed, so followup_fix_commit is null.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-6c5p-j8vq-pqhj",
+          "https://github.com/advisories/GHSA-3qf3-8w2g-rqmx",
+          "https://github.com/mpdavis/python-jose/commit/12f30c8c87b343ad4f9e27e8b5b9e0ef7d665cb3"
+        ]
+      }
+    },
+    {
+      "id": "idna-long-input-dos",
+      "project": "kjd/idna",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-3651",
+        "CVE-2026-45409"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "1d365e17e10d72d0b7876316fc7b9ca0eebdd38d",
+      "base_commit": "c1b3154939907fab67c5754346afaebe165ce8e6",
+      "followup_fix_commit": "e1cb465b6376f33306a26f467d197edbcd01c4b9",
+      "failure_class": "denial_of_service",
+      "property": "idna.encode and idna.decode either reject or finish in bounded time on very long inputs.",
+      "oracle_source": "CVE-2024-3651 and CVE-2026-45409 advisories",
+      "notes": "CVE-2026-45409 says the 2024 remediation was not a complete fix. The follow-up is the length-limit commit in 3.15.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-jjg7-2v4v-x38h",
+          "https://github.com/advisories/GHSA-65pc-fj4g-8rjx",
+          "https://github.com/kjd/idna/commit/1d365e17e10d72d0b7876316fc7b9ca0eebdd38d",
+          "https://github.com/kjd/idna/commit/e1cb465b6376f33306a26f467d197edbcd01c4b9"
+        ]
+      }
+    },
+    {
+      "id": "authlib-oct-key-confusion",
+      "project": "authlib/authlib",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-37568",
+        "CVE-2026-114615"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "3bea812acefebc9ee108aa24557be3ba8971daf1",
+      "base_commit": "a7d68b4c3b8a3a7fe0b62943b5228669f2f3dfec",
+      "followup_fix_commit": "e3bd41cb29dcfee434453b135ffb487884baeedf",
+      "failure_class": "integrity",
+      "property": "Authlib never accepts an asymmetric public key or certificate as the secret for an HMAC-signed token.",
+      "oracle_source": "CVE-2024-37568 and CVE-2026-114615 advisories",
+      "notes": "CVE-2026-114615 names 3bea812 as the incomplete guard (a leading byte before -----BEGIN bypasses it).",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-5357-c2jx-v7qh",
+          "https://github.com/advisories/GHSA-7vr2-2fgp-9w7p",
+          "https://github.com/authlib/authlib/commit/3bea812acefebc9ee108aa24557be3ba8971daf1",
+          "https://github.com/authlib/authlib/commit/e3bd41cb29dcfee434453b135ffb487884baeedf"
+        ]
+      }
+    },
+    {
+      "id": "webob-location-open-redirect",
+      "project": "Pylons/webob",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-42353",
+        "CVE-2026-54770"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "f689bcf4f0a1f64f1735b1d5069aef5be6974b5b",
+      "base_commit": "7bf29f1f9a0e90e1fee3cc4110c1a37d942101f2",
+      "followup_fix_commit": "ff89560643fb252751b4db8806a283b5377f1f07",
+      "failure_class": "integrity",
+      "property": "WebOb never turns a relative Location value into a redirect to a different host.",
+      "oracle_source": "CVE-2024-42353 and CVE-2026-54770 advisories",
+      "notes": "CVE-2026-54770 says it exists because of an incomplete fix for CVE-2024-42353.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-mg3v-6m49-jhp3",
+          "https://github.com/advisories/GHSA-6hx8-3wjj-gr8g",
+          "https://github.com/Pylons/webob/commit/f689bcf4f0a1f64f1735b1d5069aef5be6974b5b",
+          "https://github.com/Pylons/webob/commit/ff89560643fb252751b4db8806a283b5377f1f07"
+        ]
+      }
+    },
+    {
+      "id": "tornado-cookie-attribute-injection",
+      "project": "tornadoweb/tornado",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2026-35536",
+        "GHSA-wwv5-g3v4-889x"
+      ],
+      "category": "incomplete_fix",
+      "fix_commit": "24a2d96ea115f663b223887deb0060f13974c104",
+      "base_commit": "119a195e290c43ad2d63a2cf012c29d43d6ed839",
+      "followup_fix_commit": "da284767eae8e1f0484f123b8c3225f6465b09c7",
+      "failure_class": "injection_execution",
+      "property": "RequestHandler.set_cookie never lets a caller-supplied value add or change cookie attributes.",
+      "oracle_source": "CVE-2026-35536 and GHSA-wwv5-g3v4-889x advisories",
+      "notes": "GHSA-wwv5-g3v4-889x says the CVE-2026-35536 fix missed the mixed-case **kwargs path.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-fqwm-6jpj-5wxc",
+          "https://github.com/advisories/GHSA-wwv5-g3v4-889x",
+          "https://github.com/tornadoweb/tornado/commit/24a2d96ea115f663b223887deb0060f13974c104",
+          "https://github.com/tornadoweb/tornado/commit/da284767eae8e1f0484f123b8c3225f6465b09c7"
+        ]
+      }
+    },
+    {
+      "id": "waitress-header-regex-redos",
+      "project": "Pylons/waitress",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2020-5236"
+      ],
+      "category": "regression",
+      "fix_commit": "0bf98dadd8cae23830cb365cc6cb9cedd7f98db0",
+      "base_commit": "ddb65b489d01d696afa1695b75fdd5df3e4ffdf8",
+      "followup_fix_commit": null,
+      "failure_class": "denial_of_service",
+      "property": "Waitress parses any request header in time roughly linear in its length.",
+      "oracle_source": "CVE-2020-5236 advisory",
+      "notes": "The advisory says the issue was introduced in 1.4.2 when the RFC 7230 regex was updated; 0bf98da is that change.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-73m2-3pwg-5fgc",
+          "https://github.com/Pylons/waitress/commit/0bf98dadd8cae23830cb365cc6cb9cedd7f98db0"
+        ]
+      }
+    },
+    {
+      "id": "datamodel-codegen-validator-injection",
+      "project": "koxudaxi/datamodel-code-generator",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2026-54656"
+      ],
+      "category": "regression",
+      "fix_commit": "a2b2756257d88a00c52b6dd31b8c4a3db7a6b2af",
+      "base_commit": "8ee5860a00ef28baf9a452392b4511cb07fcf280",
+      "followup_fix_commit": null,
+      "failure_class": "injection_execution",
+      "property": "Code generated from --extra-template-data never contains a Python expression taken from that data.",
+      "oracle_source": "CVE-2026-54656 advisory",
+      "notes": "The advisory says the flaw was introduced in 0.52.1 by commit a2b27562 (--validators option).",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-8m8r-38jm-f355",
+          "https://github.com/koxudaxi/datamodel-code-generator/commit/a2b2756257d88a00c52b6dd31b8c4a3db7a6b2af"
+        ]
+      }
+    },
+    {
+      "id": "pyjwt-pyjwk-algorithm-allowlist",
+      "project": "jpadilla/pyjwt",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2026-48523"
+      ],
+      "category": "regression",
+      "fix_commit": "ab8176abe21e550dbc1c9a6bb7e78ad80853bfb1",
+      "base_commit": "c0a071dc0178542ad24e5a7b2e6103ba1d4c0517",
+      "followup_fix_commit": null,
+      "failure_class": "integrity",
+      "property": "jwt.decode with a PyJWK key verifies only with an algorithm in the caller's algorithms allow-list.",
+      "oracle_source": "CVE-2026-48523 advisory",
+      "notes": "The advisory says the behaviour was introduced by commit ab8176ab (Decode with PyJWK, #886).",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-jq35-7prp-9v3f",
+          "https://github.com/jpadilla/pyjwt/commit/ab8176abe21e550dbc1c9a6bb7e78ad80853bfb1"
+        ]
+      }
+    },
+    {
+      "id": "pyjwt-options-mutation",
+      "project": "jpadilla/pyjwt",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2026-103001"
+      ],
+      "category": "regression",
+      "fix_commit": "29fbfc36d95f3df41bc9650b6711347549829bf3",
+      "base_commit": "9085670a1f69de3e86c7d122317c3b2707e0123b",
+      "followup_fix_commit": null,
+      "failure_class": "integrity",
+      "property": "PyJWT.decode never changes the options dict a caller passes in, so a later call with the same dict checks every claim it asks for.",
+      "oracle_source": "CVE-2026-103001 advisory",
+      "notes": "The advisory calls it a regression of an already-fixed issue in 2.11.0. 29fbfc36 removed the defensive copy of options.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-gvp8-978c-rx2q",
+          "https://github.com/jpadilla/pyjwt/commit/29fbfc36d95f3df41bc9650b6711347549829bf3"
+        ]
       }
     },
     {
@@ -225,157 +402,74 @@
         "CVE-2023-32681"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "74ea7cf7a6a27a4eeb2ae24e162bcc942a6706d5",
+      "base_commit": "302225334678490ec66b3614a9dddb8a02c5f4fe",
       "followup_fix_commit": null,
       "failure_class": "authorization_confidentiality",
-      "property": "Requests does not forward a Proxy-Authorization header to the destination origin.",
-      "oracle_source": "CVE-2023-32681 advisory and the Requests 2.31.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.31.0. HTTP client.",
+      "property": "requests does not forward a Proxy-Authorization header to the destination server after a redirect.",
+      "oracle_source": "CVE-2023-32681 advisory",
+      "notes": "No later pip advisory cites CVE-2023-32681.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-j8r2-6x86-q33q",
+          "https://github.com/psf/requests/commit/74ea7cf7a6a27a4eeb2ae24e162bcc942a6706d5"
+        ]
       }
     },
     {
-      "id": "flask-session-vary",
+      "id": "flask-session-vary-cookie",
       "project": "pallets/flask",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2023-30861"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "70f906c51ce49c485f1d355703e9cc3386b1cc2b",
+      "base_commit": "9532cba45d2339e90ebf04f178b1e4f2064e7328",
       "followup_fix_commit": null,
       "failure_class": "authorization_confidentiality",
-      "property": "A Flask response that sets the session cookie also sends a Vary header so a shared cache does not reuse that response for another origin.",
-      "oracle_source": "CVE-2023-30861 advisory and the Flask 2.3.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.3.2 and 2.2.5. Web framework.",
+      "property": "Flask adds Vary: Cookie whenever the session is accessed, so a caching proxy cannot serve one client's session cookie to another.",
+      "oracle_source": "CVE-2023-30861 advisory",
+      "notes": "Merge commit of the GHSA fix; base is its first parent. No later pip advisory cites it.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-m2qf-hxjv-5gpq",
+          "https://github.com/pallets/flask/commit/70f906c51ce49c485f1d355703e9cc3386b1cc2b"
+        ]
       }
     },
     {
-      "id": "tornado-open-redirect",
+      "id": "tornado-static-open-redirect",
       "project": "tornadoweb/tornado",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2023-28370"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "32ad07c54e607839273b4e1819c347f5c8976b2f",
+      "base_commit": "e0fa53ee96db720dc7800d0248c39a4ffb8911e9",
       "followup_fix_commit": null,
       "failure_class": "integrity",
-      "property": "Tornado's StaticFileHandler does not redirect the client to an absolute URL taken from the request path.",
-      "oracle_source": "CVE-2023-28370 advisory and the Tornado 6.3.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 6.3.2. Web framework.",
+      "property": "Tornado's StaticFileHandler never redirects to a different host.",
+      "oracle_source": "CVE-2023-28370 advisory",
+      "notes": "No later pip advisory cites CVE-2023-28370.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "cryptography-pkcs7-null",
-      "project": "pyca/cryptography",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-49083"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "denial_of_service",
-      "property": "Loading a PKCS7 blob that contains no certificates does not crash the process.",
-      "oracle_source": "CVE-2023-49083 advisory and the cryptography 41.0.6 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 41.0.6. Cryptography library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "pyjwt-key-confusion",
-      "project": "jpadilla/pyjwt",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2022-29217"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "authorization_confidentiality",
-      "property": "PyJWT rejects a token when the signing algorithm does not match the type of the key it is checked with.",
-      "oracle_source": "CVE-2022-29217 advisory and the PyJWT 2.4.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.4.0. Auth library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "paramiko-terrapin",
-      "project": "paramiko/paramiko",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-48795"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "integrity",
-      "property": "Paramiko does not accept an SSH handshake whose extension negotiation was truncated by an on-path attacker.",
-      "oracle_source": "CVE-2023-48795 advisory and the Paramiko 3.4.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Terrapin prefix-truncation issue, addressed in 3.4.0. Auth and transport library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "aiohttp-static-traversal",
-      "project": "aio-libs/aiohttp",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-23334"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "authorization_confidentiality",
-      "property": "An aiohttp static route does not return a file whose resolved path sits outside the configured directory.",
-      "oracle_source": "CVE-2024-23334 advisory and the aiohttp 3.9.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 3.9.2 when follow_symlinks could leave the static root. Web framework.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-hj3f-6gcp-jg8j",
+          "https://github.com/tornadoweb/tornado/commit/32ad07c54e607839273b4e1819c347f5c8976b2f"
+        ]
       }
     },
     {
@@ -386,42 +480,22 @@
         "CVE-2022-40023"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "925760291d6efec64fda6e9dd1fd9cfbd5be068c",
+      "base_commit": "7c5b28ac47755598e8c5bdfc995eaf220132e672",
       "followup_fix_commit": null,
       "failure_class": "denial_of_service",
-      "property": "The Mako lexer does not run super-linear regular expressions on a crafted template.",
-      "oracle_source": "CVE-2022-40023 advisory and the Mako 1.2.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 1.2.2. Templating library.",
+      "property": "The Mako lexer parses any template in time roughly linear in its length.",
+      "oracle_source": "CVE-2022-40023 advisory",
+      "notes": "No later pip advisory cites CVE-2022-40023.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "pip-mercurial-args",
-      "project": "pypa/pip",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-5752"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "A Mercurial revision in a VCS requirement cannot add extra arguments to the hg command that pip runs.",
-      "oracle_source": "CVE-2023-5752 advisory and the pip 23.3 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 23.3.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-v973-fxgf-6xhp",
+          "https://github.com/sqlalchemy/mako/commit/925760291d6efec64fda6e9dd1fd9cfbd5be068c"
+        ]
       }
     },
     {
@@ -432,19 +506,22 @@
         "CVE-2024-1135"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "ac29c9b0a758d21f1e0fb3b3457239e523fa9f1d",
+      "base_commit": "0b10cbab1d6368fcab2d5a7b6fe359a6cecc81a7",
       "followup_fix_commit": null,
       "failure_class": "integrity",
-      "property": "Gunicorn does not dispatch a second HTTP request that was smuggled in the body of a Transfer-Encoding request.",
-      "oracle_source": "CVE-2024-1135 advisory and the Gunicorn 22.0.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 22.0.0. Web server.",
+      "property": "Gunicorn rejects requests whose Transfer-Encoding or Content-Length would let a proxy and Gunicorn disagree on where a request ends.",
+      "oracle_source": "CVE-2024-1135 advisory",
+      "notes": "No later pip advisory cites CVE-2024-1135.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-w3h3-4rj7-4ph4",
+          "https://github.com/benoitc/gunicorn/commit/ac29c9b0a758d21f1e0fb3b3457239e523fa9f1d"
+        ]
       }
     },
     {
@@ -455,272 +532,230 @@
         "CVE-2022-24761"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "9e0b8c801e4d505c2ffc91b891af4ba48af715e0",
+      "base_commit": "22c03947e3bcd7631120aae40d3d844d4f35e49f",
       "followup_fix_commit": null,
       "failure_class": "integrity",
-      "property": "Waitress does not accept one connection that hides a second request behind conflicting Content-Length and Transfer-Encoding headers.",
-      "oracle_source": "CVE-2022-24761 advisory and the Waitress 2.1.1 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.1.1 (version recalled, not re-checked). Web server.",
+      "property": "Waitress rejects chunk sizes and Content-Length values that a proxy could read differently.",
+      "oracle_source": "CVE-2022-24761 advisory",
+      "notes": "No later pip advisory cites CVE-2022-24761.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-4f7p-27jc-3c36",
+          "https://github.com/Pylons/waitress/commit/9e0b8c801e4d505c2ffc91b891af4ba48af715e0"
+        ]
       }
     },
     {
-      "id": "idna-quadratic-dos",
-      "project": "kjd/idna",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-3651"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "denial_of_service",
-      "property": "idna encoding of one label does not take super-linear time on a crafted label.",
-      "oracle_source": "CVE-2024-3651 advisory and the idna 3.7 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 3.7. Parser and codec.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "python-multipart-redos",
+      "id": "python-multipart-content-type-redos",
       "project": "Kludex/python-multipart",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2024-24762"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "20f0ef6b4e4caf7d69a667c54dff57fe467109a4",
+      "base_commit": "d3d16dae4b061c34fe9d3c9081d9800c49fc1f7a",
       "followup_fix_commit": null,
       "failure_class": "denial_of_service",
-      "property": "python-multipart does not backtrack exponentially while parsing a crafted Content-Type header.",
-      "oracle_source": "CVE-2024-24762 advisory and the python-multipart 0.0.7 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 0.0.7. Parser. A later parser advisory may exist and was not listed here.",
+      "property": "python-multipart parses any Content-Type header in time roughly linear in its length.",
+      "oracle_source": "CVE-2024-24762 advisory",
+      "notes": "No later pip advisory cites CVE-2024-24762.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-2jv5-9r88-3w3p",
+          "https://github.com/Kludex/python-multipart/commit/20f0ef6b4e4caf7d69a667c54dff57fe467109a4"
+        ]
       }
     },
     {
-      "id": "starlette-multipart-dos",
+      "id": "starlette-multipart-field-dos",
       "project": "encode/starlette",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2024-47874"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "fd038f3070c302bff17ef7d173dbb0b007617733",
+      "base_commit": "e11684013fe5ca084f5bd4e54830512a4dff9618",
       "followup_fix_commit": null,
       "failure_class": "denial_of_service",
-      "property": "Starlette stops accepting a multipart form once its configured field or byte limit is exceeded.",
-      "oracle_source": "CVE-2024-47874 advisory and the Starlette 0.40.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 0.40.0 (version recalled, not re-checked). Web framework. The coordinator should confirm this limit is not an incomplete fix of the underlying multipart parser.",
+      "property": "Starlette bounds the memory a multipart form field without a filename can use.",
+      "oracle_source": "CVE-2024-47874 advisory",
+      "notes": "No later pip advisory cites CVE-2024-47874.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-f96h-pmfr-66vw",
+          "https://github.com/encode/starlette/commit/fd038f3070c302bff17ef7d173dbb0b007617733"
+        ]
       }
     },
     {
-      "id": "setuptools-index-redos",
+      "id": "setuptools-package-index-redos",
       "project": "pypa/setuptools",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2022-40897"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "43a9c9bfa6aa626ec2a22540bea28d2ca77964be",
+      "base_commit": "579134321d4d9397c886a5cb50cc26d0e3fa4279",
       "followup_fix_commit": null,
       "failure_class": "denial_of_service",
-      "property": "setuptools package index parsing does not backtrack exponentially on a crafted index page.",
-      "oracle_source": "CVE-2022-40897 advisory and the setuptools 65.5.1 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 65.5.1.",
+      "property": "setuptools.package_index parses any HTML page in time roughly linear in its length.",
+      "oracle_source": "CVE-2022-40897 advisory",
+      "notes": "No later pip advisory cites CVE-2022-40897.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-r9hx-vwmv-q579",
+          "https://github.com/pypa/setuptools/commit/43a9c9bfa6aa626ec2a22540bea28d2ca77964be"
+        ]
       }
     },
     {
-      "id": "django-jsonfield-sqli",
-      "project": "django/django",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-42005"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "Django QuerySet.values and values_list do not interpolate a JSONField key into SQL.",
-      "oracle_source": "CVE-2024-42005 advisory and the Django 5.0.8 release notes",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 5.0.8 and 4.2.15. Web framework.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "python-jose-alg-confusion",
-      "project": "mpdavis/python-jose",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-33663"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "authorization_confidentiality",
-      "property": "python-jose does not check an HMAC signature with a key that was published as an asymmetric verification key.",
-      "oracle_source": "CVE-2024-33663 advisory and the python-jose release that closed it",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Algorithm confusion. The fixing release was recalled as the 3.3 or 3.4 line and was not re-checked. Auth library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "twisted-header-injection",
-      "project": "twisted/twisted",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2022-24801"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "integrity",
-      "property": "Twisted's HTTP parser does not turn a cookie value containing a newline into an additional header.",
-      "oracle_source": "CVE-2022-24801 advisory and the Twisted 22.4.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 22.4.0. Web framework.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "mistune-markdown-xss",
+      "id": "mistune-emphasis-redos",
       "project": "lepture/mistune",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2022-34749"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "a6d43215132fe4f3d93f8d7e90ba83b16a0838b2",
+      "base_commit": "5638e460459cb59ceb20e4ce4716c802d4d73c53",
       "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "Mistune does not emit raw script-bearing HTML from nested emphasis or link syntax in untrusted Markdown.",
-      "oracle_source": "CVE-2022-34749 advisory and the mistune 2.0.4 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.0.4 (version recalled, not re-checked). Markdown renderer.",
+      "failure_class": "denial_of_service",
+      "property": "Mistune renders any Markdown emphasis in time roughly linear in its length.",
+      "oracle_source": "CVE-2022-34749 advisory",
+      "notes": "No later pip advisory cites CVE-2022-34749.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-fw3v-x4f2-v673",
+          "https://github.com/lepture/mistune/commit/a6d43215132fe4f3d93f8d7e90ba83b16a0838b2"
+        ]
       }
     },
     {
-      "id": "celery-pickle-result",
-      "project": "celery/celery",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2021-23727"
-      ],
-      "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "injection_execution",
-      "property": "Celery does not deserialize a pickle payload that a task result message embedded as an exception.",
-      "oracle_source": "CVE-2021-23727 advisory and the Celery 5.2.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 5.2.2 (version recalled, not re-checked).",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "babel-locale-exec",
+      "id": "babel-locale-path-traversal",
       "project": "python-babel/babel",
       "ecosystem": "pypi",
       "advisory_ids": [
         "CVE-2021-42771"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "412015ef642bfcc0d8ba8f4d05cdbb6aac98d9b3",
+      "base_commit": "5afe2b2f11dcdd6090c00231d342c2e9cd1bdaab",
       "followup_fix_commit": null,
       "failure_class": "injection_execution",
-      "property": "Babel does not execute Python that a locale data file contains when a locale name is loaded.",
-      "oracle_source": "CVE-2021-42771 advisory and the Babel 2.9.1 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 2.9.1. Locale data parser.",
+      "property": "Babel loads locale data only from its own locale directory, whatever locale identifier it is given.",
+      "oracle_source": "CVE-2021-42771 advisory",
+      "notes": "No later pip advisory cites CVE-2021-42771.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-h4m5-qpfp-3mpv",
+          "https://github.com/python-babel/babel/commit/412015ef642bfcc0d8ba8f4d05cdbb6aac98d9b3"
+        ]
       }
     },
     {
-      "id": "salt-auth-bypass",
-      "project": "saltstack/salt",
+      "id": "twisted-request-smuggling",
+      "project": "twisted/twisted",
       "ecosystem": "pypi",
       "advisory_ids": [
-        "CVE-2020-11651"
+        "CVE-2022-24801"
       ],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "592217e951363d60e9cd99c5bbfd23d4615043ac",
+      "base_commit": "de8e5a6e9bb27db39de1b48d9c7f77806520929f",
+      "followup_fix_commit": null,
+      "failure_class": "integrity",
+      "property": "twisted.web rejects request headers and chunk sizes that a proxy could read differently.",
+      "oracle_source": "CVE-2022-24801 advisory",
+      "notes": "No later pip advisory cites CVE-2022-24801.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-c2jg-hw38-jrqq",
+          "https://github.com/twisted/twisted/commit/592217e951363d60e9cd99c5bbfd23d4615043ac"
+        ]
+      }
+    },
+    {
+      "id": "aiohttp-static-traversal",
+      "project": "aio-libs/aiohttp",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-23334"
+      ],
+      "category": "complete_fix",
+      "fix_commit": "1c335944d6a8b1298baf179b7c0b3069f10c514b",
+      "base_commit": "33ccdfb0a12690af5bb49bda2319ec0907fa7827",
       "followup_fix_commit": null,
       "failure_class": "authorization_confidentiality",
-      "property": "An unauthenticated Salt caller cannot invoke master methods that skip the authentication check.",
-      "oracle_source": "CVE-2020-11651 advisory and the Salt 3000.2 release notes",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 3000.2 and 2019.2.4. CVE-2020-11652 was a same-release path traversal and is not this property. Auth boundary in a Python service.",
+      "property": "aiohttp static routes never serve a file outside the configured directory.",
+      "oracle_source": "CVE-2024-23334 advisory",
+      "notes": "No later pip advisory cites CVE-2024-23334.",
       "held_out": true,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-5h86-8mv2-jq9f",
+          "https://github.com/aio-libs/aiohttp/commit/1c335944d6a8b1298baf179b7c0b3069f10c514b"
+        ]
+      }
+    },
+    {
+      "id": "django-jsonfield-values-sqli",
+      "project": "django/django",
+      "ecosystem": "pypi",
+      "advisory_ids": [
+        "CVE-2024-42005"
+      ],
+      "category": "complete_fix",
+      "fix_commit": "f4af67b9b41e0f4c117a8741da3abbd1c869ab28",
+      "base_commit": "efea1ef7e2190e3f77ca0651b5458297bc0f6a9f",
+      "followup_fix_commit": null,
+      "failure_class": "injection_execution",
+      "property": "QuerySet.values() and values_list() on a JSONField never put a caller-supplied key into SQL unquoted.",
+      "oracle_source": "CVE-2024-42005 advisory",
+      "notes": "stable/4.2.x backport. No later pip advisory cites CVE-2024-42005.",
+      "held_out": true,
+      "verified": true,
+      "verification": {
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/advisories/GHSA-pv4p-cwwg-4rph",
+          "https://github.com/django/django/commit/f4af67b9b41e0f4c117a8741da3abbd1c869ab28"
+        ]
       }
     },
     {
@@ -729,134 +764,21 @@
       "ecosystem": "pypi",
       "advisory_ids": [],
       "category": "complete_fix",
-      "fix_commit": null,
-      "base_commit": null,
+      "fix_commit": "520b6b6f19bb7e6c7c4c39b00da5c63008152152",
+      "base_commit": "b16a485587281ef29c8409367db4170293954e14",
       "followup_fix_commit": null,
       "failure_class": "authorization_confidentiality",
       "property": "A bounty on a private repository is visible and claimable only by a signed-in user whose linked GitHub account has read access.",
       "oracle_source": "Pull request 32 diff and the private-repository bounty access checks",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Pull request 32. Base short SHA b16a485. Head short SHA 520b6b6. Those short SHAs are not commit fields. Category complete_fix is a candidate label for that pull request, pending coordinator review.",
+      "notes": "Pull request 32 head and its base. Labelled complete_fix because the 2026-11-08 pilot found no failure and Rich's blind audit agreed; that is one run, not ground truth. held_out is false because the pilot contract was written against it.",
       "held_out": false,
-      "verified": false,
+      "verified": true,
       "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "pillow-imagemath-regression",
-      "project": "python-pillow/Pillow",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-50447"
-      ],
-      "category": "regression",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "regression",
-      "property": "PIL.ImageMath.eval does not run attacker-controlled code passed through the expression or the environment arguments.",
-      "oracle_source": "CVE-2023-50447 advisory and the Pillow 10.2.0 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. The 9.0.1 ImageMath change was bypassed again. CVE-2023-50447 was addressed in 10.2.0. Classed as regression of that property.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "jinja-sandbox-regression",
-      "project": "pallets/jinja",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-56326"
-      ],
-      "category": "regression",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "regression",
-      "property": "A template rendered in the Jinja sandbox cannot call Python objects that the sandbox policy excludes.",
-      "oracle_source": "CVE-2024-56326 advisory and the Jinja 3.1.5 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Sandbox escape addressed in 3.1.5. The same release carried a second sandbox advisory whose id was not re-checked, so it is not listed. Classed as regression of the sandbox boundary. Templating library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "werkzeug-debugger-pin",
-      "project": "pallets/werkzeug",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-34069"
-      ],
-      "category": "regression",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "regression",
-      "property": "The Werkzeug debugger PIN is not determined by a stable low-entropy machine identifier that a remote caller can recompute.",
-      "oracle_source": "CVE-2024-34069 advisory and the Werkzeug 3.0.3 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. On Windows the debugger PIN became a function of a stable machine id. Addressed in 3.0.3. Classed as regression of PIN unpredictability. Web framework library.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "aiohttp-parser-regression",
-      "project": "aio-libs/aiohttp",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2024-23829"
-      ],
-      "category": "regression",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "regression",
-      "property": "aiohttp's pure-Python HTTP parser does not accept a chunked body that conceals a second request.",
-      "oracle_source": "CVE-2024-23829 advisory and the aiohttp 3.9.2 changelog",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. Addressed in 3.9.2. Classed as regression because the pure-Python parser reopened request smuggling that the llhttp path had closed (related ids recalled as CVE-2023-37276 and CVE-2023-47627). The coordinator may reclassify this entry.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
-      }
-    },
-    {
-      "id": "cpython-email-regression",
-      "project": "python/cpython",
-      "ecosystem": "pypi",
-      "advisory_ids": [
-        "CVE-2023-27043"
-      ],
-      "category": "regression",
-      "fix_commit": null,
-      "base_commit": null,
-      "followup_fix_commit": null,
-      "failure_class": "regression",
-      "property": "The stdlib email package does not parse an address header into a mailbox other than the mailbox written in that header.",
-      "oracle_source": "CVE-2023-27043 advisory and the CPython email parser patch notes",
-      "notes": "UNVERIFIED candidate. Not re-checked against git history or advisory databases. Full 40-hex SHAs were not certain, so commit fields are null. The address-parsing change landed in the 3.12 and 3.11 patch series and later patch releases corrected parsing regressions from that change. Exact versions were not re-checked. Classed as regression; the coordinator may reclassify.",
-      "held_out": true,
-      "verified": false,
-      "verification": {
-        "checked_at": null,
-        "checked_by": null,
-        "evidence_urls": []
+        "checked_at": "2026-11-08T14:30:02Z",
+        "checked_by": "agent:cursor-coordinator",
+        "evidence_urls": [
+          "https://github.com/a2a-settlement/settlebridge-ai/pull/32"
+        ]
       }
     }
   ]

@@ -1,20 +1,31 @@
 # Evaluation corpus
 
-Candidate PyPI fixes for the challenge engine's go/no-go numbers. `manifest.json` is the candidate list. `schema.json` is its JSON Schema (draft 2020-12). Nothing in the manifest was re-fetched, and every `verified` flag is false.
+PyPI fixes for the challenge engine's go/no-go numbers. `manifest.json` is the corpus. `schema.json` is its JSON Schema (draft 2020-12).
 
 `held_out: true` means the entry must not be used to tune prompts. `sb-pr32` is the only entry with `held_out: false`.
 
-Entries span web frameworks, parsers, auth libraries, and templating. Commit fields are 40 lowercase hex or null. Short SHAs stay in `notes`.
+Commit fields are 40 lowercase hex or null. What they mean depends on the category:
+
+- `incomplete_fix`: `fix_commit` is the first fix, which a later advisory says was incomplete or bypassed. `base_commit` is its first parent. `followup_fix_commit` is the fix that completed it, or null when no fixed release exists. The challenge targets `fix_commit`.
+- `complete_fix`: `fix_commit` is the fix and `base_commit` its first parent. No later pip advisory cites the fix's CVE.
+- `regression`: `fix_commit` is the change that introduced the flaw, named by the advisory, and `base_commit` its first parent. The observer must be silent on `base_commit` and fire on `fix_commit`. `failure_class` is the flaw's class, not `regression`.
+
+Entries are pure Python, or have Python 3.11 wheels, because the sandbox image is `python:3.11-slim` with no compiler and no `git`.
 
 ## Verification
 
-The coordinator checks the advisory, the commits, and the category, then fills:
+Each entry was checked against GitHub's reviewed pip advisories and a local clone of its repository:
+
+- The category comes from the advisory text: "incomplete fix for CVE-…", "bypass of the fix", or "introduced in" a named commit or release. For `complete_fix`, no later pip advisory cites the CVE.
+- Every commit resolves in its own repository, `base_commit` is the first parent, and `followup_fix_commit` descends from `fix_commit`.
+
+The checker fills:
 
 - `verification.checked_at`
 - `verification.checked_by`
-- `verification.evidence_urls`
+- `verification.evidence_urls` (the advisories and the commits)
 
-and sets `verified` to true. Until then the harness will not score a result that names the entry.
+and sets `verified` to true. The harness will not score a result that names an unverified entry.
 
 ## Run
 
