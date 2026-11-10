@@ -468,7 +468,7 @@ export default function Settings() {
                           {rotatingBotId === bot.id ? "Rotating..." : "Rotate Key"}
                         </button>
                       )}
-                      {!(bot.own && bot.status === "active") && (
+                      {user?.is_admin && !(bot.own && bot.status === "active") && (
                         <button
                           onClick={() => handleToggleSuspend(bot)}
                           disabled={suspendingBotId === bot.id || rotatingBotId === bot.id}

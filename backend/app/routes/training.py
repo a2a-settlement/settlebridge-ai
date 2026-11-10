@@ -12,14 +12,15 @@ from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, is_platform_admin
+from app.models.bounty import Bounty
 from app.models.claim import Claim
 from app.models.submission import Submission
 from app.models.training_run import TrainingRun, TrainingTranscript
-from app.models.score_history import ScoreHistory
+from app.models.score_history import ScoreHistory, ScoreMode
 from app.models.user import User
 from app.services import training_service
-from app.services.repo_visibility import hidden_bounty_ids
+from app.services.repo_visibility import bounty_hidden_clause, hidden_bounty_ids
 
 router = APIRouter()
 training_public_router = APIRouter()
@@ -289,16 +290,91 @@ async def list_score_history(
     elif training_run_id is None:
         agent_user_id = user.id
 
-    rows = await training_service.get_score_history(
-        db,
-        training_run_id=training_run_id,
-        agent_user_id=agent_user_id,
-        mode=mode,
-        task_type=task_type,
-        limit=limit,
-        offset=offset,
-    )
+    admin = is_platform_admin(user)
+    privileged = False
+    if training_run_id is not None and not admin:
+        privileged = await _score_run_is_privileged(db, training_run_id, user)
+
+    other_agent = agent_user_id is not None and agent_user_id != user.id
+    if other_agent and not privileged and not admin:
+        rows = await _public_agent_score_history(
+            db,
+            agent_user_id=agent_user_id,
+            training_run_id=training_run_id,
+            mode=mode,
+            task_type=task_type,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        rows = await training_service.get_score_history(
+            db,
+            training_run_id=training_run_id,
+            agent_user_id=agent_user_id,
+            mode=mode,
+            task_type=task_type,
+            limit=limit,
+            offset=offset,
+        )
     return [_score_row_response(r) for r in rows]
+
+
+async def _score_run_is_privileged(db: AsyncSession, run_id: uuid.UUID, user: User) -> bool:
+    """True when the caller owns the run or requested its bounty.
+
+    A public run whose bounty is not hidden is readable, but not privileged.
+    Missing, private, and hidden runs are 404.
+    """
+    run = (
+        await db.execute(select(TrainingRun).where(TrainingRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if run.agent_user_id == user.id:
+        return True
+    requester_id = (
+        await db.execute(select(Bounty.requester_id).where(Bounty.id == run.bounty_id))
+    ).scalar_one_or_none()
+    if requester_id == user.id:
+        return True
+    if run.public and not await hidden_bounty_ids(db, [run.bounty_id]):
+        return False
+    raise HTTPException(status_code=404, detail="Training run not found")
+
+
+async def _public_agent_score_history(
+    db: AsyncSession,
+    *,
+    agent_user_id: uuid.UUID,
+    training_run_id: uuid.UUID | None,
+    mode: str | None,
+    task_type: str | None,
+    limit: int,
+    offset: int,
+) -> list[ScoreHistory]:
+    """Another agent's scores on public runs whose bounty is not hidden.
+
+    Rows with no training run are left out. limit and offset apply after that.
+    """
+    hidden = select(Bounty.id).where(bounty_hidden_clause())
+    q = (
+        select(ScoreHistory)
+        .join(TrainingRun, TrainingRun.id == ScoreHistory.training_run_id)
+        .where(
+            ScoreHistory.agent_user_id == agent_user_id,
+            TrainingRun.public.is_(True),
+            TrainingRun.bounty_id.not_in(hidden),
+        )
+        .order_by(ScoreHistory.created_at.asc())
+    )
+    if training_run_id is not None:
+        q = q.where(ScoreHistory.training_run_id == training_run_id)
+    if mode is not None:
+        q = q.where(ScoreHistory.mode == ScoreMode(mode.upper()))
+    if task_type is not None:
+        q = q.where(ScoreHistory.task_type == task_type)
+    q = q.limit(limit).offset(offset)
+    return list((await db.execute(q)).scalars().all())
 
 
 # ---------------------------------------------------------------------------
