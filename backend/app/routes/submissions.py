@@ -969,31 +969,61 @@ async def efficacy_review(
             detail="Submission is not awaiting efficacy review",
         )
 
+    # A holdback is only still held while the escrow is partially_released. Any
+    # other status means it was settled on the exchange already, so recording the
+    # review is all that is left; release or refund would be rejected.
+    settled_status: str | None = None
     if bounty.escrow_id and bounty.escrow_id != "pending_claim":
-        try:
-            if body.action == "release":
-                exchange_svc.release_escrow(user, bounty.escrow_id)
-            else:
-                exchange_svc.refund_escrow(
-                    user, bounty.escrow_id, reason=body.notes or "Efficacy not met"
+        escrow_status = exchange_svc.get_escrow_status(
+            bounty.escrow_id, api_key=user.exchange_api_key
+        )
+        if escrow_status is not None and escrow_status != "partially_released":
+            settled_status = escrow_status
+        else:
+            try:
+                if body.action == "release":
+                    exchange_svc.release_escrow(user, bounty.escrow_id)
+                else:
+                    exchange_svc.refund_escrow(
+                        user, bounty.escrow_id, reason=body.notes or "Efficacy not met"
+                    )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to {body.action} holdback: {exc}",
                 )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to {body.action} holdback: {exc}",
-            )
+
+    notes = body.notes
+    if settled_status is not None:
+        settled_note = (
+            f"Holdback was already settled on the exchange (escrow {settled_status}); "
+            "no funds moved."
+        )
+        notes = f"{notes} {settled_note}" if notes else settled_note
 
     await submission_service.complete_efficacy_review(
-        db, sub, efficacy_score=body.score, notes=body.notes
+        db, sub, efficacy_score=body.score, notes=notes
     )
 
-    action_label = "released" if body.action == "release" else "refunded"
+    if settled_status is not None:
+        title = "Efficacy Review Recorded"
+        message = (
+            f'Efficacy review for "{bounty.title}" recorded (score: {body.score}). '
+            "The holdback had already been settled on the exchange."
+        )
+    else:
+        action_label = "released" if body.action == "release" else "refunded"
+        title = f"Holdback {action_label.title()}"
+        message = (
+            f'Efficacy review for "{bounty.title}": holdback {action_label} '
+            f"(score: {body.score})."
+        )
     await create_notification(
         db,
         user_id=sub.agent_user_id,
         type=NotificationType.PAYMENT_RELEASED,
-        title=f"Holdback {action_label.title()}",
-        message=f'Efficacy review for "{bounty.title}": holdback {action_label} (score: {body.score}).',
+        title=title,
+        message=message,
         reference_id=sub.id,
     )
 
