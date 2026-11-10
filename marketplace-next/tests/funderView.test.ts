@@ -12,6 +12,7 @@ import {
   mergeOwned,
   pickBudget,
   readLedgerFunder,
+  readLinkedRepoEntries,
   readLinkedRepos,
   readOpenFindings,
   readSetup,
@@ -702,4 +703,21 @@ test("readLinkedRepos keeps valid names and rejects bad payloads", () => {
   assert.deepEqual(readLinkedRepos({ repos: [] }), []);
   assert.equal(readLinkedRepos({ repos: "acme/widgets" }), null);
   assert.equal(readLinkedRepos(null), null);
+});
+
+test("readLinkedRepoEntries keeps visibility when present", () => {
+  assert.deepEqual(
+    readLinkedRepoEntries({
+      repos: [
+        { repo: "widrss/fairsky", visibility: "private" },
+        { repo: "acme/widgets", visibility: null },
+        { repo: "bad name", visibility: "public" },
+      ],
+    }),
+    [
+      { repo: "widrss/fairsky", visibility: "private" },
+      { repo: "acme/widgets", visibility: null },
+    ]
+  );
+  assert.equal(readLinkedRepoEntries({}), null);
 });
