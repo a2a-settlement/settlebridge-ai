@@ -11,6 +11,7 @@ export interface User {
   managed_developer_id: string | null;
   bio: string | null;
   created_at: string;
+  is_admin?: boolean;
 }
 
 export type BountyStatus =

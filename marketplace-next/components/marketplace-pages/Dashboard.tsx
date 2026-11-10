@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, RefreshCw, Settings, Wallet, Wrench } from "lucide-react";
+import { Bell, RefreshCw, Server, Settings, Wallet, Wrench } from "lucide-react";
 import { NotSetUpPanel } from "@/components/NotSetUpPanel";
 import FunderHome from "@/components/marketplace-pages/FunderHome";
 import SolverHome from "@/components/marketplace-pages/SolverHome";
@@ -63,6 +63,14 @@ export default function Dashboard() {
             >
               <Settings className="w-4 h-4" /> Settings
             </Link>
+            {user.is_admin && (
+              <a
+                href="https://settlebridge.ai/app/"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+              >
+                <Server className="w-4 h-4" /> Gateway console
+              </a>
+            )}
           </nav>
         </aside>
 
