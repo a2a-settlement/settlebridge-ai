@@ -29,6 +29,7 @@ interface ManagedBot {
   developer_id: string;
   reputation: number;
   created_at: string;
+  own?: boolean;
 }
 
 interface RotatedKey {
@@ -58,8 +59,7 @@ export default function Settings() {
   const [rotatedKey, setRotatedKey] = useState<RotatedKey | null>(null);
   const [rotatedKeyCopied, setRotatedKeyCopied] = useState(false);
   const [rotatedKeyVisible, setRotatedKeyVisible] = useState(false);
-  const [devIdInput, setDevIdInput] = useState("");
-  const [savingDevId, setSavingDevId] = useState(false);
+  const [namespace, setNamespace] = useState<string | null>(null);
 
   const fetchBots = useCallback(async () => {
     setBotsLoading(true);
@@ -67,6 +67,7 @@ export default function Settings() {
     try {
       const res = await api.get("/bots");
       setBots(res.data.bots || []);
+      setNamespace(res.data.developer_id || null);
     } catch (err: any) {
       setBotsError(err.response?.data?.detail || "Failed to load bots");
     } finally {
@@ -104,20 +105,6 @@ export default function Settings() {
       setBotsError(err.response?.data?.detail || "Action failed");
     } finally {
       setSuspendingBotId(null);
-    }
-  };
-
-  const handleSaveDevId = async () => {
-    if (!devIdInput.trim()) return;
-    setSavingDevId(true);
-    try {
-      await api.patch("/bots/settings", { developer_id: devIdInput.trim() });
-      await refresh();
-      setDevIdInput("");
-    } catch (err: any) {
-      setBotsError(err.response?.data?.detail || "Failed to update namespace");
-    } finally {
-      setSavingDevId(false);
     }
   };
 
@@ -410,32 +397,17 @@ export default function Settings() {
 
           {botsExpanded && (
             <div className="mt-5 space-y-4">
-              {/* Developer ID namespace config */}
-              <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-2">
+              <div className="bg-gray-50 rounded-lg p-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-500">Namespace</span>
                   <span className="font-mono text-xs text-gray-700">
-                    {user.managed_developer_id || (
-                      <span className="text-gray-400 italic">not set</span>
-                    )}
+                    {namespace || <span className="text-gray-400 italic">unknown</span>}
                   </span>
                 </div>
-                <div className="flex gap-2 pt-1">
-                  <input
-                    type="text"
-                    value={devIdInput}
-                    onChange={(e) => setDevIdInput(e.target.value)}
-                    placeholder="e.g. truthsetter-clawd"
-                    className="flex-1 px-3 py-1.5 rounded-lg border border-gray-300 text-xs focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none"
-                  />
-                  <button
-                    onClick={handleSaveDevId}
-                    disabled={savingDevId || !devIdInput.trim()}
-                    className="px-3 py-1.5 bg-navy-900 text-white rounded-lg text-xs font-medium hover:bg-navy-800 disabled:opacity-50"
-                  >
-                    {savingDevId ? "Saving..." : "Update"}
-                  </button>
-                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  The developer ID of your linked exchange account. Only bots registered under
+                  it are listed.
+                </p>
               </div>
 
               {botsError && (
@@ -460,7 +432,7 @@ export default function Settings() {
 
               {bots.length === 0 && !botsLoading && (
                 <p className="text-sm text-gray-400 text-center py-4">
-                  No bots found for this namespace. Check your developer ID above.
+                  No bots found in this namespace.
                 </p>
               )}
 
@@ -486,29 +458,33 @@ export default function Settings() {
                       >
                         {bot.status}
                       </span>
-                      <button
-                        onClick={() => handleRotateKey(bot.id)}
-                        disabled={rotatingBotId === bot.id || suspendingBotId === bot.id}
-                        className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 disabled:opacity-50 font-medium"
-                      >
-                        <Key className="w-3 h-3" />
-                        {rotatingBotId === bot.id ? "Rotating..." : "Rotate Key"}
-                      </button>
-                      <button
-                        onClick={() => handleToggleSuspend(bot)}
-                        disabled={suspendingBotId === bot.id || rotatingBotId === bot.id}
-                        className={`flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border font-medium disabled:opacity-50 ${
-                          bot.status === "active"
-                            ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
-                            : "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
-                        }`}
-                      >
-                        {suspendingBotId === bot.id
-                          ? "..."
-                          : bot.status === "active"
-                          ? "Suspend"
-                          : "Reactivate"}
-                      </button>
+                      {bot.own && (
+                        <button
+                          onClick={() => handleRotateKey(bot.id)}
+                          disabled={rotatingBotId === bot.id || suspendingBotId === bot.id}
+                          className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 disabled:opacity-50 font-medium"
+                        >
+                          <Key className="w-3 h-3" />
+                          {rotatingBotId === bot.id ? "Rotating..." : "Rotate Key"}
+                        </button>
+                      )}
+                      {!(bot.own && bot.status === "active") && (
+                        <button
+                          onClick={() => handleToggleSuspend(bot)}
+                          disabled={suspendingBotId === bot.id || rotatingBotId === bot.id}
+                          className={`flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border font-medium disabled:opacity-50 ${
+                            bot.status === "active"
+                              ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
+                              : "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                          }`}
+                        >
+                          {suspendingBotId === bot.id
+                            ? "..."
+                            : bot.status === "active"
+                            ? "Suspend"
+                            : "Reactivate"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
