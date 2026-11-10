@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      # Same install as backend/Dockerfile, so CI tests what the image ships.
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest
+  challenge-runner:
+    name: Challenge runner tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: challenge-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pytest jsonschema pydantic
+      - run: python -m pytest
