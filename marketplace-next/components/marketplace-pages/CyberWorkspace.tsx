@@ -4,10 +4,14 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import CyberTaskCard from "@/components/CyberTaskCard";
+import { useAuth } from "@/hooks/useAuth";
+import { readLinkedRepoEntries, type LinkedRepo } from "@/lib/funderView";
 import type { CyberTask, CyberTaskView } from "@/lib/types";
-import { fetchCyberTasks } from "@/services/api";
+import api, { fetchCyberTasks } from "@/services/api";
 
 const PAGE_SIZE = 12;
+const MAX_LISTED_REPOS = 3;
+const FUNDER_DASHBOARD_HREF = "/dashboard?view=fund";
 
 const TABS: { view: CyberTaskView; label: string }[] = [
   { view: "available", label: "Available" },
@@ -55,6 +59,30 @@ export default function CyberWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const { user } = useAuth();
+  const [linked, setLinked] = useState<LinkedRepo[]>([]);
+
+  useEffect(() => {
+    if (!user) {
+      setLinked([]);
+      return;
+    }
+    let active = true;
+    api
+      .get<unknown>("/v1/github/repos/mine")
+      .then(({ data }) => {
+        if (active) setLinked(readLinkedRepoEntries(data) ?? []);
+      })
+      .catch(() => {
+        if (active) setLinked([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  const hasLinked = linked.length > 0;
+  const privateLinked = linked.filter((entry) => entry.visibility !== "public").length;
 
   useEffect(() => {
     let active = true;
@@ -121,18 +149,54 @@ export default function CyberWorkspace() {
       <p className="text-gray-500 text-sm mt-1 max-w-3xl leading-relaxed">{INTRO}</p>
 
       <div className="grid md:grid-cols-2 gap-4 mt-8">
-        <section className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col">
-          <h2 className="text-lg font-semibold text-navy-900">For maintainers</h2>
-          <p className="mt-2 text-sm font-semibold text-navy-800">Connect a repository</p>
-          <p className="mt-2 text-sm text-gray-500 leading-relaxed flex-1">
-            Install the SettleBridge GitHub App on a public repository, choose required checks
-            and fund bounties. Dependabot and code-scanning alert tasks are opt-in per
-            repository.
-          </p>
-          <Link href="/dashboard/github/setup" className={actionButtonClass}>
-            Connect a repository
-          </Link>
-        </section>
+        {hasLinked ? (
+          <section className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col">
+            <h2 className="text-lg font-semibold text-navy-900">For maintainers</h2>
+            <p className="mt-2 text-sm font-semibold text-navy-800">Your repositories</p>
+            <ul className="mt-2 space-y-1 text-sm text-gray-700">
+              {linked.slice(0, MAX_LISTED_REPOS).map((entry) => (
+                <li key={entry.repo} className="truncate">
+                  {entry.repo}
+                  {entry.visibility && entry.visibility !== "public" ? (
+                    <span className="ml-2 text-xs text-gray-400">{entry.visibility}</span>
+                  ) : null}
+                </li>
+              ))}
+              {linked.length > MAX_LISTED_REPOS ? (
+                <li className="text-gray-400">+{linked.length - MAX_LISTED_REPOS} more</li>
+              ) : null}
+            </ul>
+            <p className="mt-2 text-sm text-gray-500 leading-relaxed flex-1">
+              {privateLinked > 0
+                ? "Tasks on private repositories appear on your dashboard, not on this public board."
+                : "Manage required checks, alert tasks and funding from your dashboard."}
+            </p>
+            <div className="flex flex-wrap items-center gap-4">
+              <Link href={FUNDER_DASHBOARD_HREF} className={actionButtonClass}>
+                Manage repositories
+              </Link>
+              <Link
+                href="/dashboard/github/setup"
+                className={`mt-4 text-sm text-navy-700 font-medium hover:underline ${focusRing} rounded-sm`}
+              >
+                Connect another
+              </Link>
+            </div>
+          </section>
+        ) : (
+          <section className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col">
+            <h2 className="text-lg font-semibold text-navy-900">For maintainers</h2>
+            <p className="mt-2 text-sm font-semibold text-navy-800">Connect a repository</p>
+            <p className="mt-2 text-sm text-gray-500 leading-relaxed flex-1">
+              Install the SettleBridge GitHub App on a public repository, choose required checks
+              and fund bounties. Dependabot and code-scanning alert tasks are opt-in per
+              repository.
+            </p>
+            <Link href="/dashboard/github/setup" className={actionButtonClass}>
+              Connect a repository
+            </Link>
+          </section>
+        )}
         <section className="bg-white border border-gray-200 rounded-xl p-5 flex flex-col">
           <h2 className="text-lg font-semibold text-navy-900">For agent operators</h2>
           <p className="mt-2 text-sm font-semibold text-navy-800">Become a solver</p>
@@ -217,10 +281,10 @@ export default function CyberWorkspace() {
             {view === "available" ? (
               <p className="text-sm">
                 <Link
-                  href="/dashboard/github/setup"
+                  href={hasLinked ? FUNDER_DASHBOARD_HREF : "/dashboard/github/setup"}
                   className={`text-navy-700 font-medium hover:underline ${focusRing} rounded-sm`}
                 >
-                  Connect a repository
+                  {hasLinked ? "Your repositories" : "Connect a repository"}
                 </Link>
                 <span className="mx-2">·</span>
                 <Link

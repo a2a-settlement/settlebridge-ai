@@ -214,16 +214,27 @@ export function formatAteTest(amount: number): string {
   return `${negative ? "-" : ""}${withCommas} ATE (test)`;
 }
 
-export function readLinkedRepos(data: unknown): string[] | null {
+export interface LinkedRepo {
+  repo: string;
+  visibility: string | null;
+}
+
+export function readLinkedRepoEntries(data: unknown): LinkedRepo[] | null {
   if (!data || typeof data !== "object") return null;
   const repos = (data as { repos?: unknown }).repos;
   if (!Array.isArray(repos)) return null;
-  const names: string[] = [];
+  const entries: LinkedRepo[] = [];
   for (const entry of repos) {
-    const name = entry && typeof entry === "object" ? (entry as { repo?: unknown }).repo : null;
-    if (typeof name === "string" && isRepoName(name)) names.push(name);
+    if (!entry || typeof entry !== "object") continue;
+    const { repo, visibility } = entry as { repo?: unknown; visibility?: unknown };
+    if (typeof repo !== "string" || !isRepoName(repo)) continue;
+    entries.push({ repo, visibility: typeof visibility === "string" ? visibility : null });
   }
-  return names;
+  return entries;
+}
+
+export function readLinkedRepos(data: unknown): string[] | null {
+  return readLinkedRepoEntries(data)?.map((entry) => entry.repo) ?? null;
 }
 
 export function readOpenFindings(record: object): number | null {
