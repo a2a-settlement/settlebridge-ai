@@ -138,6 +138,8 @@ export interface FunderRepoCard {
 
 export interface FunderModelInput {
   contextRepo: string | null;
+  // Repos the caller funds. Null when the list could not be loaded.
+  linked?: readonly string[] | null;
   ownedKnown: boolean;
   owned: readonly OwnedBounty[];
   cyber: readonly CyberHit[] | null;
@@ -210,6 +212,18 @@ export function formatAteTest(amount: number): string {
   const digits = String(Math.trunc(Math.abs(amount)));
   const withCommas = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `${negative ? "-" : ""}${withCommas} ATE (test)`;
+}
+
+export function readLinkedRepos(data: unknown): string[] | null {
+  if (!data || typeof data !== "object") return null;
+  const repos = (data as { repos?: unknown }).repos;
+  if (!Array.isArray(repos)) return null;
+  const names: string[] = [];
+  for (const entry of repos) {
+    const name = entry && typeof entry === "object" ? (entry as { repo?: unknown }).repo : null;
+    if (typeof name === "string" && isRepoName(name)) names.push(name);
+  }
+  return names;
 }
 
 export function readOpenFindings(record: object): number | null {
@@ -614,7 +628,9 @@ export function buildFunderModel(input: FunderModelInput): FunderModel {
     input.cyber === null
       ? []
       : input.cyber.filter((hit) => ownedIds.has(hit.bountyId)).map((hit) => hit.repo);
+  const linked = input.linked === undefined ? [] : input.linked;
   const repoNames = uniqueRepos([
+    ...(linked ?? []),
     ...input.owned.map((bounty) => bounty.repo),
     ...cyberRepos,
     input.contextRepo,
@@ -679,6 +695,6 @@ export function buildFunderModel(input: FunderModelInput): FunderModel {
       ledgerExchangeFailed: input.ledgerExchangeFailed,
     }),
     tasksIncomplete: input.cyber !== null && !input.cyberComplete,
-    discoveryComplete: input.ownedKnown,
+    discoveryComplete: input.ownedKnown && linked !== null,
   };
 }

@@ -23,12 +23,13 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.github import GitHubIdentity, GitHubRepoLink
+from app.models.github import GitHubIdentity, GitHubInstallation, GitHubRepoLink
 from app.models.user import User
 from app.services import exchange, github_app
 from app.services.github_bounty_service import list_repo_links_for_installation
@@ -339,6 +340,37 @@ async def setup_status(
     result["next_steps"] = steps
     result["ready"] = not any(step["blocking"] for step in steps)
     return result
+
+
+@router.get("/repos/mine")
+async def my_repos(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Repositories the caller funds whose App installation is still present."""
+    _require_enabled()
+    rows = await db.execute(
+        select(GitHubRepoLink)
+        .join(
+            GitHubInstallation,
+            GitHubInstallation.installation_id == GitHubRepoLink.installation_id,
+        )
+        .where(
+            GitHubRepoLink.funder_user_id == user.id,
+            GitHubInstallation.removed_at.is_(None),
+        )
+        .order_by(GitHubRepoLink.repo_full_name)
+    )
+    return {
+        "repos": [
+            {
+                "repo": link.repo_full_name,
+                "enabled": bool(link.enabled),
+                "visibility": link.visibility,
+            }
+            for link in rows.scalars().all()
+        ]
+    }
 
 
 @router.get("/setup/info")
