@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_admin
 from app.models.user import User
 from app.models.gateway import (
     AlertEvent,
@@ -44,12 +44,12 @@ from app.schemas.gateway import (
     SettlementOverviewResponse,
     TrustPolicyCreate,
     TrustPolicyResponse,
-    TrustPolicyUpdate,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
+registration_router = APIRouter()
 
 _start_time = time.time()
 
@@ -276,7 +276,11 @@ async def _claim_gateway_agent(
     return agent, claim_error
 
 
-@router.post("/agents/register", response_model=RegisterUtilityAgentResponse, status_code=201)
+@registration_router.post(
+    "/agents/register",
+    response_model=RegisterUtilityAgentResponse,
+    status_code=201,
+)
 async def register_utility_agent_via_gateway(
     request: Request,
     body: RegisterUtilityAgentRequest,
@@ -698,7 +702,6 @@ async def settlement_overview(_user: User = Depends(get_current_user)):
 
     ex_stats = get_exchange_stats_cache()
     token = ex_stats.get("token_supply", {})
-    activity = ex_stats.get("activity_24h", {})
     provenance = ex_stats.get("provenance", {})
 
     return SettlementOverviewResponse(

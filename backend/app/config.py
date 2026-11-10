@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     CHALLENGE_REPORT_KEY_ID: str = "challenge-report-1"
     # Comma-separated user UUIDs allowed to create challenges. Empty means nobody.
     CHALLENGE_OPERATOR_USER_IDS: str = ""
+    # Comma-separated user UUIDs allowed to administer the gateway. Empty means nobody.
+    PLATFORM_ADMIN_USER_IDS: str = ""
     # Default per-account caps when a budget row is created.
     SPEND_DEFAULT_PERIOD_CAP_CENTS: int = 5000
     SPEND_DEFAULT_PER_JOB_CAP_CENTS: int = 2500

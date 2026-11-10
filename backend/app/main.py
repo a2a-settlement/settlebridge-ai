@@ -226,6 +226,9 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(contact.router, prefix="/api", tags=["contact"])
+app.include_router(
+    gateway_routes.registration_router, prefix="/api/gateway", tags=["gateway"]
+)
 app.include_router(gateway_routes.router, prefix="/api/gateway", tags=["gateway"])
 
 if settings.MARKETPLACE_ENABLED:

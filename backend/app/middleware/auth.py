@@ -176,3 +176,35 @@ def require_role(*roles: UserType):
         return user
 
     return checker
+
+
+def _parse_user_id(value: object) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _platform_admin_ids() -> frozenset[uuid.UUID]:
+    found: list[uuid.UUID] = []
+    for part in settings.PLATFORM_ADMIN_USER_IDS.split(","):
+        parsed = _parse_user_id(part.strip())
+        if parsed is not None:
+            found.append(parsed)
+    return frozenset(found)
+
+
+def is_platform_admin(user_or_id: object) -> bool:
+    candidate = getattr(user_or_id, "id", user_or_id)
+    parsed = _parse_user_id(candidate)
+    return parsed is not None and parsed in _platform_admin_ids()
+
+
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    if not is_platform_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform admin only")
+    return user
