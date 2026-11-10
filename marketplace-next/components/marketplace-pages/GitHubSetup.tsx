@@ -85,6 +85,12 @@ function messageFrom(err: unknown, fallback: string): string {
 
 const checkKey = (check: Check) => `${check.name}:${check.app_id}`;
 
+const GITHUB_ACTIONS_APP_ID = 15368;
+
+function checkSource(check: Check): string {
+  return check.app_id === GITHUB_ACTIONS_APP_ID ? "GitHub Actions" : `GitHub App ${check.app_id}`;
+}
+
 function parsePaths(text: string): string[] {
   return text
     .split(/[\s,]+/)
@@ -468,7 +474,7 @@ export default function GitHubSetup() {
                   >
                     {checkOptions.map((check) => (
                       <option key={checkKey(check)} value={checkKey(check)}>
-                        {check.name} (app {check.app_id})
+                        {check.name} ({checkSource(check)})
                       </option>
                     ))}
                   </select>
@@ -479,14 +485,21 @@ export default function GitHubSetup() {
                   </p>
                 )}
                 <p className="text-xs text-gray-400 mt-1">
+                  The automated test run (a CI job) that must pass on a solver&apos;s pull
+                  request before the bounty pays.
+                  {chosen && chosen.app_id === GITHUB_ACTIONS_APP_ID
+                    ? ` "${chosen.name}" is a job in your GitHub Actions workflow files.`
+                    : ""}
                   {pinned.length > 0
-                    ? `Pinned by ${detected.default_branch}'s branch rules.`
-                    : "A bounty pays out only when this check passes on the fix."}
+                    ? ` It's locked because ${detected.default_branch}'s branch protection already requires it.`
+                    : checkOptions.length > 0
+                      ? ` These are the checks that have passed on ${detected.default_branch}; pick the one that runs your tests.`
+                      : ""}
                 </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Paths solvers may change
+                  Files solvers may change
                 </label>
                 <input
                   value={pathsText}
@@ -495,7 +508,11 @@ export default function GitHubSetup() {
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm font-mono"
                 />
                 <p className="text-xs text-gray-400 mt-1">
-                  Comma-separated globs. Changes under .github/ are never allowed.
+                  A solver&apos;s pull request may only touch files matching these patterns.
+                  If it changes anything else, it&apos;s rejected and not paid. A trailing *
+                  covers everything in that folder, so src/* means all of src/. Separate
+                  patterns with commas. The suggestion comes from your repo&apos;s layout.
+                  Changes under .github/ are never allowed.
                 </p>
               </div>
               <div className="space-y-3">
