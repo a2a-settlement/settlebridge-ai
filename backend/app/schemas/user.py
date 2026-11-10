@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, computed_field
 
 from app.models.user import UserType
 
@@ -47,3 +47,10 @@ class UserResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def is_admin(self) -> bool:
+        from app.middleware.auth import is_platform_admin
+
+        return is_platform_admin(self.id)

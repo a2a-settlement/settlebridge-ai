@@ -9,6 +9,7 @@ export interface User {
   exchange_balance_cached: number | null;
   bio: string | null;
   created_at: string;
+  is_admin?: boolean;
 }
 
 export type BountyStatus =
