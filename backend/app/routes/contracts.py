@@ -4,6 +4,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -11,7 +12,7 @@ from app.middleware.auth import get_current_user
 from app.models.contract import ContractStatus
 from app.models.notification import NotificationType
 from app.models.snapshot import SnapshotStatus
-from app.models.user import User
+from app.models.user import User, UserType
 from app.schemas.contract import (
     ContractCreateRequest,
     ContractListResponse,
@@ -43,12 +44,32 @@ async def create_contract(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    result = await db.execute(select(User).where(User.id == body.agent_user_id))
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=400, detail="Agent user not found")
+    if agent.id == user.id:
+        raise HTTPException(status_code=400, detail="Cannot create a contract with yourself")
+    if agent.user_type not in (UserType.AGENT_OPERATOR, UserType.BOTH):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent user type must be agent_operator or both",
+        )
+    bot_id = agent.exchange_bot_id
+    if not bot_id:
+        raise HTTPException(status_code=400, detail="Agent has no exchange bot")
+    if body.agent_exchange_bot_id is not None and body.agent_exchange_bot_id != bot_id:
+        raise HTTPException(
+            status_code=400,
+            detail="agent_exchange_bot_id does not match the agent's exchange bot",
+        )
+
     group_id = f"contract-{uuid.uuid4().hex[:12]}"
     contract = await contract_service.create_contract(
         db,
         requester_id=user.id,
         agent_user_id=body.agent_user_id,
-        agent_exchange_bot_id=body.agent_exchange_bot_id,
+        agent_exchange_bot_id=bot_id,
         title=body.title,
         description=body.description,
         category_id=body.category_id,
