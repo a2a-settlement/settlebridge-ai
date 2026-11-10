@@ -12,6 +12,7 @@ import {
   mergeOwned,
   pickBudget,
   readLedgerFunder,
+  readLinkedRepos,
   readOpenFindings,
   readSetup,
   REPO_STATUS_ORDER,
@@ -671,4 +672,34 @@ test("server role, not the header switch, decides which view is allowed", () => 
   assert.equal(roleIncludesView("both", "fund"), true);
   assert.equal(roleIncludesView("both", "solve"), true);
   assert.equal(roleIncludesView("other", "fund"), false);
+});
+
+test("linked repos appear with no bounties or tasks", () => {
+  const model = buildFunderModel(modelInput({ linked: ["widrss/fairsky", "widrss/sentinelrecon"] }));
+  assert.deepEqual(
+    model.repos.map((repo) => repo.repo).sort(),
+    ["widrss/fairsky", "widrss/sentinelrecon"]
+  );
+  assert.equal(model.discoveryComplete, true);
+
+  const deduped = buildFunderModel(
+    modelInput({ linked: ["Acme/Widgets"], contextRepo: "acme/widgets" })
+  );
+  assert.equal(deduped.repos.length, 1);
+
+  const failed = buildFunderModel(modelInput({ linked: null, contextRepo: "acme/widgets" }));
+  assert.equal(failed.repos.length, 1);
+  assert.equal(failed.discoveryComplete, false);
+});
+
+test("readLinkedRepos keeps valid names and rejects bad payloads", () => {
+  assert.deepEqual(
+    readLinkedRepos({
+      repos: [{ repo: "acme/widgets", enabled: true }, { repo: "not a repo" }, null, { name: "x/y" }],
+    }),
+    ["acme/widgets"]
+  );
+  assert.deepEqual(readLinkedRepos({ repos: [] }), []);
+  assert.equal(readLinkedRepos({ repos: "acme/widgets" }), null);
+  assert.equal(readLinkedRepos(null), null);
 });

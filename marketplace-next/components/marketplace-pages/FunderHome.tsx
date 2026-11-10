@@ -15,6 +15,7 @@ import {
   isRepoName,
   mergeOwned,
   readLedgerFunder,
+  readLinkedRepos,
   readOpenFindings,
   setupStatusPath,
   uniqueRepos,
@@ -502,7 +503,18 @@ export default function FunderHome() {
           complete: false,
         }));
 
-      const [posted, ledger, cyber] = await Promise.all([postedPromise, ledgerPromise, cyberPromise]);
+      // 404 means self-serve onboarding is off, so nothing is linked through it.
+      const linkedPromise = api
+        .get<unknown>("/v1/github/repos/mine")
+        .then(({ data }) => readLinkedRepos(data))
+        .catch((err: unknown) => (statusOf(err) === 404 ? [] : null));
+
+      const [posted, ledger, cyber, linked] = await Promise.all([
+        postedPromise,
+        ledgerPromise,
+        cyberPromise,
+        linkedPromise,
+      ]);
       if (cancelled) return;
       setBounties({ loading: false, error: posted.error, items: posted.items });
       setWallet({ loading: false, error: ledger.error, items: ledger.items });
@@ -524,6 +536,7 @@ export default function FunderHome() {
           ? cyber.tasks.filter((task) => ownedIds.has(task.bountyId)).map((task) => task.repo)
           : [];
         const repoNames = uniqueRepos([
+          ...(linked ?? []),
           ...owned.owned.map((bounty) => bounty.repo),
           ...cyberRepos,
           contextRepo,
@@ -533,6 +546,7 @@ export default function FunderHome() {
 
         const model = buildFunderModel({
           contextRepo,
+          linked,
           ownedKnown: owned.ownedKnown,
           owned: owned.owned,
           cyber: cyber.ok ? cyber.tasks : null,

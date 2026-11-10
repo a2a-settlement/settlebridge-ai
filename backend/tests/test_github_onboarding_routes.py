@@ -591,3 +591,49 @@ def test_installation_repos_caps_lookups(db, gh, monkeypatch):
     payload = _client(db, user).get(INSTALL_URL).json()
     assert len(calls) == 2 and len(payload["repos"]) == 2
     assert payload["truncated"] is True
+
+
+MINE_URL = "/api/v1/github/repos/mine"
+
+
+def _fund(db: Bridge, repo: str, funder_user_id, **values) -> None:
+    db.sync.add(
+        GitHubRepoLink(
+            id=uuid.uuid4(),
+            installation_id=10,
+            repo_full_name=repo,
+            funder_user_id=funder_user_id,
+            enabled=values.pop("enabled", True),
+            default_policy={},
+            required_checks=[],
+            **values,
+        )
+    )
+    db.sync.commit()
+
+
+def test_my_repos_lists_only_repos_the_caller_funds(db, gh):
+    user = _setup(db)
+    other = make_user("other@example.com")
+    db.sync.add(other)
+    _fund(db, "acme/zeta", user.id, visibility="private")
+    _fund(db, "acme/alpha", user.id, enabled=False, visibility="public")
+    _fund(db, "acme/theirs", other.id)
+    response = _client(db, user).get(MINE_URL)
+    assert response.status_code == 200
+    assert response.json()["repos"] == [
+        {"repo": "acme/alpha", "enabled": False, "visibility": "public"},
+        {"repo": "acme/zeta", "enabled": True, "visibility": "private"},
+    ]
+
+
+def test_my_repos_skips_removed_installations(db, gh):
+    user = _setup(db, removed=True)
+    _fund(db, "acme/gone", user.id)
+    assert _client(db, user).get(MINE_URL).json()["repos"] == []
+
+
+def test_my_repos_is_hidden_when_self_serve_is_off(db, gh, monkeypatch):
+    user = _setup(db)
+    monkeypatch.setattr(routes.settings, "GITHUB_SELF_SERVE_ONBOARDING", False)
+    assert _client(db, user).get(MINE_URL).status_code == 404
