@@ -28,7 +28,7 @@ class ContractCreateRequest(BaseModel):
     title: str
     description: str
     agent_user_id: uuid.UUID
-    agent_exchange_bot_id: str
+    agent_exchange_bot_id: str | None = None
     category_id: uuid.UUID | None = None
     acceptance_criteria: AcceptanceCriteria | None = None
     provenance_tier: ProvenanceTier = ProvenanceTier.TIER1_SELF_DECLARED

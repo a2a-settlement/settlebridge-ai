@@ -1,11 +1,11 @@
 """Managed bot routes: bots in the namespace of the user's own linked exchange account.
 
 The namespace is the ``developer_id`` of the user's linked exchange account, read
-from the exchange, never a value the user types. Listing, suspend and unsuspend use
-the operator dashboard key, so each is limited to bots in that namespace. A
+from the exchange, never a value the user types. Listing uses the operator dashboard
+key, so it is limited to bots in that namespace. Suspend and reactivate use that key
+and the same namespace check, but only platform admins may call them. A
 ``developer_id`` is self-declared at registration, which is enough to scope a list
-or a suspension but not to hand out another bot's credentials, so key rotation is
-limited to the user's own linked account.
+but not a suspension. Key rotation is limited to the user's own linked account.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, is_platform_admin
 from app.models.user import User
 from app.services import exchange as exchange_svc
 
@@ -140,6 +140,11 @@ async def rotate_bot_key(
 
 
 def _dashboard_toggle(user: User, bot_id: str, action: str) -> dict:
+    if not is_platform_admin(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can suspend or reactivate bots.",
+        )
     key = _require_dashboard_key(action.title())
     _require_in_namespace(user, bot_id)
     if action == "suspend" and bot_id == user.exchange_bot_id:
@@ -165,13 +170,13 @@ def _dashboard_toggle(user: User, bot_id: str, action: str) -> dict:
 
 @router.post("/{bot_id}/suspend")
 async def suspend_bot(bot_id: str, user: User = Depends(get_current_user)) -> dict:
-    """Suspend a bot in the user's namespace (stops it receiving new escrows)."""
+    """Suspend a bot in the admin's namespace (stops it receiving new escrows)."""
     return _dashboard_toggle(user, bot_id, "suspend")
 
 
 @router.post("/{bot_id}/unsuspend")
 async def unsuspend_bot(bot_id: str, user: User = Depends(get_current_user)) -> dict:
-    """Reactivate a suspended bot in the user's namespace."""
+    """Reactivate a suspended bot in the admin's namespace."""
     return _dashboard_toggle(user, bot_id, "unsuspend")
 
 
