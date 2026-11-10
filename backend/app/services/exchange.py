@@ -426,26 +426,65 @@ def get_agent_card(account_id: str) -> dict[str, Any] | None:
         return None
 
 
-def list_managed_bots(user: User, developer_id: str | None = None) -> dict[str, Any]:
-    """Return bots managed by this user's exchange account, filtered by developer_id."""
+def own_namespace(user: User) -> str | None:
+    """The developer_id of the user's own linked exchange account."""
+    if not user.exchange_bot_id:
+        return None
+    developer_id = get_account(user.exchange_bot_id).get("developer_id")
+    return developer_id if isinstance(developer_id, str) and developer_id else None
+
+
+def list_namespace_bots(developer_id: str) -> list[dict[str, Any]]:
+    """Accounts in ``developer_id``, listed with the operator dashboard key.
+
+    The dashboard listing has no bot names, so each one is read from the public
+    account lookup; a failed lookup falls back to the account id.
+    """
     import httpx
 
-    dev_id = developer_id or user.managed_developer_id or ""  # type: ignore[attr-defined]
-    params: dict[str, str | int] = {"limit": 100}
-    if dev_id:
-        params["developer_id"] = dev_id
-    resp = httpx.get(
-        f"{settings.effective_exchange_url}/v1/accounts/managed-bots",
-        params=params,
-        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    key = settings.A2A_DASHBOARD_API_KEY
+    if not key:
+        raise RuntimeError("A2A_DASHBOARD_API_KEY is not configured")
+    base = settings.effective_exchange_url
+    with httpx.Client(timeout=10) as client:
+        resp = client.get(
+            f"{base}/v1/agents",
+            params={"org": developer_id, "limit": 100},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        resp.raise_for_status()
+        bots: list[dict[str, Any]] = []
+        for agent in resp.json().get("agents", []):
+            bot_id = agent.get("id")
+            if not isinstance(bot_id, str):
+                continue
+            name = bot_id
+            try:
+                account = client.get(f"{base}/v1/accounts/{bot_id}")
+                if account.status_code == 200:
+                    name = account.json().get("bot_name") or bot_id
+            except httpx.HTTPError:
+                pass
+            bots.append(
+                {
+                    "id": bot_id,
+                    "bot_name": name,
+                    "status": agent.get("status"),
+                    "developer_id": agent.get("org_id"),
+                    "reputation": agent.get("reputation"),
+                    "created_at": agent.get("created_at"),
+                }
+            )
+    return bots
 
 
 def rotate_api_key(user: User) -> str:
     """Rotate the caller's own exchange API key and return the new key."""
+    return rotate_api_key_with_grace(user)[0]
+
+
+def rotate_api_key_with_grace(user: User) -> tuple[str, int]:
+    """Rotate the caller's own exchange API key. Returns the new key and grace minutes."""
     import httpx
 
     response = httpx.post(
@@ -458,20 +497,8 @@ def rotate_api_key(user: User) -> str:
     api_key = body.get("api_key") if isinstance(body, dict) else None
     if not isinstance(api_key, str) or api_key == "":
         raise ValueError("exchange rotate-key response missing api_key")
-    return api_key
-
-
-def rotate_bot_key(user: User, bot_id: str) -> dict[str, Any]:
-    """Rotate the API key for a managed bot. Returns new ate_ key (once only)."""
-    import httpx
-
-    resp = httpx.post(
-        f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/rotate-key-managed",
-        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    grace = body.get("grace_period_minutes")
+    return api_key, grace if isinstance(grace, int) else 0
 
 
 def update_managed_developer_id(user: User, developer_id: str) -> None:
