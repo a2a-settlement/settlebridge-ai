@@ -4,6 +4,7 @@ import SharedSubmission from "./pages/SharedSubmission";
 import { useAuth } from "./hooks/useAuth";
 import { AppConfigContext, useAppConfig, useAppConfigLoader } from "./hooks/useAppConfig";
 import Layout from "./components/Layout";
+import AdminRoute from "./components/AdminRoute";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -105,18 +106,18 @@ function AppRoutes() {
       <Route path="/shared/:token" element={<SharedSubmission />} />
 
       <Route element={<Layout />}>
-        <Route path="/" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
+        <Route path="/" element={<AdminRoute><Overview /></AdminRoute>} />
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
-        <Route path="/agents" element={<ProtectedRoute><AgentHealth /></ProtectedRoute>} />
-        <Route path="/agents/manage" element={<ProtectedRoute><ManageAgents /></ProtectedRoute>} />
-        <Route path="/agents/:id" element={<ProtectedRoute><AgentDetail /></ProtectedRoute>} />
-        <Route path="/trust" element={<ProtectedRoute><TrustScores /></ProtectedRoute>} />
-        <Route path="/transactions" element={<ProtectedRoute><TransactionFlow /></ProtectedRoute>} />
-        <Route path="/audit" element={<ProtectedRoute><AuditLog /></ProtectedRoute>} />
-        <Route path="/policies" element={<ProtectedRoute><PolicyEditor /></ProtectedRoute>} />
-        <Route path="/settlement" element={<ProtectedRoute><SettlementOverview /></ProtectedRoute>} />
-        <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
-        <Route path="/assist" element={<ProtectedRoute><GatewayAssist /></ProtectedRoute>} />
+        <Route path="/agents" element={<AdminRoute><AgentHealth /></AdminRoute>} />
+        <Route path="/agents/manage" element={<AdminRoute><ManageAgents /></AdminRoute>} />
+        <Route path="/agents/:id" element={<AdminRoute><AgentDetail /></AdminRoute>} />
+        <Route path="/trust" element={<AdminRoute><TrustScores /></AdminRoute>} />
+        <Route path="/transactions" element={<AdminRoute><TransactionFlow /></AdminRoute>} />
+        <Route path="/audit" element={<AdminRoute><AuditLog /></AdminRoute>} />
+        <Route path="/policies" element={<AdminRoute><PolicyEditor /></AdminRoute>} />
+        <Route path="/settlement" element={<AdminRoute><SettlementOverview /></AdminRoute>} />
+        <Route path="/alerts" element={<AdminRoute><Alerts /></AdminRoute>} />
+        <Route path="/assist" element={<AdminRoute><GatewayAssist /></AdminRoute>} />
 
         {/* Marketplace has moved to market.settlebridge.ai */}
 
