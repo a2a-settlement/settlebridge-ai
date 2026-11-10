@@ -124,9 +124,12 @@ class Settings(BaseSettings):
     FIX_VERIFIER_PUBLIC_API: bool = False
     # Require a `verified` verdict and a valid receipt before a GitHub bounty pays out.
     FIX_VERIFIER_PAYOUT_GATE: bool = False
+    # Quotas and spend caps are per GitHub App installation; a verification that would
+    # cross either cap is refused before any sandbox or model spend.
     FIX_VERIFIER_DAILY_QUOTA: int = 20
     FIX_VERIFIER_RATE_LIMIT_PER_HOUR: int = 5
-    FIX_VERIFIER_MAX_COST_CENTS: int = 2500
+    FIX_VERIFIER_DAILY_COST_CAP_CENTS: int = 2500
+    FIX_VERIFIER_MAX_COST_CENTS_PER_VERIFICATION: int = 500
     # Hold back part of a verified GitHub payout; forfeit only on a security-motivated
     # revert or an overlapping follow-up CVE inside the window.
     FIX_WARRANTY_ENABLED: bool = False
