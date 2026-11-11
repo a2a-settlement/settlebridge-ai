@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -158,6 +160,15 @@ class FindingStatus(str, enum.Enum):
     INCONCLUSIVE = "inconclusive"
     DISMISSED = "dismissed"
     SUPERSEDED = "superseded"
+
+
+class EmbargoState(str, enum.Enum):
+    """Who may see a finding. A confirmed incomplete fix starts private."""
+
+    PRIVATE = "private"
+    NOTIFIED = "notified"
+    EMBARGOED = "embargoed"
+    DISCLOSED = "disclosed"
 
 
 class ChallengeTask(Base):
@@ -368,6 +379,21 @@ class Finding(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=FindingStatus.NEEDS_DECISION.value
     )
+    # Private until the maintainer is notified and the finding is disclosed.
+    embargo_state: Mapped[EmbargoState] = mapped_column(
+        Enum(
+            EmbargoState,
+            name="embargostate",
+            native_enum=True,
+            create_type=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        nullable=False,
+        default=EmbargoState.PRIVATE,
+        server_default=text("'private'"),
+    )
+    # End of a coordinated embargo. Empty until the finding enters embargoed.
+    embargo_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_class: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     # Only set when cited from an advisory, e.g. {"level": "high", "source": "GHSA-..."}.
