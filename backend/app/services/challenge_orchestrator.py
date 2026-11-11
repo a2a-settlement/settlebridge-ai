@@ -138,6 +138,32 @@ _CONFLICTS = {
     ParticipantRole.AUTHOR.value: _SEPARATED,
     ParticipantRole.SOLVER.value: _SEPARATED,
 }
+# Marketplace checks read ``_CONFLICTS`` and compare operator ids. This alias
+# stays that table. GitHub-only roles are not added here.
+ROLE_CONFLICTS = _CONFLICTS
+
+# GitHub bounty bindings. One principal may not hold both roles on one binding.
+# Sameness is the lease lineage in github_leases (user, GitHub account, exchange
+# bot, exchange principal), the same lineage as ``_self_dealing_denial``.
+GITHUB_ROLE_CONFLICTS: dict[str, frozenset[str]] = {
+    "solver": frozenset({"verifier", "challenger", "funder_approver"}),
+    "verifier": frozenset({"solver", "challenger", "funder_approver"}),
+    "challenger": frozenset({"solver", "verifier", "funder_approver"}),
+    "funder_approver": frozenset({"solver", "verifier", "challenger"}),
+}
+
+
+def github_roles_conflict(role: str, other: str) -> bool:
+    """True when one principal must not hold both roles on one GitHub binding."""
+    left = str(role or "").strip().casefold()
+    right = str(other or "").strip().casefold()
+    if not left or not right or left == right:
+        return False
+    blocked = GITHUB_ROLE_CONFLICTS.get(left)
+    if blocked is not None and right in blocked:
+        return True
+    other_blocked = GITHUB_ROLE_CONFLICTS.get(right, frozenset())
+    return left in other_blocked
 
 
 class InvalidTransition(Exception):
