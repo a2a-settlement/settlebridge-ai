@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, is_platform_admin
 from app.models.fix_verifier import FixVerification
 from app.models.user import User
 from app.schemas.fix_verification import FixVerificationCreate, FixVerificationResponse
@@ -48,6 +48,8 @@ from app.services.fix_verifier import (
     viewer_can_replay,
     viewer_can_see_details,
 )
+from app.services.github_leases import attribute_fix_verification
+from app.services.solver_identity import principals_for_house_account
 from app.services.verifier_quota import QuotaExceeded
 
 router = APIRouter(prefix="/api/v1/fix-verifications", tags=["fix-verifications"])
@@ -90,6 +92,31 @@ def _visible_body(
     return body
 
 
+def _house_principals() -> frozenset[str]:
+    raw = settings.PLATFORM_HOUSE_PRINCIPALS or ""
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+async def _attributed_solver_kind(db: AsyncSession, user: User, payload: FixVerificationCreate):
+    """Solver kind for the receipt. A caller can lower the claim, never raise it.
+
+    House callers (platform admins, ``account_kind == "house"``) are always house.
+    ``third_party`` is kept only when ``attribute_fix_verification`` agrees.
+    """
+    if (
+        payload.solver_kind == "house"
+        or is_platform_admin(user)
+        or principals_for_house_account(user)
+    ):
+        return "house", None
+    if payload.solver_kind != "third_party" or not payload.solver_principal_id:
+        return "unknown", None
+    attribution = await attribute_fix_verification(
+        payload.solver_principal_id, house_principals=_house_principals(), db=db
+    )
+    return attribution.solver_kind, attribution.denial
+
+
 async def _load(db: AsyncSession, verification_id: uuid.UUID) -> FixVerification | None:
     stmt = select(FixVerification).where(FixVerification.id == verification_id)
     return (await db.execute(stmt)).scalar_one_or_none()
@@ -106,6 +133,9 @@ async def create_fix_verification(
     except (json.JSONDecodeError, ValidationError, UnicodeError):
         raise HTTPException(status_code=422, detail="invalid_request") from None
     try:
+        solver_kind, denial = await _attributed_solver_kind(db, user, payload)
+        if denial is not None:
+            return JSONResponse(status_code=denial.status_code, content=denial.body)
         row = await request_verification(
             db,
             repo_full_name=payload.repo_full_name,
@@ -114,7 +144,7 @@ async def create_fix_verification(
             fix_sha=payload.fix_sha,
             advisory=payload.advisory.model_dump(),
             alert_ref=payload.alert_ref,
-            solver_kind=payload.solver_kind,
+            solver_kind=solver_kind,
             solver_principal_id=payload.solver_principal_id,
             user=user,
         )

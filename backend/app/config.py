@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     VERIFIER_BYPASS_BOUNTY_ENABLED: bool = False
     # Comma-separated user UUIDs allowed to administer the gateway. Empty means nobody.
     PLATFORM_ADMIN_USER_IDS: str = ""
+    # Comma-separated canonical principals (kind:value) that are house solvers.
+    PLATFORM_HOUSE_PRINCIPALS: str = ""
     # Default per-account caps when a budget row is created.
     SPEND_DEFAULT_PERIOD_CAP_CENTS: int = 5000
     SPEND_DEFAULT_PER_JOB_CAP_CENTS: int = 2500

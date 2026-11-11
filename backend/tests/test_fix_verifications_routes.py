@@ -237,6 +237,43 @@ def test_create_passes_budget_and_does_not_upgrade_house(world):
     assert quota.spend_cents == 11
 
 
+def test_third_party_claim_from_operator_is_house(world):
+    _as(world, OPERATOR)
+    response = world["client"].post(
+        URL, json=_body(solver_kind="third_party", solver_principal_id="user:someone")
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "house"
+    assert world["seen"][0]["solver_kind"] == "house"
+
+
+def test_third_party_claim_without_principal_is_unknown(world):
+    response = world["client"].post(
+        URL, json=_body(solver_kind="third_party", solver_principal_id=None)
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "unknown"
+
+
+def test_third_party_claim_with_unrelated_principal_stays_third_party(world):
+    response = world["client"].post(
+        URL,
+        json=_body(solver_kind="third_party", solver_principal_id=f"user:{uuid.UUID(int=9)}"),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "third_party"
+
+
+def test_third_party_claim_naming_a_house_principal_is_house(world, monkeypatch):
+    house = f"user:{uuid.UUID(int=7)}"
+    monkeypatch.setattr(settings, "PLATFORM_HOUSE_PRINCIPALS", house)
+    response = world["client"].post(
+        URL, json=_body(solver_kind="third_party", solver_principal_id=house)
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "house"
+
+
 def test_cache_hit_costs_nothing_more(world):
     first = world["client"].post(URL, json=_body())
     second = world["client"].post(URL, json=_body(repo_full_name="Acme/Widget"))
