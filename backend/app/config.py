@@ -117,6 +117,26 @@ class Settings(BaseSettings):
     CHALLENGE_REPORT_KEY_ID: str = "challenge-report-1"
     # Comma-separated user UUIDs allowed to create challenges. Empty means nobody.
     CHALLENGE_OPERATOR_USER_IDS: str = ""
+    # Fix verifier. Every behavior is off until its flag is set. Needs the private
+    # settlebridge-verifier package installed; without it verification is inconclusive.
+    FIX_VERIFIER_ENABLED: bool = False
+    # Accept verification requests from the public GitHub Action (OIDC-authenticated).
+    FIX_VERIFIER_PUBLIC_API: bool = False
+    # Require a `verified` verdict and a valid receipt before a GitHub bounty pays out.
+    FIX_VERIFIER_PAYOUT_GATE: bool = False
+    # Quotas and spend caps are per GitHub App installation; a verification that would
+    # cross either cap is refused before any sandbox or model spend.
+    FIX_VERIFIER_DAILY_QUOTA: int = 20
+    FIX_VERIFIER_RATE_LIMIT_PER_HOUR: int = 5
+    FIX_VERIFIER_DAILY_COST_CAP_CENTS: int = 2500
+    FIX_VERIFIER_MAX_COST_CENTS_PER_VERIFICATION: int = 500
+    # Hold back part of a verified GitHub payout; forfeit only on a security-motivated
+    # revert or an overlapping follow-up CVE inside the window.
+    FIX_WARRANTY_ENABLED: bool = False
+    FIX_WARRANTY_DAYS: int = 90
+    FIX_WARRANTY_HOLDBACK_PCT: int = 20
+    FIX_WARRANTY_REVIEW_SLA_DAYS: int = 7
+    VERIFIER_BYPASS_BOUNTY_ENABLED: bool = False
     # Comma-separated user UUIDs allowed to administer the gateway. Empty means nobody.
     PLATFORM_ADMIN_USER_IDS: str = ""
     # Default per-account caps when a budget row is created.
