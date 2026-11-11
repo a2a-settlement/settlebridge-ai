@@ -18,6 +18,7 @@ _MIGRATION = (
     / "versions"
     / "a7c3e9f1b2d4_challenge_engine_and_spend.py"
 )
+_EMBARGO_MIGRATION = _MIGRATION.with_name("c8f1a2e4b6d0_fix_verifier_embargo_and_opt_in.py")
 _NEW_TABLES = {
     "challenge_tasks",
     "challenge_contracts",
@@ -48,16 +49,26 @@ class _RecordingOp:
     def add_column(self, table, column):
         self.added_columns.setdefault(table, []).append(column)
 
+    def get_bind(self):
+        return None
 
-def _run_upgrade() -> _RecordingOp:
-    spec = importlib.util.spec_from_file_location("mig_a7c3", _MIGRATION)
+
+def _run_upgrade(path: Path = _MIGRATION) -> _RecordingOp:
+    spec = importlib.util.spec_from_file_location(f"mig_{path.stem[:4]}", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     recorder = _RecordingOp()
     module.op = recorder
+    if hasattr(module, "embargostate"):
+        module.embargostate.create = lambda *_a, **_k: None
     module.upgrade()
     return recorder
+
+
+def _later_columns() -> dict[str, set[str]]:
+    added = _run_upgrade(_EMBARGO_MIGRATION).added_columns
+    return {table: {c.name for c in columns} for table, columns in added.items()}
 
 
 def _type_name(column: sa.Column) -> str:
@@ -66,15 +77,28 @@ def _type_name(column: sa.Column) -> str:
 
 def test_migration_creates_every_new_table_with_model_columns():
     recorder = _run_upgrade()
+    later = _later_columns()
     assert set(recorder.tables) == _NEW_TABLES
     for name, columns in recorder.tables.items():
         model = Base.metadata.tables[name]
         migrated = {c.name: c for c in columns}
-        assert set(migrated) == set(model.columns.keys()), name
+        assert set(migrated) == set(model.columns.keys()) - later.get(name, set()), name
         for col_name, col in migrated.items():
             model_col = model.columns[col_name]
             assert col.nullable == model_col.nullable, f"{name}.{col_name} nullable"
             assert _type_name(col) == _type_name(model_col), f"{name}.{col_name} type"
+
+
+def test_embargo_migration_adds_model_columns():
+    added = _run_upgrade(_EMBARGO_MIGRATION).added_columns
+    assert {t: {c.name for c in cols} for t, cols in added.items()} == {
+        "findings": {"embargo_state", "embargo_until"},
+        "github_repo_links": {"fix_verifier_opt_in"},
+    }
+    for table, columns in added.items():
+        model = Base.metadata.tables[table]
+        for col in columns:
+            assert col.nullable == model.columns[col.name].nullable, f"{table}.{col.name}"
 
 
 def test_migration_indexes_match_model_indexes():
