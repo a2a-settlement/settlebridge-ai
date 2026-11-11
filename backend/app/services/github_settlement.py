@@ -31,8 +31,10 @@ from app.models.github import (
     LedgerStatus,
     SettlementState,
 )
+from app.models.fix_verifier import FixVerification, FixVerdict, FixWarranty, WarrantyState
 from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_alerts, github_app, github_comments
+from app.services.fix_warranty import split_payout
 from app.services.github_errors import PermanentJobError, RetryableJobError
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,13 @@ _ERROR_LIMIT = 500
 _MAX_TRANSITIONS = 6
 _ALERT_POLL = timedelta(minutes=15)
 _ALERT_MARKER = "<!-- settlebridge:alert-fixed -->"
+_FIX_VERIFICATION_MARKER = "<!-- settlebridge:fix-verification -->"
+_VERIFIED = FixVerdict.VERIFIED.value
+_INCOMPLETE = FixVerdict.INCOMPLETE_FIX_CONFIRMED.value
+_INCONCLUSIVE = FixVerdict.INCONCLUSIVE.value
+_WARRANTY_CRITERIA = (
+    "Security-motivated revert or overlapping follow-up advisory forfeits this holdback."
+)
 
 
 @dataclass
@@ -241,6 +250,11 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
         if _alert_gate_applies(state, action, ctx):
             if not await _allow_pay_after_alert_gate(db, ctx):
                 return settlement
+        # Verified-fix gate, beside the alert gate: after escrow create and
+        # before deliver. A release that skipped deliver re-enters it too.
+        if _verifier_gate_applies(state, action):
+            if not await _allow_pay_after_verifier_gate(db, ctx):
+                return settlement
         if action == "create":
             await _step_create(db, ctx)
             continue
@@ -256,7 +270,8 @@ async def _advance(db: AsyncSession, ctx: SettlementContext) -> GitHubSettlement
             await _mark(db, settlement, SettlementState.DELIVERED.value)
             continue
         if action == "release":
-            await _step_release(db, ctx, escrow_status)
+            if await _step_release(db, ctx, escrow_status) is False:
+                return settlement
             continue
         if action == "finalize":
             await _finalize(db, ctx)
@@ -581,7 +596,9 @@ def _pull_next_run(job: GitHubJob, due: datetime) -> None:
         job.next_run_at = due
 
 
-async def _schedule_recheck(db: AsyncSession, settlement: GitHubSettlement) -> None:
+async def _schedule_recheck(
+    db: AsyncSession, settlement: GitHubSettlement, *, reason: str | None = None
+) -> None:
     """Queue one pending advance job so the alert is polled again.
 
     When a pending advance job for this settlement already exists, pull its
@@ -614,7 +631,11 @@ async def _schedule_recheck(db: AsyncSession, settlement: GitHubSettlement) -> N
             )
         )
     await db.commit()
-    logger.info("settlement %s waiting for the alert to be fixed", settlement.id)
+    logger.info(
+        "settlement %s %s",
+        settlement.id,
+        reason or "waiting for the alert to be fixed",
+    )
 
 
 async def _refund_unfixed(db: AsyncSession, ctx: SettlementContext) -> NoReturn:
@@ -645,6 +666,216 @@ async def _refund_unfixed(db: AsyncSession, ctx: SettlementContext) -> NoReturn:
     await _fail_permanent(db, settlement, f"alert not fixed within {hours}h; escrow refunded")
 
 
+def _verifier_gate_applies(state: str, action: str) -> bool:
+    """True when deliver or release must wait for a verified fix receipt."""
+    if not bool(getattr(settings, "FIX_VERIFIER_PAYOUT_GATE", False)):
+        return False
+    if action not in ("deliver", "release"):
+        return False
+    return state in (
+        SettlementState.ESCROW_CREATED.value,
+        SettlementState.DELIVERED.value,
+        SettlementState.NEEDS_REVIEW.value,
+    )
+
+
+def _warranty_holdback_enabled() -> bool:
+    """Holdback only after the payout gate is on and a positive percent is set."""
+    if not bool(getattr(settings, "FIX_VERIFIER_PAYOUT_GATE", False)):
+        return False
+    if not bool(getattr(settings, "FIX_WARRANTY_ENABLED", False)):
+        return False
+    return _setting_int("FIX_WARRANTY_HOLDBACK_PCT", 20) > 0
+
+
+def _setting_int(name: str, default: int) -> int:
+    value = getattr(settings, name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _known_vuln_id(ctx: SettlementContext) -> str | None:
+    """Vuln id when the binding or its spec already carries one."""
+    found = _vuln_text(getattr(ctx.binding, "vuln_id", None))
+    if found:
+        return found
+    for source in (
+        getattr(ctx.binding, "last_assessment", None),
+        getattr(ctx.spec, "policy", None),
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key in ("vuln_id", "advisory_id"):
+            found = _vuln_text(source.get(key))
+            if found:
+                return found
+    return None
+
+
+def _vuln_text(value: object) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            return text
+    return None
+
+
+def _receipt_id(row: object) -> str | None:
+    receipt = getattr(row, "receipt_id", None)
+    if isinstance(receipt, str) and receipt.strip():
+        return receipt.strip()
+    return None
+
+
+def _choose_verification(rows: list) -> tuple[str, object | None, str]:
+    """Return ``allow``, ``incomplete``, or ``wait``, plus the row and reason."""
+    incomplete = [row for row in rows if getattr(row, "verdict", None) == _INCOMPLETE]
+    if incomplete:
+        return "incomplete", incomplete[0], "incomplete fix confirmed; payout refused"
+    paid = [row for row in rows if getattr(row, "verdict", None) == _VERIFIED and _receipt_id(row)]
+    if paid:
+        return "allow", paid[0], ""
+    if any(getattr(row, "verdict", None) == _INCONCLUSIVE for row in rows):
+        return "wait", None, "fix verification inconclusive; payout held"
+    if any(getattr(row, "verdict", None) == _VERIFIED for row in rows):
+        return "wait", None, "fix verification receipt missing; payout held"
+    if not rows:
+        return "wait", None, "fix verification missing; payout held"
+    return "wait", None, "fix verification not verified; payout held"
+
+
+async def _verification_rows(db: AsyncSession, ctx: SettlementContext) -> list:
+    stmt = select(FixVerification).where(
+        FixVerification.repo_full_name == ctx.binding.repo_full_name,
+        FixVerification.fix_sha == ctx.settlement.head_sha,
+    )
+    vuln = _known_vuln_id(ctx)
+    if vuln is not None:
+        stmt = stmt.where(FixVerification.vuln_id == vuln)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def _allow_pay_after_verifier_gate(db: AsyncSession, ctx: SettlementContext) -> bool:
+    """True when a verified receipt is on file and delivery may proceed.
+
+    A missing or inconclusive verification keeps the escrow held and queues
+    another advance, the same way the alert gate waits. An incomplete fix is
+    not paid: the settlement is parked in ``needs_review`` with the reason,
+    and the escrow is not refunded.
+    """
+    rows = await _verification_rows(db, ctx)
+    action, _row, reason = _choose_verification(rows)
+    if action == "allow":
+        return True
+    if action == "incomplete":
+        await _refuse_incomplete_fix(db, ctx, reason)
+        return False
+    await _hold_for_verification(db, ctx, reason)
+    return False
+
+
+async def _hold_for_verification(db: AsyncSession, ctx: SettlementContext, reason: str) -> None:
+    """Leave the escrow held and poll again. State stays where it is."""
+    ctx.settlement.last_error = _safe_error(reason)
+    await _schedule_recheck(db, ctx.settlement, reason=reason)
+
+
+async def _refuse_incomplete_fix(db: AsyncSession, ctx: SettlementContext, reason: str) -> None:
+    """Do not pay. Park the locked escrow and record why."""
+    settlement = ctx.settlement
+    settlement.state = SettlementState.NEEDS_REVIEW.value
+    settlement.last_error = _safe_error(reason)
+    if ctx.repo_link is not None:
+        try:
+            await github_app.upsert_sticky_comment(
+                ctx.repo_link.installation_id,
+                ctx.binding.repo_full_name,
+                ctx.binding.issue_number,
+                _FIX_VERIFICATION_MARKER,
+                "The merged fix was verified as incomplete, so this bounty will not be paid. "
+                "The escrow stays locked pending review.",
+            )
+        except Exception:
+            logger.exception(
+                "fix verification comment failed for settlement %s", settlement.id
+            )
+    await db.commit()
+
+
+async def _warranty_for_binding(db: AsyncSession, binding_id: uuid.UUID) -> FixWarranty | None:
+    result = await db.execute(select(FixWarranty).where(FixWarranty.binding_id == binding_id))
+    rows = list(result.scalars().all())
+    return rows[0] if rows else None
+
+
+def _partial_already_applied(exc: BaseException) -> bool:
+    """Marketplace treats HTTP 400 from partial release as already processed."""
+    code = _status_code(exc)
+    if code == 400:
+        return True
+    return "400" in str(exc)
+
+
+async def _release_holdback(
+    db: AsyncSession, ctx: SettlementContext, escrow_status: str | None
+) -> bool:
+    """Pay the immediate share and open a warranty for the ceil holdback.
+
+    False stops the advance because verification is no longer acceptable.
+    """
+    rows = await _verification_rows(db, ctx)
+    action, verification, reason = _choose_verification(rows)
+    if action == "incomplete":
+        await _refuse_incomplete_fix(db, ctx, reason)
+        return False
+    if action != "allow" or verification is None:
+        await _hold_for_verification(db, ctx, reason or "fix verification missing; payout held")
+        return False
+
+    pct = _setting_int("FIX_WARRANTY_HOLDBACK_PCT", 20)
+    days = _setting_int("FIX_WARRANTY_DAYS", 90)
+    split = split_payout(int(ctx.spec.amount_ate), pct)
+    now = _utcnow()
+    window_end = now + timedelta(days=days)
+    status = (escrow_status or "").lower()
+    existing = await _warranty_for_binding(db, ctx.binding.id)
+    if status != "partially_released" and split.release_percent > 0:
+        try:
+            await asyncio.to_thread(
+                exchange.partial_release,
+                ctx.funder,
+                ctx.settlement.escrow_id,
+                release_percent=split.release_percent,
+                efficacy_check_at=window_end.isoformat(),
+                efficacy_criteria=_WARRANTY_CRITERIA,
+            )
+        except Exception as exc:
+            if not _partial_already_applied(exc):
+                raise
+            logger.info("partial release already applied for settlement %s", ctx.settlement.id)
+    if existing is None:
+        db.add(
+            FixWarranty(
+                id=uuid.uuid4(),
+                binding_id=ctx.binding.id,
+                verification_id=verification.id,
+                holdback_cents=split.holdback_cents,
+                window_ends_at=window_end,
+                state=WarrantyState.ACTIVE.value,
+                trigger_evidence={},
+            )
+        )
+    await _mark(db, ctx.settlement, SettlementState.RELEASED.value)
+    return True
+
+
 async def _step_deliver(db: AsyncSession, ctx: SettlementContext) -> None:
     provider = ctx.provider
     # Only the provider may deliver. recreate_and_release posts /deliver with the
@@ -658,7 +889,15 @@ async def _step_deliver(db: AsyncSession, ctx: SettlementContext) -> None:
 
 async def _step_release(
     db: AsyncSession, ctx: SettlementContext, escrow_status: str | None
-) -> None:
+) -> bool:
+    """Release the escrow. False means the payout is held and the advance stops.
+
+    A warranty holdback releases only ``release_percent`` now and records the
+    rest on ``FixWarranty``. The settlement is still marked released so a later
+    pass cannot pay the holdback through a full release.
+    """
+    if _warranty_holdback_enabled() and (escrow_status or "").lower() != "released":
+        return await _release_holdback(db, ctx, escrow_status)
     if (escrow_status or "").lower() != "released":
         await asyncio.to_thread(
             exchange.release_escrow,
@@ -667,6 +906,7 @@ async def _step_release(
             idempotency_key=f"{ctx.settlement.idempotency_prefix}:release",
         )
     await _mark(db, ctx.settlement, SettlementState.RELEASED.value)
+    return True
 
 
 async def _finalize(db: AsyncSession, ctx: SettlementContext) -> None:

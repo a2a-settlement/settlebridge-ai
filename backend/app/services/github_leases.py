@@ -41,6 +41,13 @@ from app.models.github import (
 from app.models.user import ACCOUNT_KIND_HOUSE, User
 from app.services import exchange, github_app, github_bounty_service, trust_gateway
 from app.services.github_errors import RetryableJobError
+from app.services.solver_identity import (
+    canonical_principal,
+    classify_solver,
+    independence_statement,
+    primary_principal,
+    principals_for_house_account,
+)
 from app.services.repo_visibility import (
     bounty_public_clause,
     bounty_visible_clause,
@@ -846,6 +853,421 @@ async def _self_dealing_denial(
     return None
 
 
+@dataclass(frozen=True)
+class GitHubRoleHolder:
+    """A principal already attributed to one role on a GitHub binding."""
+
+    role: str
+    user_id: uuid.UUID | None = None
+    github_user_id: int | None = None
+    agent_id: str | None = None
+    principal: str | None = None
+
+
+@dataclass(frozen=True)
+class FixSolverAttribution:
+    """Honest solver identity for a fix verification, plus any role-conflict denial.
+
+    ``denial`` is set when this verification must not be recorded: the verifier,
+    challenger, or funder-approver shares the solver's lineage, or that lineage
+    could not be checked. ``statement`` never claims independence for a house solver.
+    """
+
+    solver_kind: str
+    solver_principal_sha256: str | None
+    statement: str
+    denial: APIResult | None = None
+
+
+def _roles_conflict(role: str, other: str) -> bool:
+    # Lazy import: challenge_orchestrator loads github_jobs, which loads this module.
+    from app.services.challenge_orchestrator import github_roles_conflict
+
+    return github_roles_conflict(role, other)
+
+
+def _as_uuid(value) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError:
+        return None
+
+
+def _coerce_holder(raw) -> GitHubRoleHolder | None:
+    if isinstance(raw, GitHubRoleHolder):
+        return raw if raw.role else None
+    if isinstance(raw, dict):
+        role = str(raw.get("role") or "").strip()
+        if not role:
+            return None
+        return GitHubRoleHolder(
+            role=role,
+            user_id=_as_uuid(raw.get("user_id")),
+            github_user_id=_positive_int(raw.get("github_user_id")),
+            agent_id=(str(raw["agent_id"]).strip() if raw.get("agent_id") else None),
+            principal=(str(raw["principal"]).strip() if raw.get("principal") else None),
+        )
+    role = str(getattr(raw, "role", "") or "").strip()
+    if not role:
+        return None
+    return GitHubRoleHolder(
+        role=role,
+        user_id=_as_uuid(getattr(raw, "user_id", None)),
+        github_user_id=_positive_int(getattr(raw, "github_user_id", None)),
+        agent_id=(str(getattr(raw, "agent_id")).strip() or None)
+        if getattr(raw, "agent_id", None)
+        else None,
+        principal=(str(getattr(raw, "principal")).strip() or None)
+        if getattr(raw, "principal", None)
+        else None,
+    )
+
+
+def _holder_from_operator(role: str, operator_id: str) -> GitHubRoleHolder | None:
+    text = str(operator_id or "").strip()
+    if not text:
+        return None
+    user_id = _as_uuid(text)
+    if user_id is not None:
+        return GitHubRoleHolder(role=role, user_id=user_id)
+    canonical = canonical_principal(text)
+    if canonical is not None:
+        return GitHubRoleHolder(role=role, principal=canonical)
+    return GitHubRoleHolder(role=role, agent_id=text)
+
+
+async def _challenge_tables_present(db) -> bool:
+    """False on test sessions whose sqlite file never created challenge tables."""
+    execute = getattr(db, "execute", None)
+    if not callable(execute):
+        return False
+    sync = getattr(db, "sync", None)
+    if sync is None:
+        return True
+    get_bind = getattr(sync, "get_bind", None)
+    if not callable(get_bind):
+        return False
+    try:
+        bind = get_bind()
+    except Exception:
+        return False
+    if bind is None:
+        return False
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        names = set(sa_inspect(bind).get_table_names())
+    except Exception:
+        return False
+    return "challenge_tasks" in names and "challenge_participants" in names
+
+
+async def fetch_binding_role_holders(db, binding) -> list[GitHubRoleHolder]:
+    """Verifier, challenger, and funder-approver already recorded for ``binding``.
+
+    ``binding.role_holders`` supplies holders the caller already knows. Challenge
+    participants on a task for this binding are included when those tables exist.
+    """
+    holders: list[GitHubRoleHolder] = []
+    for raw in getattr(binding, "role_holders", None) or []:
+        holder = _coerce_holder(raw)
+        if holder is not None:
+            holders.append(holder)
+    if not await _challenge_tables_present(db):
+        return holders
+    binding_id = getattr(binding, "id", None)
+    if binding_id is None:
+        return holders
+    from app.models.challenge import ChallengeParticipant, ChallengeTask
+
+    stmt = (
+        select(ChallengeParticipant.role, ChallengeParticipant.operator_id)
+        .join(ChallengeTask, ChallengeTask.id == ChallengeParticipant.task_id)
+        .where(ChallengeTask.binding_id == binding_id)
+    )
+    rows = (await db.execute(stmt)).all()
+    mapped = {
+        "verifier": "verifier",
+        "challenger": "challenger",
+        "funder_approver": "funder_approver",
+    }
+    for role, operator_id in rows:
+        github_role = mapped.get(str(role))
+        if github_role is None:
+            continue
+        holder = _holder_from_operator(github_role, str(operator_id))
+        if holder is not None:
+            holders.append(holder)
+    return holders
+
+
+def _declared_principals(actor) -> set[str]:
+    found: set[str] = set()
+    user_id = getattr(actor, "user_id", None)
+    if user_id is not None:
+        canonical = canonical_principal("user", user_id)
+        if canonical:
+            found.add(canonical)
+    github_user_id = getattr(actor, "github_user_id", None)
+    if github_user_id is not None:
+        canonical = canonical_principal("github", github_user_id)
+        if canonical:
+            found.add(canonical)
+    agent_id = getattr(actor, "agent_id", None)
+    if not agent_id:
+        user = getattr(actor, "user", None)
+        agent_id = getattr(user, "exchange_bot_id", None) if user is not None else None
+    if agent_id:
+        canonical = canonical_principal("agent", agent_id)
+        if canonical:
+            found.add(canonical)
+    principal = getattr(actor, "principal", None)
+    if principal:
+        canonical = canonical_principal(principal)
+        if canonical:
+            found.add(canonical)
+    return found
+
+
+async def _hydrate_actor(db, actor):
+    """Fill exchange bot and GitHub id from stored rows when the session can answer."""
+    user = getattr(actor, "user", None)
+    user_id = getattr(actor, "user_id", None) or getattr(user, "id", None)
+    github_user_id = getattr(actor, "github_user_id", None)
+    agent_id = getattr(actor, "agent_id", None) or getattr(user, "exchange_bot_id", None)
+    principal = getattr(actor, "principal", None)
+    if user is None and user_id is not None and db is not None:
+        getter = getattr(db, "get", None)
+        if callable(getter):
+            loaded = await getter(User, user_id)
+            if loaded is not None:
+                user = loaded
+                if not agent_id:
+                    agent_id = getattr(loaded, "exchange_bot_id", None)
+    if (
+        github_user_id is None
+        and user_id is not None
+        and db is not None
+        and callable(getattr(db, "execute", None))
+    ):
+        identity = await fetch_identity_for_user(db, user_id)
+        if identity is not None:
+            github_user_id = _positive_int(getattr(identity, "github_user_id", None))
+    return _Actor(
+        user_id=user_id,
+        github_user_id=github_user_id,
+        agent_id=(str(agent_id).strip() if agent_id else None),
+        principal=(str(principal).strip() if principal else None),
+        user=user,
+    )
+
+
+@dataclass
+class _Actor:
+    user_id: uuid.UUID | None = None
+    github_user_id: int | None = None
+    agent_id: str | None = None
+    principal: str | None = None
+    user: object | None = None
+
+
+def _actor_from(value, *, github_user_id=None, agent_id=None) -> _Actor:
+    if isinstance(value, _Actor):
+        return value
+    if isinstance(value, GitHubRoleHolder):
+        return _Actor(
+            user_id=value.user_id,
+            github_user_id=value.github_user_id,
+            agent_id=value.agent_id,
+            principal=value.principal,
+        )
+    if isinstance(value, str):
+        return _Actor(
+            principal=value.strip() or None,
+            github_user_id=github_user_id,
+            agent_id=agent_id,
+        )
+    user_id = getattr(value, "user_id", None)
+    if user_id is None and getattr(value, "role", None) is None:
+        user_id = getattr(value, "id", None)
+    if not isinstance(user_id, uuid.UUID):
+        user_id = _as_uuid(user_id)
+    resolved_agent = agent_id or getattr(value, "agent_id", None)
+    if not resolved_agent:
+        resolved_agent = getattr(value, "exchange_bot_id", None)
+    resolved_github = github_user_id
+    if resolved_github is None:
+        resolved_github = _positive_int(getattr(value, "github_user_id", None))
+    principal = getattr(value, "principal", None)
+    keep_user = user_id is not None or getattr(value, "exchange_bot_id", None) is not None
+    return _Actor(
+        user_id=user_id,
+        github_user_id=resolved_github,
+        agent_id=(str(resolved_agent).strip() if resolved_agent else None),
+        principal=(str(principal).strip() if principal else None),
+        user=value if keep_user else None,
+    )
+
+
+async def principals_share_lineage(db, left, right) -> bool:
+    """True when both sides are one principal under the self-dealing lineage.
+
+    Compares user id, GitHub user id, exchange bot id, and explicit canonical
+    principals, then the exchange principal links ``_shares_principal`` uses.
+    Raises ``_PrincipalUnavailable`` when those links cannot be checked.
+    """
+    left_actor = _actor_from(left)
+    right_actor = _actor_from(right)
+    if _declared_principals(left_actor) & _declared_principals(right_actor):
+        return True
+    if db is not None:
+        left_actor = await _hydrate_actor(db, left_actor)
+        right_actor = await _hydrate_actor(db, right_actor)
+        if _declared_principals(left_actor) & _declared_principals(right_actor):
+            return True
+    if not left_actor.agent_id or not right_actor.agent_id:
+        return False
+    if str(left_actor.agent_id) == str(right_actor.agent_id):
+        return True
+    if db is None:
+        raise _PrincipalUnavailable("principal lineage was not checked")
+    return await _shares_principal(
+        str(right_actor.agent_id),
+        str(left_actor.agent_id),
+        getattr(right_actor.user, "exchange_api_key", None),
+        _own_key(left_actor.user, left_actor.agent_id),
+    )
+
+
+async def _github_role_conflict_denial(db, binding, solver, github_user_id, claims):
+    """403 when the solver shares lineage with a verifier, challenger, or funder-approver.
+
+    This is not gated by ``GITHUB_ENFORCE_KYA_LINEAGE_SEPARATION``. That flag
+    only covers funder self-dealing. A principal lookup the exchange cannot
+    answer refuses the claim with 502.
+    """
+    holders = await fetch_binding_role_holders(db, binding)
+    solver_actor = _actor_from(
+        solver,
+        github_user_id=github_user_id,
+        agent_id=getattr(claims, "agent_id", None),
+    )
+    for holder in holders:
+        if not _roles_conflict("solver", holder.role):
+            continue
+        try:
+            shared = await principals_share_lineage(db, solver_actor, holder)
+        except _PrincipalUnavailable as exc:
+            logger.info("principal lookup failed (%s); refusing claim", exc)
+            return _err(502, "exchange_unavailable")
+        if shared:
+            return _err(403, "role_conflict", role=holder.role)
+    return None
+
+
+def _lineage_for_solver(actor: _Actor, lineage, exchange_principals) -> list:
+    links = list(lineage or ())
+    if actor.user_id is not None:
+        links.append(("owner_user", ("user", actor.user_id)))
+    if actor.github_user_id is not None:
+        links.append(("principal", ("github", actor.github_user_id)))
+    if actor.agent_id:
+        links.append(("exchange_bot", ("agent", actor.agent_id)))
+    if exchange_principals is not None:
+        for item in exchange_principals:
+            if isinstance(item, str) and ":" in item:
+                links.append(("principal", item))
+            else:
+                links.append(("principal", ("exchange", item)))
+    return links
+
+
+async def attribute_fix_verification(
+    solver,
+    *,
+    house_principals=(),
+    lineage=(),
+    verifier=None,
+    challenger=None,
+    funder_approver=None,
+    github_user_id=None,
+    agent_id=None,
+    exchange_principals=None,
+    db=None,
+) -> FixSolverAttribution:
+    """Classify the solver and refuse a verification attributed to a conflicting role.
+
+    Call this before a fix verification is stored. ``exchange_principals`` is the
+    solver's KYA principal links. Pass an empty list when the lookup ran and
+    found none. Omit it when the lookup did not run: a known agent is then
+    ``unknown``, not ``third_party``. House accounts (``account_kind == "house"``)
+    are house even when ``house_principals`` omits them.
+    """
+    actor = _actor_from(solver, github_user_id=github_user_id, agent_id=agent_id)
+    house = set(house_principals or ())
+    account = None if isinstance(solver, str) else solver
+    house.update(principals_for_house_account(account))
+    links = _lineage_for_solver(actor, lineage, exchange_principals)
+    denial = None
+    lineage_complete = exchange_principals is not None or not actor.agent_id
+    counterparts = (
+        ("verifier", verifier),
+        ("challenger", challenger),
+        ("funder_approver", funder_approver),
+    )
+    for role, other in counterparts:
+        if other is None:
+            continue
+        try:
+            shared = await principals_share_lineage(db, actor, other)
+        except _PrincipalUnavailable as exc:
+            logger.info("principal lookup failed (%s); refusing verification", exc)
+            lineage_complete = False
+            if denial is None:
+                denial = _err(502, "exchange_unavailable")
+            continue
+        if not shared or not _roles_conflict("solver", role):
+            continue
+        other_actor = _actor_from(other)
+        marker = primary_principal(
+            principal=other_actor.principal,
+            agent_id=other_actor.agent_id,
+            user_id=other_actor.user_id,
+            github_user_id=other_actor.github_user_id,
+        )
+        if marker is None:
+            marker = primary_principal(
+                principal=actor.principal,
+                agent_id=actor.agent_id,
+                user_id=actor.user_id,
+                github_user_id=actor.github_user_id,
+            )
+        if marker is not None:
+            links.append((role, marker))
+        if denial is None or denial.body.get("error") != "exchange_unavailable":
+            denial = _err(403, "role_conflict", role=role)
+    principal = primary_principal(
+        principal=actor.principal,
+        agent_id=actor.agent_id,
+        user_id=actor.user_id,
+        github_user_id=actor.github_user_id,
+        exchange_principals=exchange_principals,
+    )
+    kind, digest = classify_solver(principal, house_principals=house, lineage=links)
+    if kind == "third_party" and not lineage_complete:
+        kind = "unknown"
+    return FixSolverAttribution(
+        solver_kind=kind,
+        solver_principal_sha256=digest,
+        statement=independence_statement(kind),
+        denial=denial,
+    )
+
+
 async def _funder_for_hold(db, binding, amount_ate: int):
     """Balance-check the bounty funder. Returns ``(funder, None)`` or ``(None, error)``."""
     funder = await fetch_bounty_funder(db, binding.bounty_id)
@@ -1174,6 +1596,12 @@ async def claim_lease(
     denial_self = await _self_dealing_denial(db, binding, user, github_user_id, claims)
     if denial_self is not None:
         return denial_self
+    # Same lineage as self-dealing: solver cannot also be verifier, challenger,
+    # or funder-approver for this binding.
+    if settings.FIX_VERIFIER_ENABLED:
+        denial_role = await _github_role_conflict_denial(db, binding, user, github_user_id, claims)
+        if denial_role is not None:
+            return denial_role
     await lock_agent_for_claim(db, claims.agent_id)
     # A same-key claim may have committed while this one waited on the lock.
     if key is not None:

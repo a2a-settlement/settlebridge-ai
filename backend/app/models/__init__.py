@@ -27,6 +27,12 @@ from app.models.challenge import (
     ChallengeVerdict,
     Finding,
 )
+from app.models.fix_verifier import (
+    FixVerification,
+    FixWarranty,
+    VerifierBypassSubmission,
+    VerifierQuota,
+)
 from app.models.notification import Notification
 from app.models.spend import AccountBudget, ExecutionUsage, SpendReservation
 from app.models.score_history import ScoreHistory, ScoreMode
@@ -48,4 +54,5 @@ __all__ = [
     "ChallengeTask", "ChallengeContract", "ChallengeParticipant", "ChallengeAttempt",
     "ChallengeClaim", "ChallengeArtifact", "ChallengeVerdict", "Finding",
     "AccountBudget", "SpendReservation", "ExecutionUsage",
+    "FixVerification", "FixWarranty", "VerifierQuota", "VerifierBypassSubmission",
 ]

@@ -18,6 +18,8 @@ from app.routes import challenges as challenge_routes
 from app.routes import cyber as cyber_routes
 from app.routes import ledger as ledger_routes
 from app.routes import solver_setup as solver_setup_routes
+from app.routes import fix_verifications
+from app.routes import verifier_bypasses as verifier_bypass_routes
 from app.services.github_jobs import run_github_job_loop
 from app.services.review_service import QUALITY_PROMPT_VERSION, REVIEW_MODEL
 from app.services.scheduler import run_scheduler
@@ -256,6 +258,10 @@ if settings.MARKETPLACE_ENABLED:
     app.include_router(cyber_routes.router, prefix="/api/v1", tags=["cyber"])
     app.include_router(challenge_routes.router, prefix="/api/v1", tags=["challenges"])
     app.include_router(solver_setup_routes.router, prefix="/api/v1/github", tags=["github"])
+    app.include_router(fix_verifications.router)
+    app.include_router(
+        verifier_bypass_routes.router, prefix="/api/v1", tags=["verifier-bypasses"]
+    )
 
 
 app.include_router(submissions.public_router, prefix="/api", tags=["public"])

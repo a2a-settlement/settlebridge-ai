@@ -233,6 +233,30 @@ async def _expire_stale_in_review() -> None:
             logger.info("Stale-bounty sweep expired %d bounties", expired_n)
 
 
+class WarrantySourceUnavailable(RuntimeError):
+    """No live revert or advisory feed is configured yet."""
+
+
+def _no_warranty_source(repo_full_name: str, fix_sha: str):
+    # A raising source keeps the warranty active, so holdback is never released
+    # without a revert and advisory check.
+    raise WarrantySourceUnavailable(f"{repo_full_name}@{fix_sha}")
+
+
+async def _warranty_sweep() -> None:
+    from app.services import warranty_watcher
+
+    async with async_session() as db:
+        changed = await warranty_watcher.run_once(
+            db,
+            now=datetime.now(timezone.utc),
+            git_events_source=_no_warranty_source,
+            advisory_source=_no_warranty_source,
+        )
+        if changed:
+            logger.info("Warranty sweep changed %d warranties", changed)
+
+
 async def run_scheduler() -> None:
     global _STALE_SWEEP_TICK
     logger.info("Contract scheduler started (poll every %ds)", POLL_INTERVAL)
@@ -249,5 +273,9 @@ async def run_scheduler() -> None:
                 await _expire_stale_in_review()
             except Exception:
                 logger.exception("Stale-bounty sweep error")
+            try:
+                await _warranty_sweep()
+            except Exception:
+                logger.exception("Warranty sweep error")
 
         await asyncio.sleep(POLL_INTERVAL)
