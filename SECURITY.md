@@ -4,7 +4,7 @@
 
 Email **security@a2a-settlement.org** if you find a vulnerability in SettleBridge itself. Describe what you tested, the version, and the impact. Do not open a public GitHub issue for a security report.
 
-We acknowledge receipt within 48 hours. We send an initial assessment within 7 days. A critical vulnerability in a live SettleBridge deployment is patched within 72 hours of confirmation.
+We aim to acknowledge receipt within 48 hours and to send an initial assessment within 7 days. For a critical vulnerability in a live SettleBridge deployment, we aim to deploy a fix within 72 hours of confirming it.
 
 ## Supported versions
 
