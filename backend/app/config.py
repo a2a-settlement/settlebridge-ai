@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     FIX_VERIFIER_ENABLED: bool = False
     # Accept verification requests from the public GitHub Action (OIDC-authenticated).
     FIX_VERIFIER_PUBLIC_API: bool = False
+    # GitHub Actions OIDC bearer tokens. Off unless both this and the public API are set.
+    # Audience is the `aud` the workflow requests; issuer is token.actions.githubusercontent.com.
+    FIX_VERIFIER_OIDC_ENABLED: bool = False
+    FIX_VERIFIER_OIDC_AUDIENCE: str = "settlebridge"
+    FIX_VERIFIER_OIDC_JWKS_TTL_SECONDS: int = 3600
     # Require a `verified` verdict and a valid receipt before a GitHub bounty pays out.
     FIX_VERIFIER_PAYOUT_GATE: bool = False
     # Quotas and spend caps are per GitHub App installation; a verification that would
