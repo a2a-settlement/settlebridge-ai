@@ -17,7 +17,8 @@ from app.middleware.auth import get_current_user
 from app.models.fix_verifier import FixVerification, VerifierQuota
 from app.models.github import GitHubInstallation, GitHubRepoLink
 from app.routes.fix_verifications import router
-from app.services import fix_verifier
+from app.services import fix_verifier, github_oidc
+from tests.test_github_oidc import actions_token, install_jwks
 from tests.test_verifier_quota import INSTALLATION, REPO, open_db
 
 # Hex letters keep SQLite's NUMERIC affinity on a UUID column from storing the id as a float.
@@ -30,6 +31,19 @@ FIX = "b" * 40
 VULN = "GHSA-xxxx-yyyy-zzzz"
 SECRET = "secret-repro-steps"
 URL = "/api/v1/fix-verifications"
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _action_body(**overrides) -> dict:
+    """Body the public Action sends: no solver claim, so the kind stays unknown."""
+    body = _body()
+    body.pop("solver_kind")
+    body.pop("solver_principal_id")
+    body.update(overrides)
+    return body
 
 
 def _body(**overrides) -> dict:
@@ -57,10 +71,19 @@ def _body(**overrides) -> dict:
     return body
 
 
+@pytest.fixture(autouse=True)
+def _reset_oidc_cache():
+    github_oidc.clear_jwks_cache()
+    yield
+    github_oidc.clear_jwks_cache()
+
+
 @pytest.fixture()
 def world(monkeypatch):
     monkeypatch.setattr(settings, "FIX_VERIFIER_ENABLED", True)
     monkeypatch.setattr(settings, "FIX_VERIFIER_PUBLIC_API", True)
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_ENABLED", False)
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_AUDIENCE", "settlebridge")
     monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", str(OPERATOR))
     monkeypatch.setattr(settings, "FIX_VERIFIER_DAILY_QUOTA", 20)
     monkeypatch.setattr(settings, "FIX_VERIFIER_RATE_LIMIT_PER_HOUR", 10)
@@ -141,6 +164,9 @@ def _count(world) -> int:
 def test_feature_flags_default_off():
     assert Settings.model_fields["FIX_VERIFIER_ENABLED"].default is False
     assert Settings.model_fields["FIX_VERIFIER_PUBLIC_API"].default is False
+    assert Settings.model_fields["FIX_VERIFIER_OIDC_ENABLED"].default is False
+    assert Settings.model_fields["FIX_VERIFIER_OIDC_AUDIENCE"].default == "settlebridge"
+    assert Settings.model_fields["FIX_VERIFIER_OIDC_JWKS_TTL_SECONDS"].default == 3600
     assert Settings.model_fields["FIX_VERIFIER_DAILY_QUOTA"].default == 20
 
 
@@ -423,3 +449,241 @@ def test_replay_is_owner_or_operator_and_ignores_the_cache(world):
     again = world["client"].post(f"{URL}/{verification_id}/replay")
     assert again.status_code == 200
     assert len(world["seen"]) == 3
+
+
+def _oidc(world, monkeypatch):
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_ENABLED", True)
+    state = install_jwks(monkeypatch)
+    world["app"].dependency_overrides.pop(get_current_user, None)
+    return state
+
+
+def test_oidc_create_poll_and_receipt(world, monkeypatch):
+    state = _oidc(world, monkeypatch)
+    token = actions_token()
+    created = world["client"].post(
+        URL, json=_action_body(repo_full_name="ACME/widget"), headers=_bearer(token)
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["verdict"] == "verified"
+    assert body["solver_kind"] == "unknown"
+    assert body["repo_full_name"] == REPO
+    assert body["cost_cents"] == 11
+    verification_id = body["id"]
+    polled = world["client"].get(f"{URL}/{verification_id}", headers=_bearer(token))
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["id"] == verification_id
+    assert polled.json()["verdict"] == "verified"
+    assert polled.json()["result"]["verdict"] == "verified"
+    missing = world["client"].get(f"{URL}/{verification_id}/receipt", headers=_bearer(token))
+    assert missing.status_code == 404
+    world["bridge"].sync.expire_all()
+    row = world["bridge"].sync.get(FixVerification, uuid.UUID(verification_id))
+    assert row.created_by_user_id == OWNER
+    row.receipt_id = "rcpt-oidc"
+    world["bridge"].sync.commit()
+    found = world["client"].get(f"{URL}/{verification_id}/receipt", headers=_bearer(token))
+    assert found.status_code == 200
+    assert found.json() == {"receipt_id": "rcpt-oidc"}
+    assert _quota(world).used == 1
+    assert state["calls"]
+    other = actions_token(repository="other/repo", repository_owner="other")
+    hidden = world["client"].get(f"{URL}/{verification_id}", headers=_bearer(other))
+    hidden_receipt = world["client"].get(
+        f"{URL}/{verification_id}/receipt", headers=_bearer(other)
+    )
+    assert hidden.status_code == hidden_receipt.status_code == 404
+    assert "rcpt-oidc" not in hidden.text
+    assert verification_id not in hidden.text
+
+
+def test_oidc_read_matches_the_installation_owner(world, monkeypatch):
+    _oidc(world, monkeypatch)
+
+    def incomplete(request):
+        world["seen"].append(request)
+        return {
+            "verdict": "incomplete_fix_confirmed",
+            "detail": SECRET,
+            "reproducer": SECRET,
+            "cost_cents": 3,
+        }
+
+    monkeypatch.setattr(fix_verifier, "verify", incomplete)
+    token = actions_token()
+    created = world["client"].post(URL, json=_action_body(), headers=_bearer(token))
+    assert created.status_code == 201, created.text
+    assert SECRET in created.text
+    verification_id = created.json()["id"]
+    fetched = world["client"].get(f"{URL}/{verification_id}", headers=_bearer(token))
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["result"]["reproducer"] == SECRET
+
+    _as(world, FUNDER)
+    funder = world["client"].get(f"{URL}/{verification_id}")
+    assert funder.status_code == 200
+    assert SECRET not in funder.text
+    assert funder.json()["result"] == {"verdict": "incomplete_fix_confirmed"}
+
+    _as(world, OWNER)
+    owner = world["client"].get(f"{URL}/{verification_id}")
+    assert owner.status_code == 200
+    assert owner.json()["result"]["reproducer"] == SECRET
+
+
+def test_oidc_repo_mismatch_is_403(world, monkeypatch):
+    _oidc(world, monkeypatch)
+    denied = world["client"].post(
+        URL, json=_action_body(repo_full_name="other/repo"), headers=_bearer(actions_token())
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "repo_mismatch"}
+    assert world["seen"] == []
+    assert _count(world) == 0
+
+
+def test_oidc_repo_not_opted_in_is_403(world, monkeypatch):
+    _oidc(world, monkeypatch)
+    link = world["bridge"].sync.scalar(select(GitHubRepoLink))
+    link.fix_verifier_opt_in = False
+    world["bridge"].sync.commit()
+    denied = world["client"].post(URL, json=_action_body(), headers=_bearer(actions_token()))
+    link.fix_verifier_opt_in = True
+    link.enabled = False
+    world["bridge"].sync.commit()
+    disabled = world["client"].post(URL, json=_action_body(), headers=_bearer(actions_token()))
+    assert denied.status_code == disabled.status_code == 403
+    assert denied.json() == disabled.json() == {"detail": "not_opted_in"}
+    assert world["seen"] == []
+    assert _count(world) == 0
+
+
+def test_oidc_push_sha_must_match_and_pull_request_may_send_the_head(world, monkeypatch):
+    _oidc(world, monkeypatch)
+    mismatch = world["client"].post(
+        URL,
+        json=_action_body(fix_sha="c" * 40),
+        headers=_bearer(actions_token(event_name="push")),
+    )
+    assert mismatch.status_code == 403
+    assert mismatch.json() == {"detail": "sha_mismatch"}
+    assert world["seen"] == []
+    for event_name in ("pull_request", "pull_request_target"):
+        created = world["client"].post(
+            URL,
+            json=_action_body(fix_sha="c" * 40),
+            headers=_bearer(actions_token(event_name=event_name, sha="d" * 40)),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["fix_sha"] == "c" * 40
+    assert len(world["seen"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("mutate", "fetches"),
+    [
+        ("audience", 1),
+        ("expired", 1),
+        ("kid", 2),
+        ("hs256", 0),
+        ("none", 0),
+        ("issuer", 0),
+    ],
+)
+def test_oidc_bad_token_is_401(world, monkeypatch, mutate, fetches):
+    state = _oidc(world, monkeypatch)
+    if mutate == "audience":
+        token = actions_token(audience="other")
+    elif mutate == "expired":
+        token = actions_token(exp_offset=-120)
+    elif mutate == "kid":
+        token = actions_token(kid="missing-kid")
+    elif mutate == "hs256":
+        token = actions_token(alg="HS256")
+    elif mutate == "none":
+        token = actions_token(alg="none")
+    else:
+        token = actions_token(issuer="https://evil.example")
+    denied = world["client"].post(URL, json=_action_body(), headers=_bearer(token))
+    assert denied.status_code == 401
+    assert len(state["calls"]) == fetches
+    assert world["seen"] == []
+    assert _count(world) == 0
+    assert token not in denied.text
+
+
+def test_oidc_flag_off_is_401_and_user_auth_unchanged(world, monkeypatch):
+    state = install_jwks(monkeypatch)
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_ENABLED", False)
+    world["app"].dependency_overrides.pop(get_current_user, None)
+    denied = world["client"].post(URL, json=_action_body(), headers=_bearer(actions_token()))
+    assert denied.status_code == 401
+    assert state["calls"] == []
+    assert world["seen"] == []
+    _as(world, OWNER)
+    created = world["client"].post(URL, json=_body())
+    assert created.status_code == 201, created.text
+    assert created.json()["solver_kind"] == "house"
+    assert state["calls"] == []
+
+
+def test_oidc_user_auth_unchanged_when_the_flag_is_on(world, monkeypatch):
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_ENABLED", True)
+    principal = f"user:{uuid.UUID(int=9)}"
+    response = world["client"].post(
+        URL, json=_body(solver_kind="third_party", solver_principal_id=principal)
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "third_party"
+    assert world["seen"][0]["solver_kind"] == "third_party"
+
+
+def test_oidc_third_party_solver_kind_is_downgraded(world, monkeypatch):
+    _oidc(world, monkeypatch)
+    response = world["client"].post(
+        URL,
+        json=_action_body(
+            solver_kind="third_party",
+            solver_principal_id=f"user:{uuid.UUID(int=9)}",
+        ),
+        headers=_bearer(actions_token()),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["solver_kind"] == "unknown"
+    assert world["seen"][0]["solver_kind"] == "unknown"
+    house = world["client"].post(
+        URL,
+        json=_action_body(solver_kind="house", fix_sha="c" * 40),
+        headers=_bearer(actions_token(event_name="pull_request")),
+    )
+    assert house.status_code == 201, house.text
+    assert house.json()["solver_kind"] == "house"
+
+
+def test_oidc_replay_is_forbidden(world, monkeypatch):
+    _oidc(world, monkeypatch)
+    token = actions_token()
+    created = world["client"].post(URL, json=_action_body(), headers=_bearer(token))
+    assert created.status_code == 201, created.text
+    verification_id = created.json()["id"]
+    replayed = world["client"].post(f"{URL}/{verification_id}/replay", headers=_bearer(token))
+    missing = world["client"].post(f"{URL}/{uuid.uuid4()}/replay", headers=_bearer(token))
+    assert replayed.status_code == missing.status_code == 403
+    assert replayed.json() == missing.json() == {"detail": "forbidden"}
+    assert len(world["seen"]) == 1
+    _as(world, OWNER)
+    again = world["client"].post(f"{URL}/{verification_id}/replay")
+    assert again.status_code == 200, again.text
+    assert len(world["seen"]) == 2
+
+
+def test_oidc_token_is_404_when_the_public_api_is_off(world, monkeypatch):
+    monkeypatch.setattr(settings, "FIX_VERIFIER_PUBLIC_API", False)
+    monkeypatch.setattr(settings, "FIX_VERIFIER_OIDC_ENABLED", True)
+    state = install_jwks(monkeypatch)
+    denied = world["client"].post(URL, json=_action_body(), headers=_bearer(actions_token()))
+    assert denied.status_code == 404
+    assert denied.json() == {"detail": "not_found"}
+    assert state["calls"] == []
+    assert world["seen"] == []
