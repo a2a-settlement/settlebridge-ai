@@ -1,17 +1,21 @@
 """Signed evidence report and read models (owner: P1-5).
 
 The report is a ChallengeReport serialized canonically (sorted keys, no whitespace)
-and signed as a compact JWS with ES256 using CHALLENGE_REPORT_SIGNING_KEY. It never
-contains tokens, raw logs, or another tenant's data.
+and signed as a compact JWS with ES256. Production signs with the KMS key in
+CHALLENGE_REPORT_KMS_KEY_ARN (ECC_NIST_P256). When that ARN is unset, signing uses
+the PEM in CHALLENGE_REPORT_SIGNING_KEY. The report never contains tokens, raw logs,
+or another tenant's data.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
@@ -76,6 +80,8 @@ _DIGEST_FIELDS = {
 _NESTED_DIGEST_KEYS = ("result", "runner", "runner_result")
 _MAX_JWS_CHARS = 1_000_000
 _DROP = object()
+# (key ARN, region) already confirmed as ECC_NIST_P256 via KMS GetPublicKey.
+_verified_kms_keys: set[tuple[str, str]] = set()
 
 
 class ReportNotBuilt(Exception):
@@ -94,7 +100,9 @@ def canonical_bytes(report: ChallengeReport) -> bytes:
     )
 
 
-def sign_report(report: ChallengeReport, private_key_pem: str) -> str:
+def sign_report(
+    report: ChallengeReport, private_key_pem: str = "", *, kms_client: Any = None
+) -> str:
     header = {
         "alg": "ES256",
         "kid": settings.CHALLENGE_REPORT_KEY_ID,
@@ -103,15 +111,17 @@ def sign_report(report: ChallengeReport, private_key_pem: str) -> str:
     header_b64 = _b64url(_json_bytes(header))
     payload_b64 = _b64url(canonical_bytes(report))
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
-    private_key = _load_private_key(private_key_pem)
-    try:
-        der = private_key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
-        signature = _der_to_raw(der)
-    except ReportVerificationError:
-        raise
-    except Exception:
-        raise ReportVerificationError("invalid signing key") from None
+    if kms_client is not None or _nonempty(settings.CHALLENGE_REPORT_KMS_KEY_ARN):
+        signature = _sign_with_kms(signing_input, kms_client)
+    else:
+        pem = settings.CHALLENGE_REPORT_SIGNING_KEY if private_key_pem == "" else private_key_pem
+        signature = _sign_with_pem(signing_input, pem)
     return f"{header_b64}.{payload_b64}.{_b64url(signature)}"
+
+
+def sign_configured_report(report: ChallengeReport, *, kms_client: Any = None) -> str:
+    """Sign with the configured KMS key, or the configured PEM when KMS is unset."""
+    return sign_report(report, settings.CHALLENGE_REPORT_SIGNING_KEY, kms_client=kms_client)
 
 
 def verify_report(jws: str, public_key_pem: str) -> ChallengeReport:
@@ -168,8 +178,87 @@ def verify_report(jws: str, public_key_pem: str) -> ChallengeReport:
 
 
 def signing_key_configured() -> bool:
-    key = settings.CHALLENGE_REPORT_SIGNING_KEY
-    return isinstance(key, str) and key.strip() != ""
+    kms_ready = bool(
+        _nonempty(settings.CHALLENGE_REPORT_KMS_KEY_ARN)
+        and _nonempty(settings.CHALLENGE_REPORT_KMS_REGION)
+    )
+    return kms_ready or bool(_nonempty(settings.CHALLENGE_REPORT_SIGNING_KEY))
+
+
+def _clear_kms_key_cache() -> None:
+    _verified_kms_keys.clear()
+
+
+def _nonempty(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _sign_with_pem(signing_input: bytes, private_key_pem: str) -> bytes:
+    private_key = _load_private_key(private_key_pem)
+    try:
+        der = private_key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+        return _der_to_raw(der)
+    except ReportVerificationError:
+        raise
+    except Exception:
+        raise ReportVerificationError("invalid signing key") from None
+
+
+def _sign_with_kms(signing_input: bytes, kms_client: Any) -> bytes:
+    key_arn = _nonempty(settings.CHALLENGE_REPORT_KMS_KEY_ARN)
+    region = _nonempty(settings.CHALLENGE_REPORT_KMS_REGION)
+    # An ARN without a region (or a caller-supplied client without both) must not
+    # fall through to the PEM key.
+    if not key_arn or not region:
+        raise ReportVerificationError("invalid signing key")
+    client = kms_client if kms_client is not None else _kms_client(region)
+    _require_kms_p256(client, key_arn, region)
+    # ECDSA_SHA_256 with MessageType DIGEST signs this hash and does not hash again.
+    digest = hashlib.sha256(signing_input).digest()
+    try:
+        response = client.sign(
+            KeyId=key_arn,
+            Message=digest,
+            MessageType="DIGEST",
+            SigningAlgorithm="ECDSA_SHA_256",
+        )
+        der = response["Signature"]
+    except ReportVerificationError:
+        raise
+    except Exception:
+        raise ReportVerificationError("invalid signing key") from None
+    if isinstance(der, bytearray):
+        der = bytes(der)
+    if not isinstance(der, bytes):
+        raise ReportVerificationError("invalid signing key")
+    return _der_to_raw(der)
+
+
+def _kms_client(region: str):
+    import boto3
+
+    return boto3.client("kms", region_name=region)
+
+
+def _require_kms_p256(client: Any, key_arn: str, region: str) -> None:
+    if (key_arn, region) in _verified_kms_keys:
+        return
+    try:
+        response = client.get_public_key(KeyId=key_arn)
+        if response.get("KeySpec") != "ECC_NIST_P256":
+            raise ReportVerificationError("invalid signing key")
+        public_key = serialization.load_der_public_key(response["PublicKey"])
+        if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(
+            public_key.curve, ec.SECP256R1
+        ):
+            raise ReportVerificationError("invalid signing key")
+    except ReportVerificationError:
+        raise
+    except Exception:
+        raise ReportVerificationError("invalid signing key") from None
+    _verified_kms_keys.add((key_arn, region))
 
 
 def is_challenge_operator(user_id: uuid.UUID) -> bool:

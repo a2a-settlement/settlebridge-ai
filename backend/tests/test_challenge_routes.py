@@ -20,7 +20,7 @@ from app.middleware.auth import get_current_user
 from app.models.challenge import ChallengeTask
 from app.models.github import GitHubRepoLink
 from app.routes.challenges import router
-from app.services.challenge_report import verify_report
+from app.services.challenge_report import _clear_kms_key_cache, verify_report
 from tests.test_challenge_report import (
     BARE,
     BASE,
@@ -32,8 +32,11 @@ from tests.test_challenge_report import (
     TARGET,
     TASK,
     Bridge,
+    _KMS_ARN,
+    _KMS_REGION,
     _engine,
     _keys,
+    _kms_material,
     seed,
 )
 
@@ -58,11 +61,20 @@ def _tasks(bridge: Bridge) -> list[ChallengeTask]:
     return list(bridge.sync.execute(select(ChallengeTask)).scalars().all())
 
 
+@pytest.fixture(autouse=True)
+def _isolated_kms_cache():
+    _clear_kms_key_cache()
+    yield
+    _clear_kms_key_cache()
+
+
 @pytest.fixture()
 def world(monkeypatch):
     monkeypatch.setattr(settings, "CHALLENGE_ENGINE_ENABLED", False)
     monkeypatch.setattr(settings, "CHALLENGE_OPERATOR_USER_IDS", str(OPERATOR))
     monkeypatch.setattr(settings, "CHALLENGE_REPORT_SIGNING_KEY", "")
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_KEY_ARN", "")
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_REGION", "")
     eng = _engine()
     GitHubRepoLink.__table__.create(eng)
     bridge = Bridge(Session(eng, expire_on_commit=False))
@@ -215,6 +227,68 @@ def test_get_report_round_trip_and_404s(world, monkeypatch):
     assert hidden.status_code == 404
     assert "secret-signing-key-material" not in invalid_key.text
     assert PROPERTY not in hidden.text
+
+
+def test_get_report_signs_with_kms_when_pem_is_unset(world, monkeypatch):
+    fake, _, public = _kms_material()
+
+    def factory(region):
+        assert region == _KMS_REGION
+        return fake
+
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_SIGNING_KEY", "")
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_KEY_ARN", _KMS_ARN)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_REGION", _KMS_REGION)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KEY_ID", "challenge-report-1")
+    monkeypatch.setattr("app.services.challenge_report._kms_client", factory)
+    _as(world, OWNER)
+    detail = world["client"].get(f"{URL}/{TASK}")
+    assert detail.status_code == 200
+    assert detail.json()["report_url"] == f"/api/v1/challenges/{TASK}/report"
+    response = world["client"].get(f"{URL}/{TASK}/report")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/jose")
+    assert "BEGIN" not in response.text
+    report = verify_report(response.text, public)
+    assert report.task_id == str(TASK)
+    header = json.loads(_b64(response.text.split(".")[0]))
+    assert header["alg"] == "ES256"
+    assert header["kid"] == "challenge-report-1"
+    assert header["typ"] == "challenge-report+jws"
+    assert fake.public_calls == 1
+    assert fake.sign_calls[0]["KeyId"] == _KMS_ARN
+    assert fake.sign_calls[0]["MessageType"] == "DIGEST"
+    assert fake.sign_calls[0]["SigningAlgorithm"] == "ECDSA_SHA_256"
+    assert len(fake.sign_calls[0]["Message"]) == 32
+    for marker in SECRET_MARKERS:
+        assert marker not in response.text
+    again = world["client"].get(f"{URL}/{TASK}/report")
+    assert again.status_code == 200
+    assert verify_report(again.text, public).task_id == str(TASK)
+    assert fake.public_calls == 1
+    _as(world, STRANGER)
+    hidden = world["client"].get(f"{URL}/{TASK}/report")
+    assert hidden.status_code == 404
+    assert hidden.json() == {"error": "not_found"}
+    assert fake.public_calls == 1
+
+
+def test_get_report_does_not_fall_back_to_pem_when_kms_region_is_missing(world, monkeypatch):
+    private, _public = _keys()
+
+    def factory(region):
+        raise AssertionError(region)
+
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_SIGNING_KEY", private)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_KEY_ARN", _KMS_ARN)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_REGION", "")
+    monkeypatch.setattr("app.services.challenge_report._kms_client", factory)
+    _as(world, OWNER)
+    response = world["client"].get(f"{URL}/{TASK}/report")
+    assert response.status_code == 404
+    assert response.json() == {"error": "not_found"}
+    assert private not in response.text
+    assert "BEGIN" not in response.text
 
 
 def test_anonymous_is_401(world, monkeypatch):
