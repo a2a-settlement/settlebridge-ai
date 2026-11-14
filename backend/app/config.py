@@ -113,8 +113,12 @@ class Settings(BaseSettings):
     # Allowlisting egress proxy for dependency acquisition, e.g. http://127.0.0.1:3128.
     CHALLENGE_DEPS_PROXY_URL: str = ""
     # PEM EC P-256 private key for signing evidence reports. Never logged.
+    # Used only when CHALLENGE_REPORT_KMS_KEY_ARN is unset. The private key stays in KMS.
     CHALLENGE_REPORT_SIGNING_KEY: str = ""
     CHALLENGE_REPORT_KEY_ID: str = "challenge-report-1"
+    # ECC_NIST_P256 KMS key. Both fields are required; an ARN without a region fails closed.
+    CHALLENGE_REPORT_KMS_KEY_ARN: str = ""
+    CHALLENGE_REPORT_KMS_REGION: str = ""
     # Comma-separated user UUIDs allowed to create challenges. Empty means nobody.
     CHALLENGE_OPERATOR_USER_IDS: str = ""
     # Fix verifier. Every behavior is off until its flag is set. Needs the private

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
@@ -14,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -36,10 +38,13 @@ from app.schemas.challenge import ChallengeReport
 from app.services.challenge_report import (
     ReportNotBuilt,
     ReportVerificationError,
+    _clear_kms_key_cache,
     build_report,
     canonical_bytes,
     challenge_detail,
+    sign_configured_report,
     sign_report,
+    signing_key_configured,
     verify_report,
 )
 
@@ -151,8 +156,60 @@ def _when(day: int, hour: int = 12) -> datetime:
     return datetime(2026, 1, day, hour, tzinfo=timezone.utc)
 
 
+_KMS_ARN = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"
+_KMS_REGION = "us-east-1"
+
+
 def _keys():
-    key = ec.generate_private_key(ec.SECP256R1())
+    return _pem_pair(ec.generate_private_key(ec.SECP256R1()))
+
+
+class _KmsDouble:
+    """In-memory ECC_NIST_P256 signer. GetPublicKey returns SPKI; Sign is ECDSA-SHA256."""
+
+    def __init__(
+        self,
+        private_key,
+        *,
+        key_spec: str = "ECC_NIST_P256",
+        public_der: bytes | None = None,
+    ):
+        self.private_key = private_key
+        self.key_spec = key_spec
+        self.public_der = public_der
+        self.public_calls = 0
+        self.sign_calls: list[dict] = []
+
+    def get_public_key(self, *, KeyId):
+        self.public_calls += 1
+        der = self.public_der
+        if der is None:
+            der = self.private_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        return {"KeyId": KeyId, "KeySpec": self.key_spec, "PublicKey": der}
+
+    def sign(self, *, KeyId, Message, MessageType, SigningAlgorithm):
+        self.sign_calls.append(
+            {
+                "KeyId": KeyId,
+                "Message": Message,
+                "MessageType": MessageType,
+                "SigningAlgorithm": SigningAlgorithm,
+            }
+        )
+        signature = self.private_key.sign(Message, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        return {"KeyId": KeyId, "Signature": signature, "SigningAlgorithm": SigningAlgorithm}
+
+
+def _kms_material(*, key_spec: str = "ECC_NIST_P256", public_der: bytes | None = None):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    private, public = _pem_pair(private_key)
+    return _KmsDouble(private_key, key_spec=key_spec, public_der=public_der), private, public
+
+
+def _pem_pair(key):
     private = key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -164,6 +221,14 @@ def _keys():
         .decode()
     )
     return private, public
+
+
+def _configure_signing(monkeypatch, *, arn="", region="", pem="", key_id="challenge-report-1"):
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_KEY_ARN", arn)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_REGION", region)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_SIGNING_KEY", pem)
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KEY_ID", key_id)
+    _clear_kms_key_cache()
 
 
 def _b64(data: bytes) -> str:
@@ -628,10 +693,19 @@ def seed(bridge: Bridge) -> None:
     db.commit()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_kms_cache():
+    _clear_kms_key_cache()
+    yield
+    _clear_kms_key_cache()
+
+
 @pytest.fixture()
 def world(monkeypatch):
     monkeypatch.setattr(settings, "CHALLENGE_OPERATOR_USER_IDS", str(OPERATOR))
     monkeypatch.setattr(settings, "CHALLENGE_REPORT_SIGNING_KEY", "secret-signing-key-material")
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_KEY_ARN", "")
+    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KMS_REGION", "")
     eng = _engine()
     bridge = Bridge(Session(eng, expire_on_commit=False))
     seed(bridge)
@@ -683,7 +757,7 @@ def test_canonical_bytes_are_stable_sorted_and_utf8():
 
 
 def test_sign_verify_round_trip_and_rejections(monkeypatch):
-    monkeypatch.setattr(settings, "CHALLENGE_REPORT_KEY_ID", "challenge-report-1")
+    _configure_signing(monkeypatch)
     private, public = _keys()
     other_private, other_public = _keys()
     report = _sample_report()
@@ -728,6 +802,180 @@ def test_sign_verify_round_trip_and_rejections(monkeypatch):
     signed_by_other = sign_report(report, other_private)
     with pytest.raises(ReportVerificationError):
         verify_report(signed_by_other, public)
+
+
+def test_kms_sign_round_trip_matches_pem_and_caches_public_key(monkeypatch):
+    fake, private, public = _kms_material()
+    other_private, other_public = _keys()
+    report = _sample_report()
+    _configure_signing(monkeypatch, pem=private)
+    pem_token = sign_report(report, private)
+    configured = sign_configured_report(report)
+    assert pem_token.split(".")[1] == configured.split(".")[1]
+    assert verify_report(configured, public).model_dump(mode="json") == report.model_dump(
+        mode="json"
+    )
+
+    _configure_signing(monkeypatch, arn=_KMS_ARN, region=_KMS_REGION, pem=other_private)
+    token = sign_report(report, other_private, kms_client=fake)
+    again = sign_report(report, "", kms_client=fake)
+    parts = token.split(".")
+    pem_parts = pem_token.split(".")
+    assert len(parts) == 3
+    assert parts[0] == pem_parts[0]
+    assert parts[1] == pem_parts[1]
+    assert len(_b64_decode(parts[2])) == 64
+    assert json.loads(_b64_decode(parts[0])) == {
+        "alg": "ES256",
+        "kid": settings.CHALLENGE_REPORT_KEY_ID,
+        "typ": "challenge-report+jws",
+    }
+    verified = verify_report(token, public)
+    assert verified.model_dump(mode="json") == report.model_dump(mode="json")
+    assert verify_report(again, public).model_dump(mode="json") == verified.model_dump(mode="json")
+    assert verify_report(pem_token, public).model_dump(mode="json") == verified.model_dump(
+        mode="json"
+    )
+    with pytest.raises(ReportVerificationError):
+        verify_report(token, other_public)
+    digest = hashlib.sha256(f"{parts[0]}.{parts[1]}".encode("ascii")).digest()
+    assert fake.public_calls == 1
+    assert [call["Message"] for call in fake.sign_calls] == [digest, digest]
+    assert fake.sign_calls[0]["KeyId"] == _KMS_ARN
+    assert fake.sign_calls[0]["MessageType"] == "DIGEST"
+    assert fake.sign_calls[0]["SigningAlgorithm"] == "ECDSA_SHA_256"
+
+    class _Cached:
+        def get_public_key(self, *, KeyId):
+            raise AssertionError("GetPublicKey")
+
+        def sign(self, *, KeyId, Message, MessageType, SigningAlgorithm):
+            return fake.sign(
+                KeyId=KeyId,
+                Message=Message,
+                MessageType=MessageType,
+                SigningAlgorithm=SigningAlgorithm,
+            )
+
+    cached = sign_report(report, kms_client=_Cached())
+    assert verify_report(cached, public).task_id == report.task_id
+    assert fake.public_calls == 1
+
+    def factory(region):
+        seen.append(region)
+        return fake
+
+    seen: list[str] = []
+    monkeypatch.setattr("app.services.challenge_report._kms_client", factory)
+    _clear_kms_key_cache()
+    minted = sign_configured_report(report)
+    assert seen == [_KMS_REGION]
+    assert verify_report(minted, public).task_id == report.task_id
+    assert fake.public_calls == 2
+
+
+def test_kms_rejects_wrong_key_partial_config_and_client_errors(monkeypatch):
+    report = _sample_report()
+    private, public = _keys()
+    wrong_spec, _, _ = _kms_material(key_spec="RSA_2048")
+    _configure_signing(monkeypatch, arn=_KMS_ARN, region=_KMS_REGION, pem=private)
+    with pytest.raises(ReportVerificationError, match="invalid signing key"):
+        sign_report(report, private, kms_client=wrong_spec)
+    assert wrong_spec.public_calls == 1
+    assert wrong_spec.sign_calls == []
+
+    good, _, good_public = _kms_material()
+    token = sign_report(report, kms_client=good)
+    assert good.public_calls == 1
+    assert verify_report(token, good_public).task_id == report.task_id
+
+    p384 = ec.generate_private_key(ec.SECP384R1())
+    der = p384.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    wrong_curve, _, _ = _kms_material(public_der=der)
+    _clear_kms_key_cache()
+    with pytest.raises(ReportVerificationError, match="invalid signing key"):
+        sign_report(report, private, kms_client=wrong_curve)
+    assert wrong_curve.public_calls == 1
+    assert wrong_curve.sign_calls == []
+
+    class _Denied:
+        def get_public_key(self, *, KeyId):
+            raise RuntimeError("SensitiveKmsFailure")
+
+        def sign(self, *, KeyId, Message, MessageType, SigningAlgorithm):
+            raise AssertionError("sign")
+
+    _clear_kms_key_cache()
+    with pytest.raises(ReportVerificationError, match="invalid signing key") as caught:
+        sign_report(report, private, kms_client=_Denied())
+    assert "SensitiveKmsFailure" not in str(caught.value)
+
+    class _SignFails:
+        def __init__(self):
+            self.public_calls = 0
+
+        def get_public_key(self, *, KeyId):
+            self.public_calls += 1
+            return good.get_public_key(KeyId=KeyId)
+
+        def sign(self, *, KeyId, Message, MessageType, SigningAlgorithm):
+            raise RuntimeError("SensitiveSignFailure")
+
+    _clear_kms_key_cache()
+    signer = _SignFails()
+    with pytest.raises(ReportVerificationError, match="invalid signing key") as caught:
+        sign_report(report, private, kms_client=signer)
+    assert signer.public_calls == 1
+    assert "SensitiveSignFailure" not in str(caught.value)
+
+    def factory(region):
+        raise AssertionError(region)
+
+    monkeypatch.setattr("app.services.challenge_report._kms_client", factory)
+    _configure_signing(monkeypatch, arn=_KMS_ARN, region="", pem=private)
+    assert signing_key_configured() is True
+    with pytest.raises(ReportVerificationError, match="invalid signing key"):
+        sign_report(report, private)
+
+    blank_client, _, _ = _kms_material()
+    _configure_signing(monkeypatch, arn=_KMS_ARN, region="  ", pem="")
+    assert signing_key_configured() is False
+    with pytest.raises(ReportVerificationError, match="invalid signing key"):
+        sign_report(report, private, kms_client=blank_client)
+    assert blank_client.public_calls == 0
+
+    _configure_signing(monkeypatch, arn="", region=_KMS_REGION, pem="")
+    assert signing_key_configured() is False
+    with pytest.raises(ReportVerificationError, match="invalid signing key"):
+        sign_report(report, private, kms_client=blank_client)
+    assert blank_client.public_calls == 0
+    pem_token = sign_report(report, private)
+    assert verify_report(pem_token, public).task_id == report.task_id
+
+    _configure_signing(monkeypatch, arn="  ", region=_KMS_REGION, pem="")
+    assert signing_key_configured() is False
+    assert verify_report(sign_report(report, private), public).task_id == report.task_id
+
+    _configure_signing(monkeypatch, arn=_KMS_ARN, region=_KMS_REGION, pem="")
+    assert signing_key_configured() is True
+    _configure_signing(monkeypatch, arn="", region="", pem=private)
+    assert signing_key_configured() is True
+    _configure_signing(monkeypatch, arn="  ", region=" ", pem=" \n")
+    assert signing_key_configured() is False
+
+
+def test_boto3_is_not_imported_at_module_scope():
+    from app.services import challenge_report as report_module
+
+    tree = ast.parse(Path(report_module.__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            assert all(alias.name.split(".")[0] != "boto3" for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] != "boto3"
 
 
 def test_report_omits_secrets_and_states_verdicts(world):
@@ -840,6 +1088,8 @@ def test_cli_round_trip(tmp_path):
     public_path.write_text(public, encoding="utf-8")
     env = os.environ.copy()
     env.pop("CHALLENGE_REPORT_SIGNING_KEY", None)
+    env["CHALLENGE_REPORT_KMS_KEY_ARN"] = ""
+    env["CHALLENGE_REPORT_KMS_REGION"] = ""
     env["CHALLENGE_REPORT_KEY_ID"] = "challenge-report-1"
 
     signed = subprocess.run(
