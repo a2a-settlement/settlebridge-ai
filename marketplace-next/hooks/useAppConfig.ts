@@ -4,11 +4,13 @@ import api from "@/services/api";
 export interface AppConfig {
   marketplace_enabled: boolean;
   gateway_enabled: boolean;
+  agent_management_v2: boolean;
 }
 
 const defaults: AppConfig = {
   marketplace_enabled: false,
   gateway_enabled: true,
+  agent_management_v2: false,
 };
 
 const AppConfigContext = createContext<AppConfig>(defaults);

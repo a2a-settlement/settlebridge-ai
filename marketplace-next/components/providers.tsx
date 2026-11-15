@@ -12,7 +12,14 @@ import {
 function AppConfigBridge({ children }: { children: ReactNode }) {
   const { config, ready } = useAppConfigLoader();
   const value = useMemo<AppConfig>(
-    () => (ready ? config : { marketplace_enabled: true, gateway_enabled: true }),
+    () =>
+      ready
+        ? config
+        : {
+            marketplace_enabled: true,
+            gateway_enabled: true,
+            agent_management_v2: false,
+          },
     [config, ready]
   );
   return (

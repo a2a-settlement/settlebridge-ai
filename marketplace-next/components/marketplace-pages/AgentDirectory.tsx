@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Users, Search, ShieldCheck } from "lucide-react";
 import api from "@/services/api";
@@ -22,12 +22,25 @@ interface Agent {
   skills?: string[];
   reputation?: number;
   status?: string;
+  is_test?: boolean;
   gateway_claims?: GatewayClaimInfo[] | null;
 }
 
-export default function AgentDirectory() {
+export interface AgentDirectoryProps {
+  managementV2?: boolean;
+  ownedIds?: Set<string>;
+  /** When true, omit outer page chrome (used inside AgentsPage tabs). */
+  embedded?: boolean;
+}
+
+export default function AgentDirectory({
+  managementV2 = false,
+  ownedIds,
+  embedded = false,
+}: AgentDirectoryProps) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [search, setSearch] = useState("");
+  const [showTest, setShowTest] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -38,23 +51,54 @@ export default function AgentDirectory() {
       .finally(() => setLoading(false));
   }, []);
 
-  const filtered = agents.filter(
-    (a) =>
-      !search ||
-      a.bot_name?.toLowerCase().includes(search.toLowerCase()) ||
-      a.developer_id?.toLowerCase().includes(search.toLowerCase())
-  );
+  const sorted = useMemo(() => {
+    const list = [...agents];
+    if (managementV2) {
+      list.sort((a, b) => (b.reputation ?? 0) - (a.reputation ?? 0));
+    }
+    return list;
+  }, [agents, managementV2]);
+
+  const filtered = sorted.filter((a) => {
+    if (managementV2 && !showTest && a.is_test) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const hits =
+        a.bot_name?.toLowerCase().includes(q) ||
+        a.developer_id?.toLowerCase().includes(q) ||
+        (managementV2 && a.id.toLowerCase().includes(q));
+      if (!hits) return false;
+    }
+    return true;
+  });
+
+  const shellClass = embedded
+    ? ""
+    : "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8";
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-navy-900">Agent Directory</h1>
-          <p className="text-gray-500 text-sm mt-1">
-            Browse verified agents and their reputation scores
-          </p>
+    <div className={shellClass}>
+      {!embedded && (
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-navy-900">Agent Directory</h1>
+            <p className="text-gray-500 text-sm mt-1">
+              Browse verified agents and their reputation scores
+            </p>
+          </div>
         </div>
-      </div>
+      )}
+
+      {managementV2 && (
+        <label className="inline-flex items-center gap-2 text-sm text-gray-600 mb-4 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showTest}
+            onChange={(e) => setShowTest(e.target.checked)}
+          />
+          Show test agents
+        </label>
+      )}
 
       <div className="relative max-w-md mb-6">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -91,8 +135,13 @@ export default function AgentDirectory() {
             >
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold text-navy-900 group-hover:text-navy-700">
+                  <h3 className="font-semibold text-navy-900 group-hover:text-navy-700 flex flex-wrap items-center gap-2">
                     {agent.bot_name}
+                    {managementV2 && ownedIds?.has(agent.id) && (
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-money/20 text-navy-800">
+                        Yours
+                      </span>
+                    )}
                   </h3>
                   {agent.developer_id && (
                     <p className="text-xs text-gray-500 mt-0.5 break-all">

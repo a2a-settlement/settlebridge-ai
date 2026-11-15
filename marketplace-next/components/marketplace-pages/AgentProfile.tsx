@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Bot, ExternalLink, ShieldCheck } from "lucide-react";
 import api from "@/services/api";
 import ReputationScore from "@/components/ReputationScore";
+import { useAuth } from "@/hooks/useAuth";
+import { useAppConfig } from "@/hooks/useAppConfig";
+import { useManagedAgents } from "@/hooks/useManagedAgents";
+import AgentManagePanel from "@/components/agents/AgentManagePanel";
 import AttestationFreshnessBadge from "@/components/AttestationFreshnessBadge";
 import type { AttestationFreshness } from "@/lib/types";
 
@@ -70,14 +74,25 @@ export default function AgentProfile() {
   const botId = params.botId as string;
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const { agent_management_v2 } = useAppConfig();
+  const managedEnabled = agent_management_v2 && !!user?.exchange_bot_id;
+  const { ownedIds, refresh: refreshManaged } = useManagedAgents(managedEnabled);
 
-  useEffect(() => {
+  const loadAgent = useCallback((opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     api
       .get<AgentDetail>(`/agents/${botId}`)
       .then(({ data }) => setAgent(data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch(() => setAgent(null))
+      .finally(() => {
+        if (!opts?.silent) setLoading(false);
+      });
   }, [botId]);
+
+  useEffect(() => {
+    loadAgent();
+  }, [loadAgent]);
 
   if (loading) {
     return (
@@ -338,6 +353,22 @@ export default function AgentProfile() {
           </div>
         ) : null}
       </div>
+
+      {agent_management_v2 && user && ownedIds.has(botId) && (
+        <AgentManagePanel
+          agentId={agent.id}
+          agentName={agent.bot_name}
+          status={agent.status}
+          developerId={agent.developer_id}
+          gatewayClaims={agent.gateway_claims}
+          hasAgentCard={agent.has_agent_card}
+          isOwnLinked={user.exchange_bot_id === agent.id}
+          onUpdated={() => {
+            loadAgent({ silent: true });
+            void refreshManaged();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -1,11 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, RefreshCw, Server, Settings, Wallet, Wrench } from "lucide-react";
+import {
+  Bell,
+  Bot,
+  RefreshCw,
+  Server,
+  Settings,
+  Wallet,
+  Wrench,
+} from "lucide-react";
 import { NotSetUpPanel } from "@/components/NotSetUpPanel";
 import FunderHome from "@/components/marketplace-pages/FunderHome";
 import SolverHome from "@/components/marketplace-pages/SolverHome";
 import { useAuth } from "@/hooks/useAuth";
+import { useAppConfig } from "@/hooks/useAppConfig";
+import { useManagedAgents } from "@/hooks/useManagedAgents";
+import { agentCounts } from "@/lib/managedAgents";
 import { useView } from "@/hooks/useView";
 import type { WorkView } from "@/lib/cyberContracts";
 import { roleIncludesView } from "@/lib/funderView";
@@ -18,6 +29,10 @@ const SETUP_HREF: Record<WorkView, string> = {
 export default function Dashboard() {
   const { user } = useAuth();
   const { view } = useView();
+  const { agent_management_v2 } = useAppConfig();
+  const showAgentsCard = agent_management_v2 && !!user?.exchange_bot_id;
+  const { bots, loading: agentsLoading } = useManagedAgents(showAgentsCard);
+  const counts = agentCounts(bots);
 
   if (!user) return null;
 
@@ -29,6 +44,32 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold text-navy-900">Dashboard</h1>
         <p className="text-gray-500 text-sm mt-1">Welcome back, {user.display_name}</p>
       </div>
+
+      {showAgentsCard && (
+        <Link
+          href="/agents?tab=mine"
+          className="block mb-8 bg-white border border-gray-200 rounded-xl p-5 hover:border-navy-300 hover:shadow-md transition"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-navy-900 flex items-center justify-center flex-shrink-0">
+              <Bot className="w-5 h-5 text-money" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="font-semibold text-navy-900 text-sm">My agents</h2>
+              {agentsLoading ? (
+                <p className="text-xs text-gray-400 mt-1">Loading…</p>
+              ) : (
+                <p className="text-sm text-gray-600 mt-1">
+                  {counts.active} active · {counts.suspended} suspended
+                  {counts.missingCard > 0
+                    ? ` · ${counts.missingCard} missing card`
+                    : ""}
+                </p>
+              )}
+            </div>
+          </div>
+        </Link>
+      )}
 
       <div className="flex gap-8">
         <aside className="hidden lg:block w-48 flex-shrink-0">

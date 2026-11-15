@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     CONTACT_EMAIL_FROM: str = "contact@settlebridge.ai"
 
     MARKETPLACE_ENABLED: bool = False
+    AGENT_MANAGEMENT_V2: bool = False
 
     # Gateway
     REDIS_URL: str = "redis://localhost:6379"

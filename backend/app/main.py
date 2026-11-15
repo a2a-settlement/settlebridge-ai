@@ -273,6 +273,7 @@ async def public_config():
     return {
         "marketplace_enabled": settings.MARKETPLACE_ENABLED,
         "gateway_enabled": settings.GATEWAY_ENABLED,
+        "agent_management_v2": settings.AGENT_MANAGEMENT_V2,
         "review_model": REVIEW_MODEL,
         "quality_prompt_version": QUALITY_PROMPT_VERSION,
     }

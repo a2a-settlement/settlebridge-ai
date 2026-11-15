@@ -18,7 +18,9 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { useAppConfig } from "@/hooks/useAppConfig";
 import api from "@/services/api";
 import GitHubIdentity from "@/components/marketplace-pages/GitHubIdentity";
 
@@ -42,6 +44,7 @@ interface RotatedKey {
 
 export default function Settings() {
   const { user, refresh } = useAuth();
+  const { agent_management_v2 } = useAppConfig();
   const [botName, setBotName] = useState("");
   const [linking, setLinking] = useState(false);
   const [success, setSuccess] = useState("");
@@ -76,8 +79,14 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    if (botsExpanded && user?.exchange_bot_id) fetchBots();
-  }, [botsExpanded, user?.exchange_bot_id, fetchBots]);
+    if (
+      !agent_management_v2 &&
+      botsExpanded &&
+      user?.exchange_bot_id
+    ) {
+      void fetchBots();
+    }
+  }, [agent_management_v2, botsExpanded, user?.exchange_bot_id, fetchBots]);
 
   const handleRotateKey = async (botId: string) => {
     setRotatingBotId(botId);
@@ -370,8 +379,30 @@ export default function Settings() {
 
       <GitHubIdentity />
 
-      {/* Managed Bots */}
-      {user.exchange_bot_id && (
+      {/* Agent management (v2) or legacy Managed Bots */}
+      {user.exchange_bot_id && agent_management_v2 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-navy-900 flex items-center justify-center">
+              <Bot className="w-5 h-5 text-money" />
+            </div>
+            <div className="flex-1">
+              <h2 className="font-semibold text-navy-900">Agents</h2>
+              <p className="text-sm text-gray-500">
+                Suspend, rotate keys, and register agents from one place.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/agents?tab=mine"
+            className="mt-4 inline-flex px-4 py-2.5 bg-navy-900 text-white rounded-lg text-sm font-semibold hover:bg-navy-800 transition"
+          >
+            Manage your agents
+          </Link>
+        </div>
+      )}
+
+      {user.exchange_bot_id && !agent_management_v2 && (
         <div className="bg-white border border-gray-200 rounded-xl p-6">
           <button
             className="w-full flex items-center justify-between"

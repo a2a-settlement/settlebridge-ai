@@ -26,7 +26,7 @@ const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-money";
 
 export default function MarketplaceHeader() {
-  const { user, logout } = useAuth();
+  const { user, loading, logout } = useAuth();
   const { view, setView } = useView();
   const { context, clearRepo, clearTask } = useWorkContext();
   const pathname = usePathname();
@@ -70,7 +70,12 @@ export default function MarketplaceHeader() {
             <div className="hidden md:block">
               <RoleSwitch value={view} onChange={setView} />
             </div>
-            {user ? (
+            {loading ? (
+              <div
+                className="h-9 w-28 rounded-lg bg-white/10 animate-pulse"
+                aria-hidden
+              />
+            ) : user ? (
               <>
                 <WalletWidget />
                 <NotificationBell />
