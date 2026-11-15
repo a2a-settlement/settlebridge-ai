@@ -21,11 +21,11 @@ says “Managed Bots”. This plan deploys the My agents UI on
 - Rebuilds and restarts `settlebridge-marketplace` (Next standalone).
 - Turns `AGENT_MANAGEMENT_V2=true` in the SettleBridge `.env` and restarts
   `settlebridge` so `/api/config` (or equivalent) exposes the flag.
-- Does **not** change the exchange, settlement, escrow, or reputation scoring.
+- Exchange: additive directory `is_test` field only. No settlement/escrow/reputation changes.
 - Does **not** print `.env` values, tokens, or keys.
 - Does **not** run the Gateway tab work (that is a later plan after review).
 
-**UI that must be in `<SETTLEBRIDGE_SHA>` before you run this:**
+**UI that must be in `57137229e939e27ebf7dde26c44dbcf481ea4d81` before you run this:**
 
 - `/agents` tabs: **My agents** (default when signed in) | **Directory** |
   **Gateway** only if the operator has a gateway (hidden otherwise)
@@ -45,15 +45,16 @@ Pinned commits (fill in after the UI PR is on `main`):
 
 | Repo | Droplet path | Deploy SHA |
 |------|--------------|------------|
-| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `<SETTLEBRIDGE_SHA>` |
+| a2a-settlement | `/home/clawdbot/a2a-settlement` | `3be803f416cf3bc822411f49c83571c8801c3b74` |
+| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `57137229e939e27ebf7dde26c44dbcf481ea4d81` |
 
 Rollback pins (from before this plan):
 
 | Pin | SHA |
 |-----|-----|
-| `SETTLEBRIDGE_PREV_SHA` | `<SETTLEBRIDGE_PREV_SHA>` (record in P.1; today expected `4df67769ecb1422a83cefe49000d7c00b05bd066` if no other SB deploys intervened) |
+| `SETTLEBRIDGE_PREV_SHA` | `4df67769ecb1422a83cefe49000d7c00b05bd066` (record in P.1; today expected `4df67769ecb1422a83cefe49000d7c00b05bd066` if no other SB deploys intervened) |
 
-Exchange is **not** moved by this plan (stays on plan 43).
+Exchange moves only for directory `is_test` exposure: `3be803f416cf3bc822411f49c83571c8801c3b74` (from plan 43 `5f4bdab0d8061434388ed9ab2b3e70d19b4ad3e0`).
 
 ## Rules (same as plans 1–43)
 
@@ -66,7 +67,7 @@ Exchange is **not** moved by this plan (stays on plan 43).
 - `git status` on the repo must be clean (or only expected dirt) before
   pull. If unexpected dirty files block ff-only, stop and report.
 - Run git / npm / pytest as `clawdbot`.
-- If `<SETTLEBRIDGE_SHA>` is still a placeholder, **stop after reporting that** —
+- If `57137229e939e27ebf7dde26c44dbcf481ea4d81` is still a placeholder, **stop after reporting that** —
   do not invent a SHA.
 
 ## P.1 Pre-flight (read-only)
@@ -86,7 +87,7 @@ curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:8002/health | grep
 curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:3001/ | grep -qx 200
 
 # plan 43 still live
-test "$(cd "$EX" && git rev-parse --short HEAD)" = "5f4bdab"
+SHORT=$(cd "$EX" && git rev-parse --short HEAD); echo "EX_HEAD=$SHORT"; echo "$SHORT" | grep -Eq "^(5f4bdab|3be803f)$"
 curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:8000/v1/accounts/managed | grep -qx 401
 test "$(xe "select to_regclass('public.developer_id_owners')")" = "developer_id_owners"
 test "$(xe "select count(*) from information_schema.columns where table_name='accounts' and column_name='is_test'")" = 1
@@ -97,11 +98,28 @@ git status -sb | head -20
 test -f marketplace-next/.next/standalone/server.js
 
 # refuse to proceed on placeholders
-grep -q '<SETTLEBRIDGE_SHA>' /root/deploy-plans/2026-11-14-agent-management-ui/AGENT_MANAGEMENT_UI_PLAN.md \
+grep -q '57137229e939e27ebf7dde26c44dbcf481ea4d81' /root/deploy-plans/2026-11-14-agent-management-ui/AGENT_MANAGEMENT_UI_PLAN.md \
   && { echo "PLAN STILL HAS PLACEHOLDER SHAS — stop"; exit 1; } || true
 ```
 
 Record `SETTLEBRIDGE_PREV_SHA=$(cd "$SB" && git rev-parse HEAD)` in your report.
+
+## P.2a Deploy exchange (directory is_test)
+
+```bash
+set -euo pipefail
+EX=/home/clawdbot/a2a-settlement
+cd "$EX"
+git fetch origin
+if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
+  sudo -u clawdbot git stash push -u -m "plan44-ex-pre-deploy-dirt" -- docs-site site migrate_to_postgres.py || true
+fi
+sudo -u clawdbot git merge --ff-only 3be803f416cf3bc822411f49c83571c8801c3b74
+systemctl restart a2a-exchange
+for i in $(seq 1 30); do systemctl is-active --quiet a2a-exchange && break; sleep 1; done
+systemctl is-active a2a-exchange
+curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:8000/health | grep -qx 200
+```
 
 ## P.2 Deploy SettleBridge code
 
@@ -114,7 +132,7 @@ git fetch origin
 if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
   sudo -u clawdbot git stash push -u -m "plan44-pre-deploy-dirt" || true
 fi
-sudo -u clawdbot git merge --ff-only <SETTLEBRIDGE_SHA>
+sudo -u clawdbot git merge --ff-only 57137229e939e27ebf7dde26c44dbcf481ea4d81
 echo "SB_NOW=$(git rev-parse --short HEAD) $(git log -1 --oneline)"
 
 # backend unit tests that ship with the UI PR
@@ -240,7 +258,7 @@ grep -q '^AGENT_MANAGEMENT_V2=' "$ENV" \
   && sed -i 's/^AGENT_MANAGEMENT_V2=.*/AGENT_MANAGEMENT_V2=false/' "$ENV" \
   || echo 'AGENT_MANAGEMENT_V2=false' >> "$ENV"
 cd "$SB"
-sudo -u clawdbot git merge --ff-only <SETTLEBRIDGE_PREV_SHA>
+sudo -u clawdbot git merge --ff-only 4df67769ecb1422a83cefe49000d7c00b05bd066
 systemctl restart settlebridge
 # rebuild previous marketplace at that commit
 M=$SB/marketplace-next
@@ -263,9 +281,9 @@ done
 
 ## Done when
 
-- SettleBridge HEAD is `<SETTLEBRIDGE_SHA>`
+- SettleBridge HEAD is `57137229e939e27ebf7dde26c44dbcf481ea4d81`
 - `AGENT_MANAGEMENT_V2=true` in `.env` (do not print the file)
 - `/agents` shows My agents / Directory chrome
 - Settings has “Manage your agents”, not “Managed Bots”
-- Exchange HEAD still `5f4bdab`
+- Exchange HEAD is `3be803f` (directory is_test)
 - P.5 prints `PLAN 44 SMOKE OK`
