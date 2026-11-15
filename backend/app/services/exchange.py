@@ -557,6 +557,142 @@ def unsuspend_managed_account(user: User, bot_id: str) -> dict[str, Any]:
     return resp.json()
 
 
+def attach_developer_id(user: User, agent_api_key: str) -> dict[str, Any]:
+    """Attach another developer_id to the caller's ownership by proving control via agent_api_key.
+
+    Never attaches the request or unredacted keys to raised exceptions.
+    """
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    hidden = (str(user.exchange_api_key), str(agent_api_key))
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/developer-ids/attach",
+        json={"agent_api_key": agent_api_key},
+        headers={
+            "Authorization": f"Bearer {user.exchange_api_key}",
+            "Content-Type": "application/json",
+        },
+        timeout=10,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        raise _ExchangeStatusError(resp.status_code, _redact(resp.text, hidden)) from None
+    return resp.json()
+
+
+def detach_developer_id(user: User, developer_id: str) -> dict[str, Any]:
+    """Detach a non-primary developer_id controlled by the caller."""
+    from urllib.parse import quote
+
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    hidden = (str(user.exchange_api_key),)
+    encoded_dev_id = quote(developer_id, safe="")
+    resp = httpx.delete(
+        f"{settings.effective_exchange_url}/v1/accounts/developer-ids/{encoded_dev_id}",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        raise _ExchangeStatusError(resp.status_code, _redact(resp.text, hidden)) from None
+    return resp.json()
+
+
+def register_managed_account(
+    user: User,
+    *,
+    bot_name: str,
+    developer_id: str,
+    description: str | None = None,
+    skills: list[str] | None = None,
+    is_test: bool = False,
+) -> dict[str, Any]:
+    """Register a new agent under a developer_id controlled by ``user`` without mutating ``user``."""
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    hidden = (str(user.exchange_api_key),)
+    payload: dict[str, Any] = {
+        "bot_name": bot_name,
+        "developer_id": developer_id,
+        "developer_name": getattr(user, "display_name", None) or "Operator",
+        "contact_email": getattr(user, "email", None) or "operator@example.com",
+        "owner_api_key": user.exchange_api_key,
+        "description": description,
+        "skills": list(skills) if skills is not None else [],
+        "is_test": bool(is_test),
+    }
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/register",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        raise _ExchangeStatusError(resp.status_code, _redact(resp.text, hidden)) from None
+    return resp.json()
+
+
+def publish_managed_agent_card(
+    user: User, bot_id: str, card: dict[str, Any]
+) -> dict[str, Any]:
+    """Publish or update the Agent Card on an account the caller controls."""
+    from urllib.parse import quote
+
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    hidden = (str(user.exchange_api_key),)
+    encoded_bot_id = quote(bot_id, safe="")
+    resp = httpx.put(
+        f"{settings.effective_exchange_url}/v1/accounts/{encoded_bot_id}/card",
+        json=card,
+        headers={
+            "Authorization": f"Bearer {user.exchange_api_key}",
+            "Content-Type": "application/json",
+        },
+        timeout=10,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        raise _ExchangeStatusError(resp.status_code, _redact(resp.text, hidden)) from None
+    return resp.json()
+
+
+def get_managed_agent_settlements(user: User, bot_id: str) -> dict[str, Any]:
+    """Fetch recent settlements for an account the caller controls."""
+    from urllib.parse import quote
+
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    hidden = (str(user.exchange_api_key),)
+    encoded_bot_id = quote(bot_id, safe="")
+    resp = httpx.get(
+        f"{settings.effective_exchange_url}/v1/accounts/{encoded_bot_id}/settlements",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        raise _ExchangeStatusError(resp.status_code, _redact(resp.text, hidden)) from None
+    return resp.json()
+
+
 def update_managed_developer_id(user: User, developer_id: str) -> None:
     """Update the developer_id this user manages (in-memory only — caller must commit)."""
     user.managed_developer_id = developer_id  # type: ignore[attr-defined]

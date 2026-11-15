@@ -1,35 +1,53 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { useManagedAgents } from "@/hooks/useManagedAgents";
 import AgentDirectory from "@/components/marketplace-pages/AgentDirectory";
 import MyAgents from "@/components/agents/MyAgents";
+import GatewayAgentsTab from "@/components/agents/GatewayAgentsTab";
 
-type AgentsTab = "mine" | "directory";
+type AgentsTab = "mine" | "directory" | "gateway";
 
-function parseTab(raw: string | null, signedIn: boolean): AgentsTab {
+function parseTab(
+  raw: string | null,
+  signedIn: boolean,
+  allowGateway: boolean
+): AgentsTab {
   if (raw === "directory") return "directory";
   if (raw === "mine") return "mine";
+  if (raw === "gateway" && signedIn && allowGateway) return "gateway";
   return signedIn ? "mine" : "directory";
 }
 
 export default function AgentsPage() {
   const { agent_management_v2 } = useAppConfig();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const tab = useMemo(
-    () => parseTab(searchParams.get("tab"), !!user),
-    [searchParams, user]
-  );
-
+  const signedIn = !!user;
   const linked = !!user?.exchange_bot_id;
-  const { ownedIds } = useManagedAgents(
-    agent_management_v2 && tab === "directory" && linked
+  const managed = useManagedAgents(agent_management_v2 && signedIn && linked);
+
+  // Gateway tab is ONLY visible when signed in and one of the gateway conditions holds.
+  const canShowGateway = signedIn && linked && managed.showGatewayTab;
+  // Avoid prematurely bouncing ?tab=gateway while initial auth or /bots check is in flight.
+  const checkingGatewayEligibility =
+    authLoading || (signedIn && linked && managed.loading && !managed.data);
+
+  const rawTab = searchParams.get("tab");
+
+  const tab = useMemo(
+    () =>
+      parseTab(
+        rawTab,
+        signedIn,
+        canShowGateway || (rawTab === "gateway" && checkingGatewayEligibility)
+      ),
+    [rawTab, signedIn, canShowGateway, checkingGatewayEligibility]
   );
 
   const setTab = useCallback(
@@ -42,21 +60,32 @@ export default function AgentsPage() {
   );
 
   useEffect(() => {
-    if (!agent_management_v2) return;
-    const raw = searchParams.get("tab");
-    if (raw === "mine" || raw === "directory") return;
-    const defaultTab: AgentsTab = user ? "mine" : "directory";
+    if (!agent_management_v2 || authLoading) return;
+    if (rawTab === "mine" || rawTab === "directory") return;
+    if (rawTab === "gateway") {
+      if (checkingGatewayEligibility || canShowGateway) return;
+    }
+    const defaultTab: AgentsTab = signedIn ? "mine" : "directory";
     const params = new URLSearchParams(searchParams.toString());
     params.set("tab", defaultTab);
     router.replace(`/agents?${params.toString()}`, { scroll: false });
-  }, [agent_management_v2, user, searchParams, router]);
+  }, [
+    agent_management_v2,
+    authLoading,
+    rawTab,
+    checkingGatewayEligibility,
+    canShowGateway,
+    signedIn,
+    searchParams,
+    router,
+  ]);
 
   if (!agent_management_v2) {
     return <AgentDirectory />;
   }
 
   const tabClass = (active: boolean) =>
-    `px-4 py-2 rounded-lg text-sm font-medium transition ${
+    `px-4 py-2 rounded-lg text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-navy-500 ${
       active
         ? "bg-navy-900 text-white"
         : "text-gray-600 hover:bg-gray-100"
@@ -72,7 +101,7 @@ export default function AgentsPage() {
       </div>
 
       <div
-        className="inline-flex gap-1 p-1 bg-gray-100 rounded-xl mb-8"
+        className="inline-flex flex-wrap gap-1 p-1 bg-gray-100 rounded-xl mb-8"
         role="tablist"
         aria-label="Agents sections"
       >
@@ -94,14 +123,34 @@ export default function AgentsPage() {
         >
           Directory
         </button>
+        {canShowGateway && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "gateway"}
+            className={tabClass(tab === "gateway")}
+            onClick={() => setTab("gateway")}
+          >
+            Gateway
+          </button>
+        )}
       </div>
 
       {tab === "mine" ? (
-        <MyAgents />
+        <MyAgents managed={managed} />
+      ) : tab === "gateway" && (canShowGateway || checkingGatewayEligibility) ? (
+        <GatewayAgentsTab
+          bots={managed.bots}
+          gatewayClaimedAgents={managed.gatewayClaimedAgents}
+          callerAccountType={managed.callerAccountType}
+          callerGatewayId={user?.exchange_bot_id}
+          callerDisplayName={user?.display_name}
+          loading={checkingGatewayEligibility || managed.loading}
+        />
       ) : (
         <AgentDirectory
           managementV2
-          ownedIds={user && linked ? ownedIds : undefined}
+          ownedIds={signedIn && linked ? managed.ownedIds : undefined}
           embedded
         />
       )}

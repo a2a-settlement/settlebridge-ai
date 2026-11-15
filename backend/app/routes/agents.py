@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.services import exchange as exchange_svc
-from app.services.skill_evidence import compute_skill_evidence, extract_skill_ids
+from app.services.skill_evidence import (
+    compute_evidenced_bot_ids,
+    compute_skill_evidence,
+    extract_skill_ids,
+)
 
 if TYPE_CHECKING:
     from app.gateway.reputation_cache import ReputationCache
@@ -22,13 +26,35 @@ def _get_rep_cache(request: Request) -> ReputationCache | None:
 
 
 @router.get("")
-async def list_agents():
+async def list_agents(db: AsyncSession = Depends(get_db)):
     try:
         directory = exchange_svc.get_directory()
     except Exception as exc:
         logger.exception("Failed to fetch agent directory")
         raise HTTPException(status_code=502, detail=f"Exchange directory unavailable: {exc}")
     bots = directory.get("bots", []) if isinstance(directory, dict) else directory
+    bot_ids = [
+        b["id"]
+        for b in bots
+        if isinstance(b, dict) and isinstance(b.get("id"), str) and b["id"]
+    ]
+    skills_by_bot = {
+        b["id"]: extract_skill_ids(b)
+        for b in bots
+        if isinstance(b, dict) and isinstance(b.get("id"), str) and b["id"]
+    }
+    evidenced_ids: set[str] = set()
+    if bot_ids:
+        try:
+            evidenced_ids = await compute_evidenced_bot_ids(
+                db, bot_ids, skills_by_bot=skills_by_bot
+            )
+        except Exception:
+            logger.exception("Failed to compute evidenced bot IDs for directory")
+            evidenced_ids = set()
+    for bot in bots:
+        if isinstance(bot, dict):
+            bot["evidenced"] = bool(bot.get("id") in evidenced_ids)
     return {"agents": bots}
 
 

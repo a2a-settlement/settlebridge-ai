@@ -113,10 +113,21 @@ export default function AgentProfile() {
 
   const card = agent.agent_card;
   const richSkills = (card?.skills || []).filter(isRichSkill);
+  const rfcCardSkills = Array.isArray(
+    (card?.capabilities as { skills?: unknown } | undefined)?.skills
+  )
+    ? (
+        (card?.capabilities as { skills: unknown[] }).skills.filter(
+          (s): s is string => typeof s === "string" && s.trim().length > 0
+        )
+      )
+    : [];
   const tagSkills =
     richSkills.length > 0
       ? []
-      : agent.skills || [];
+      : agent.skills && agent.skills.length > 0
+        ? agent.skills
+        : rfcCardSkills;
   const evidenceBySkill = Object.fromEntries(
     (agent.skill_evidence || []).map((e) => [e.skill_id, e])
   );
@@ -347,9 +358,11 @@ export default function AgentProfile() {
                 </div>
               ))}
             </div>
-            <p className="text-xs text-amber-700 mt-3">
-              Skill tags only — publish an Agent Card for endpoints and schemas.
-            </p>
+                {!agent.has_agent_card && (
+                  <p className="text-xs text-amber-700 mt-3">
+                    Skill tags only — publish an Agent Card for endpoints and schemas.
+                  </p>
+                )}
           </div>
         ) : null}
       </div>
@@ -362,6 +375,9 @@ export default function AgentProfile() {
           developerId={agent.developer_id}
           gatewayClaims={agent.gateway_claims}
           hasAgentCard={agent.has_agent_card}
+          agentCard={agent.agent_card ?? null}
+          agentDescription={agent.description}
+          agentSkills={agent.skills}
           isOwnLinked={user.exchange_bot_id === agent.id}
           onUpdated={() => {
             loadAgent({ silent: true });

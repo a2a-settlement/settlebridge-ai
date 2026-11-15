@@ -37,7 +37,7 @@ export default function RotatedKeyReveal({ rotatedKey, onClose }: Props) {
           <button
             type="button"
             onClick={() => setVisible(!visible)}
-            className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+            className="text-gray-400 hover:text-gray-600 flex-shrink-0 rounded focus:outline-none focus:ring-2 focus:ring-navy-500"
             aria-label={visible ? "Hide key" : "Show key"}
           >
             {visible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -49,7 +49,7 @@ export default function RotatedKeyReveal({ rotatedKey, onClose }: Props) {
               setCopied(true);
               setTimeout(() => setCopied(false), 2000);
             }}
-            className="flex items-center gap-1 text-xs text-navy-700 hover:text-navy-900 font-medium flex-shrink-0"
+            className="flex items-center gap-1 text-xs text-navy-700 hover:text-navy-900 font-medium flex-shrink-0 rounded px-1 focus:outline-none focus:ring-2 focus:ring-navy-500"
           >
             {copied ? (
               <>
@@ -63,12 +63,14 @@ export default function RotatedKeyReveal({ rotatedKey, onClose }: Props) {
           </button>
         </div>
         <p className="text-xs text-gray-500 mb-4">
-          Old key valid for {rotatedKey.grace_period_minutes} more minutes. Update your credential store now.
+          {rotatedKey.grace_period_minutes > 0
+            ? `Old key valid for ${rotatedKey.grace_period_minutes} more minutes. Update your credential store now.`
+            : "Copy this key into your credential store before closing."}
         </p>
         <button
           type="button"
           onClick={onClose}
-          className="w-full px-4 py-2.5 bg-navy-900 text-white rounded-lg text-sm font-semibold hover:bg-navy-800 transition"
+          className="w-full px-4 py-2.5 bg-navy-900 text-white rounded-lg text-sm font-semibold hover:bg-navy-800 transition focus:outline-none focus:ring-2 focus:ring-navy-500"
         >
           Done
         </button>

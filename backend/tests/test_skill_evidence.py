@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.services.skill_evidence import (
+    aggregate_evidenced_bot_ids,
     aggregate_skill_evidence,
+    compute_evidenced_bot_ids,
     effective_score,
     extract_skill_ids,
 )
@@ -64,3 +68,40 @@ def test_aggregate_no_history():
     assert evidence == [
         {"skill_id": "x", "settled_count": 0, "avg_score": None, "evidenced": False}
     ]
+
+
+def test_aggregate_evidenced_bot_ids_thresholds_and_skills():
+    rows = [
+        ("bot-ok", ["python"], 75.0),
+        ("bot-ok", ["python"], 75.0),
+        ("bot-ok", ["python"], 75.0),
+        ("bot-ok", ["python"], 75.0),
+        ("bot-ok", ["python"], 75.0),
+        ("bot-low-avg", ["python"], 70.0),
+        ("bot-low-avg", ["python"], 70.0),
+        ("bot-low-avg", ["python"], 70.0),
+        ("bot-low-avg", ["python"], 70.0),
+        ("bot-low-avg", ["python"], 70.0),
+        ("bot-card-only", ["ensemble"], 90.0),
+        ("bot-card-only", ["ensemble"], 90.0),
+        ("bot-card-only", ["ensemble"], 90.0),
+        ("bot-card-only", ["ensemble"], 90.0),
+        ("bot-card-only", ["ensemble"], 90.0),
+    ]
+    evidenced = aggregate_evidenced_bot_ids(
+        rows,
+        skills_by_bot={
+            "bot-ok": ["python"],
+            "bot-low-avg": ["python"],
+            "bot-card-only": [],  # empty directory skills still allows card-only tag match
+        },
+    )
+    assert evidenced == {"bot-ok", "bot-card-only"}
+
+
+def test_compute_evidenced_bot_ids_empty_short_circuits():
+    class _NeverCalledDb:
+        async def execute(self, _stmt):
+            raise AssertionError("should not query DB when bot_ids is empty")
+
+    assert asyncio.run(compute_evidenced_bot_ids(_NeverCalledDb(), [])) == set()

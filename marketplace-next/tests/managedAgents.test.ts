@@ -1,0 +1,161 @@
+// Runs with `npm run test:unit` (node --test, built-in type stripping).
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  agentCounts,
+  extractApiError,
+  formatActivityDate,
+  hasGatewayTabAccess,
+  truncateAgentId,
+} from "../lib/managedAgents.ts";
+
+test("hasGatewayTabAccess follows exact Gateway tab visibility rules", () => {
+  // Hidden when signed out even if gateway fields exist
+  assert.equal(
+    hasGatewayTabAccess({
+      signedIn: false,
+      callerAccountType: "gateway",
+      bots: [],
+      gatewayClaimedAgents: [],
+    }),
+    false
+  );
+
+  // Hidden when signed in as standard agent operator with no gateway claims
+  assert.equal(
+    hasGatewayTabAccess({
+      signedIn: true,
+      callerAccountType: "agent",
+      bots: [
+        {
+          id: "a1",
+          bot_name: "Alpha",
+          status: "active",
+          developer_id: "dev-1",
+          gateway_claims: [],
+        },
+      ],
+      gatewayClaimedAgents: [],
+    }),
+    false
+  );
+
+  // Shown when at least one owned agent has an active gateway_claims entry
+  assert.equal(
+    hasGatewayTabAccess({
+      signedIn: true,
+      callerAccountType: "agent",
+      bots: [
+        {
+          id: "a1",
+          bot_name: "Alpha",
+          status: "active",
+          developer_id: "dev-1",
+          gateway_claims: [
+            {
+              gateway_id: "gw-1",
+              gateway_name: "Trust Gateway",
+              verified: true,
+              claimed_at: "2026-11-15T00:00:00Z",
+            },
+          ],
+        },
+      ],
+    }),
+    true
+  );
+
+  // Shown when caller_account_type is gateway even with zero claimed agents
+  assert.equal(
+    hasGatewayTabAccess({
+      signedIn: true,
+      callerAccountType: "gateway",
+      bots: [],
+      gatewayClaimedAgents: [],
+    }),
+    true
+  );
+
+  // Shown when gateway_claimed_agents is non-empty
+  assert.equal(
+    hasGatewayTabAccess({
+      signedIn: true,
+      callerAccountType: "agent",
+      bots: [],
+      gatewayClaimedAgents: [
+        {
+          id: "a2",
+          bot_name: "Claimed Agent",
+          status: "active",
+          developer_id: "dev-2",
+        },
+      ],
+    }),
+    true
+  );
+});
+
+test("agentCounts tracks active, suspended, and missingCard", () => {
+  const counts = agentCounts([
+    {
+      id: "1",
+      bot_name: "A",
+      status: "active",
+      developer_id: "d",
+      has_agent_card: true,
+    },
+    {
+      id: "2",
+      bot_name: "B",
+      status: "active",
+      developer_id: "d",
+      has_agent_card: false,
+    },
+    {
+      id: "3",
+      bot_name: "C",
+      status: "suspended",
+      developer_id: "d",
+      has_agent_card: false,
+    },
+  ]);
+  assert.deepEqual(counts, { active: 2, suspended: 1, missingCard: 2 });
+});
+
+test("extractApiError formats string and FastAPI validation array details", () => {
+  assert.equal(
+    extractApiError(
+      { response: { data: { detail: "Developer ID already claimed" } } },
+      "Fallback"
+    ),
+    "Developer ID already claimed"
+  );
+  assert.equal(
+    extractApiError(
+      {
+        response: {
+          data: {
+            detail: [
+              { loc: ["body", "settlement", "exchange_url"], msg: "Field required" },
+            ],
+          },
+        },
+      },
+      "Fallback"
+    ),
+    "settlement.exchange_url: Field required"
+  );
+  assert.equal(extractApiError(new Error("network"), "Fallback"), "Fallback");
+});
+
+test("formatActivityDate and truncateAgentId handle edge cases", () => {
+  assert.equal(formatActivityDate(null), "—");
+  assert.equal(formatActivityDate("not-a-date"), "—");
+  assert.notEqual(formatActivityDate("2026-11-15T12:00:00Z"), "—");
+  assert.equal(truncateAgentId("short-id"), "short-id");
+  assert.equal(
+    truncateAgentId("12345678-aaaa-bbbb-cccc-1234567890ab"),
+    "12345678…7890ab"
+  );
+});

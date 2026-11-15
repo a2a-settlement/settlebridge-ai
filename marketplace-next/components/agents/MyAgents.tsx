@@ -6,19 +6,36 @@ import {
   AlertCircle,
   Bot,
   Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Key,
   MoreVertical,
+  PauseCircle,
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { groupAgentsByDeveloperId, useManagedAgents } from "@/hooks/useManagedAgents";
-import type { ManagedAgent, RotatedKeyResult } from "@/lib/managedAgents";
-import { truncateAgentId } from "@/lib/managedAgents";
+import {
+  groupAgentsByDeveloperId,
+  useManagedAgents,
+  type ManagedAgentsState,
+} from "@/hooks/useManagedAgents";
+import {
+  extractApiError,
+  formatActivityDate,
+  truncateAgentId,
+  type ManagedAgent,
+  type RotatedKeyResult,
+} from "@/lib/managedAgents";
 import ReputationScore from "@/components/ReputationScore";
 import RotatedKeyReveal from "@/components/agents/RotatedKeyReveal";
+import RegisterAgentModal from "@/components/agents/RegisterAgentModal";
+import AddDeveloperIdModal from "@/components/agents/AddDeveloperIdModal";
+import PublishAgentCardModal from "@/components/agents/PublishAgentCardModal";
 import api from "@/services/api";
 
 type PendingAction =
@@ -28,15 +45,59 @@ type PendingAction =
   | { kind: "bulk-suspend"; count: number }
   | { kind: "bulk-unsuspend"; count: number };
 
+type StatusFilter = "all" | "active" | "suspended";
+
+export interface MyAgentsProps {
+  managed?: ManagedAgentsState;
+}
+
 function StatusPill({ status }: { status: string }) {
   const active = status === "active";
   return (
     <span
-      className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${
-        active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
+      className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium capitalize ${
+        active
+          ? "bg-green-100 text-green-800"
+          : "bg-gray-100 text-gray-700"
       }`}
     >
+      {active ? (
+        <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+      ) : (
+        <PauseCircle className="w-3 h-3" aria-hidden="true" />
+      )}
       {status || "unknown"}
+    </span>
+  );
+}
+
+function AgentCardPill({ hasCard }: { hasCard?: boolean }) {
+  if (hasCard) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-green-50 text-green-800 border border-green-200">
+        <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+        Published
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200">
+      <AlertCircle className="w-3 h-3" aria-hidden="true" />
+      Missing
+    </span>
+  );
+}
+
+function RunsBehindBadge({ agent }: { agent: ManagedAgent }) {
+  const claims = agent.gateway_claims;
+  if (!claims || claims.length === 0) return null;
+  const label = claims
+    .map((c) => c.gateway_name || truncateAgentId(c.gateway_id))
+    .join(", ");
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-navy-50 text-navy-800 border border-navy-200">
+      <ShieldCheck className="w-3 h-3 flex-shrink-0" aria-hidden="true" />
+      <span>Runs behind: {label}</span>
     </span>
   );
 }
@@ -49,14 +110,19 @@ function IdCopy({ id }: { id: string }) {
       <button
         type="button"
         title="Copy agent ID"
-        className="text-gray-400 hover:text-navy-700"
+        aria-label={`Copy agent ID ${id}`}
+        className="text-gray-400 hover:text-navy-700 rounded focus:outline-none focus:ring-2 focus:ring-navy-500"
         onClick={() => {
           void navigator.clipboard.writeText(id);
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
         }}
       >
-        {copied ? <Check className="w-3 h-3 text-money" /> : <Copy className="w-3 h-3" />}
+        {copied ? (
+          <Check className="w-3 h-3 text-money-dark" />
+        ) : (
+          <Copy className="w-3 h-3" />
+        )}
       </button>
     </span>
   );
@@ -65,12 +131,14 @@ function IdCopy({ id }: { id: string }) {
 function AgentRowMenu({
   agent,
   busy,
+  onPublishCard,
   onSuspend,
   onUnsuspend,
   onRotate,
 }: {
   agent: ManagedAgent;
   busy: boolean;
+  onPublishCard: () => void;
   onSuspend: () => void;
   onUnsuspend: () => void;
   onRotate: () => void;
@@ -82,8 +150,9 @@ function AgentRowMenu({
         type="button"
         disabled={busy}
         onClick={() => setOpen(!open)}
-        className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50"
-        aria-label="Actions"
+        className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500"
+        aria-label={`Actions for ${agent.bot_name}`}
+        aria-expanded={open}
       >
         <MoreVertical className="w-4 h-4" />
       </button>
@@ -95,7 +164,27 @@ function AgentRowMenu({
             aria-label="Close menu"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute right-0 z-20 mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-sm">
+          <div className="absolute right-0 z-20 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-sm">
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2 text-navy-900 hover:bg-gray-50 font-medium"
+              onClick={() => {
+                setOpen(false);
+                onPublishCard();
+              }}
+            >
+              {agent.has_agent_card ? "Edit Agent Card" : "Publish Agent Card"}
+            </button>
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2 text-navy-800 hover:bg-gray-50"
+              onClick={() => {
+                setOpen(false);
+                onRotate();
+              }}
+            >
+              Rotate key
+            </button>
             {agent.status === "active" ? (
               <button
                 type="button"
@@ -119,16 +208,6 @@ function AgentRowMenu({
                 Reactivate
               </button>
             )}
-            <button
-              type="button"
-              className="w-full text-left px-3 py-2 text-navy-800 hover:bg-gray-50"
-              onClick={() => {
-                setOpen(false);
-                onRotate();
-              }}
-            >
-              Rotate key
-            </button>
           </div>
         </>
       )}
@@ -136,56 +215,108 @@ function AgentRowMenu({
   );
 }
 
-export default function MyAgents() {
+export default function MyAgents({ managed }: MyAgentsProps) {
   const { user } = useAuth();
   const linked = !!user?.exchange_bot_id;
-  const { bots, loading, error, refresh } = useManagedAgents(linked);
+  const fallbackManaged = useManagedAgents(!managed && linked);
+  const {
+    bots,
+    developerIds,
+    loading,
+    error,
+    refresh,
+  } = managed ?? fallbackManaged;
 
   const [search, setSearch] = useState("");
-  const [showSuspended, setShowSuspended] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [devIdFilter, setDevIdFilter] = useState<string>("all");
+  const [hasCardOnly, setHasCardOnly] = useState(false);
   const [showTest, setShowTest] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    new Set()
+  );
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState("");
   const [rotatedKey, setRotatedKey] = useState<RotatedKeyResult | null>(null);
 
+  const [registerModalDevId, setRegisterModalDevId] = useState<
+    string | null | undefined
+  >(undefined);
+  const [attachDevModalOpen, setAttachDevModalOpen] = useState(false);
+  const [cardModalAgent, setCardModalAgent] = useState<ManagedAgent | null>(
+    null
+  );
+
   const listAgents = useMemo(
     () => bots.filter((b) => !b.own && b.id !== user?.exchange_bot_id),
     [bots, user?.exchange_bot_id]
   );
 
-  const suspendedCount = useMemo(
-    () => listAgents.filter((a) => a.status === "suspended").length,
-    [listAgents]
-  );
+  const allDeveloperIds = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (id: string | undefined | null) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push(id);
+    };
+    for (const id of developerIds) add(id);
+    for (const a of listAgents) add(a.developer_id);
+    return out;
+  }, [developerIds, listAgents]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return listAgents.filter((a) => {
-      if (!showSuspended && a.status === "suspended") return false;
+      if (devIdFilter !== "all" && a.developer_id !== devIdFilter) return false;
+      if (statusFilter !== "all" && a.status !== statusFilter) return false;
+      if (hasCardOnly && !a.has_agent_card) return false;
       if (!showTest && a.is_test) return false;
       if (!q) return true;
       return (
         a.bot_name?.toLowerCase().includes(q) ||
-        a.id.toLowerCase().includes(q)
+        a.id.toLowerCase().includes(q) ||
+        a.developer_id?.toLowerCase().includes(q)
       );
     });
-  }, [listAgents, search, showSuspended, showTest]);
+  }, [listAgents, devIdFilter, statusFilter, hasCardOnly, showTest, search]);
 
-  const groups = useMemo(
-    () => groupAgentsByDeveloperId(filtered),
-    [filtered]
-  );
+  const hasRestrictiveAgentFilter =
+    search.trim() !== "" || statusFilter !== "all" || hasCardOnly;
+
+  const groups = useMemo(() => {
+    const seedIds = hasRestrictiveAgentFilter
+      ? undefined
+      : devIdFilter === "all"
+        ? allDeveloperIds
+        : allDeveloperIds.includes(devIdFilter)
+          ? [devIdFilter]
+          : undefined;
+    return groupAgentsByDeveloperId(filtered, seedIds);
+  }, [filtered, hasRestrictiveAgentFilter, devIdFilter, allDeveloperIds]);
+
+  const toggleGroupCollapsed = (devId: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(devId)) next.delete(devId);
+      else next.add(devId);
+      return next;
+    });
+  };
 
   if (!user) {
     return (
       <div className="text-center py-16 px-4">
         <Bot className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-        <p className="text-gray-600 mb-4">Sign in to manage your settlement agents.</p>
+        <p className="text-gray-600 mb-4">
+          Sign in to manage your settlement agents.
+        </p>
         <Link
           href="/login?next=/agents%3Ftab%3Dmine"
-          className="inline-flex px-5 py-2.5 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition"
+          className="inline-flex px-5 py-2.5 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition focus:outline-none focus:ring-2 focus:ring-navy-500"
         >
           Sign in
         </Link>
@@ -201,7 +332,7 @@ export default function MyAgents() {
         </p>
         <Link
           href="/dashboard/settings"
-          className="inline-flex px-5 py-2.5 bg-navy-900 text-white rounded-lg text-sm font-semibold hover:bg-navy-800 transition"
+          className="inline-flex px-5 py-2.5 bg-navy-900 text-white rounded-lg text-sm font-semibold hover:bg-navy-800 transition focus:outline-none focus:ring-2 focus:ring-navy-500"
         >
           Open Settings
         </Link>
@@ -225,7 +356,7 @@ export default function MyAgents() {
     try {
       if (pending.kind === "rotate") {
         const res = await api.post<RotatedKeyResult>(
-          `/bots/${pending.agent.id}/rotate-key`
+          `/bots/${encodeURIComponent(pending.agent.id)}/rotate-key`
         );
         setRotatedKey(res.data);
         setPending(null);
@@ -233,15 +364,19 @@ export default function MyAgents() {
         return;
       }
       if (pending.kind === "suspend") {
-        await api.post(`/bots/${pending.agent.id}/suspend`);
+        await api.post(`/bots/${encodeURIComponent(pending.agent.id)}/suspend`);
       } else if (pending.kind === "unsuspend") {
-        await api.post(`/bots/${pending.agent.id}/unsuspend`);
+        await api.post(
+          `/bots/${encodeURIComponent(pending.agent.id)}/unsuspend`
+        );
       } else if (pending.kind === "bulk-suspend") {
         const targets = filtered.filter(
           (a) => selected.has(a.id) && a.status === "active"
         );
         await Promise.all(
-          targets.map((a) => api.post(`/bots/${a.id}/suspend`))
+          targets.map((a) =>
+            api.post(`/bots/${encodeURIComponent(a.id)}/suspend`)
+          )
         );
         setSelected(new Set());
       } else if (pending.kind === "bulk-unsuspend") {
@@ -249,17 +384,16 @@ export default function MyAgents() {
           (a) => selected.has(a.id) && a.status === "suspended"
         );
         await Promise.all(
-          targets.map((a) => api.post(`/bots/${a.id}/unsuspend`))
+          targets.map((a) =>
+            api.post(`/bots/${encodeURIComponent(a.id)}/unsuspend`)
+          )
         );
         setSelected(new Set());
       }
       setPending(null);
       await refresh();
     } catch (err: unknown) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail || "Action failed";
-      setActionError(typeof detail === "string" ? detail : "Action failed");
+      setActionError(extractApiError(err, "Action failed"));
     } finally {
       setActing(false);
     }
@@ -287,50 +421,67 @@ export default function MyAgents() {
 
   const renderAgentRow = (agent: ManagedAgent) => {
     const checked = selected.has(agent.id);
+    const activityText = formatActivityDate(
+      agent.last_activity_at ?? agent.created_at
+    );
     return (
       <div
         key={agent.id}
-        className="border border-gray-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+        className="border border-gray-200 rounded-xl p-4 flex flex-col gap-3 bg-white"
       >
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={() => toggleSelected(agent.id)}
-          className="flex-shrink-0 md:hidden"
-          aria-label={`Select ${agent.bot_name}`}
-        />
-        <div className="flex-1 min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href={`/agents/${agent.id}`}
-              className="font-semibold text-navy-900 hover:text-navy-700 text-sm"
-            >
-              {agent.bot_name}
-            </Link>
-            <StatusPill status={agent.status} />
-            {agent.is_test && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
-                test
-              </span>
-            )}
-          </div>
-          <IdCopy id={agent.id} />
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          {agent.reputation != null && (
-            <ReputationScore score={agent.reputation} size="sm" />
-          )}
-          <AgentRowMenu
-            agent={agent}
-            busy={acting}
-            onSuspend={() => setPending({ kind: "suspend", agent })}
-            onUnsuspend={() => setPending({ kind: "unsuspend", agent })}
-            onRotate={() => setPending({ kind: "rotate", agent })}
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={() => toggleSelected(agent.id)}
+            className="mt-1 flex-shrink-0 rounded focus:ring-2 focus:ring-navy-500"
+            aria-label={`Select ${agent.bot_name}`}
           />
+          <div className="flex-1 min-w-0 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/agents/${agent.id}`}
+                className="font-semibold text-navy-900 hover:text-navy-700 text-sm focus:outline-none focus:ring-2 focus:ring-navy-500 rounded"
+              >
+                {agent.bot_name}
+              </Link>
+              <StatusPill status={agent.status} />
+              <AgentCardPill hasCard={agent.has_agent_card} />
+              {agent.is_test && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                  test
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <IdCopy id={agent.id} />
+              <RunsBehindBadge agent={agent} />
+            </div>
+            <p className="text-xs text-gray-500">
+              Last activity: {activityText}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <ReputationScore score={agent.reputation ?? null} size="sm" />
+            <AgentRowMenu
+              agent={agent}
+              busy={acting}
+              onPublishCard={() => setCardModalAgent(agent)}
+              onSuspend={() => setPending({ kind: "suspend", agent })}
+              onUnsuspend={() => setPending({ kind: "unsuspend", agent })}
+              onRotate={() => setPending({ kind: "rotate", agent })}
+            />
+          </div>
         </div>
       </div>
     );
   };
+
+  const showOnboardingEmpty =
+    !loading &&
+    listAgents.length === 0 &&
+    allDeveloperIds.length <= 1 &&
+    !hasRestrictiveAgentFilter;
 
   return (
     <div>
@@ -342,78 +493,149 @@ export default function MyAgents() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link
-            href="/developers"
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition"
+          <button
+            type="button"
+            onClick={() =>
+              setRegisterModalDevId(
+                devIdFilter !== "all" ? devIdFilter : (allDeveloperIds[0] ?? null)
+              )
+            }
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition focus:outline-none focus:ring-2 focus:ring-navy-500"
           >
             <Plus className="w-4 h-4" />
             Register agent
-          </Link>
-          <Link
-            href="/dashboard/settings"
-            className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-navy-800 hover:bg-gray-50 transition"
+          </button>
+          <button
+            type="button"
+            onClick={() => setAttachDevModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-navy-800 hover:bg-gray-50 transition focus:outline-none focus:ring-2 focus:ring-navy-500"
           >
             Add Developer ID
-          </Link>
+          </button>
         </div>
       </div>
 
       {user.exchange_bot_id && (
         <div className="bg-navy-900 text-white rounded-xl p-4 mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Your account</p>
+            <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">
+              Your account
+            </p>
             <p className="font-semibold">Linked exchange identity</p>
-            <p className="font-mono text-xs text-gray-300 mt-1" title={user.exchange_bot_id}>
+            <p
+              className="font-mono text-xs text-gray-300 mt-1"
+              title={user.exchange_bot_id}
+            >
               {truncateAgentId(user.exchange_bot_id)}
             </p>
           </div>
           <Link
             href="/dashboard/settings"
-            className="text-sm font-medium text-money hover:text-money-dark"
+            className="text-sm font-medium text-money hover:text-money-dark focus:outline-none focus:ring-2 focus:ring-money rounded px-1"
           >
             Settings →
           </Link>
         </div>
       )}
 
-      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4">
+      {/* Search + dropdown filters */}
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-4">
         <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <label htmlFor="my-agents-search" className="sr-only">
+            Search agents by name or ID
+          </label>
+          <Search
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+            aria-hidden="true"
+          />
           <input
+            id="my-agents-search"
             type="search"
             placeholder="Search by name or ID…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm"
+            className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-navy-500 focus:border-transparent outline-none text-sm"
           />
         </div>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 text-sm text-navy-700 font-medium"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-          Refresh
-        </button>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="my-agents-status-filter"
+              className="text-xs font-medium text-gray-600"
+            >
+              Status
+            </label>
+            <select
+              id="my-agents-status-filter"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm text-navy-900 focus:outline-none focus:ring-2 focus:ring-navy-500"
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="suspended">Suspended</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="my-agents-dev-filter"
+              className="text-xs font-medium text-gray-600"
+            >
+              Developer ID
+            </label>
+            <select
+              id="my-agents-dev-filter"
+              value={devIdFilter}
+              onChange={(e) => setDevIdFilter(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-mono text-navy-900 max-w-[220px] truncate focus:outline-none focus:ring-2 focus:ring-navy-500"
+            >
+              <option value="all">All Developer IDs</option>
+              {allDeveloperIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-navy-700 hover:bg-gray-100 font-medium focus:outline-none focus:ring-2 focus:ring-navy-500"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-4 text-sm mb-4">
-        {suspendedCount > 0 && (
-          <label className="inline-flex items-center gap-2 text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showSuspended}
-              onChange={(e) => setShowSuspended(e.target.checked)}
-            />
-            Show suspended ({suspendedCount})
-          </label>
-        )}
-        <label className="inline-flex items-center gap-2 text-gray-600 cursor-pointer">
+      <div className="flex flex-wrap gap-5 text-sm mb-5">
+        <label
+          htmlFor="my-agents-has-card"
+          className="inline-flex items-center gap-2 text-gray-600 cursor-pointer"
+        >
           <input
+            id="my-agents-has-card"
+            type="checkbox"
+            checked={hasCardOnly}
+            onChange={(e) => setHasCardOnly(e.target.checked)}
+            className="rounded focus:ring-2 focus:ring-navy-500"
+          />
+          Has Agent Card
+        </label>
+        <label
+          htmlFor="my-agents-show-test"
+          className="inline-flex items-center gap-2 text-gray-600 cursor-pointer"
+        >
+          <input
+            id="my-agents-show-test"
             type="checkbox"
             checked={showTest}
             onChange={(e) => setShowTest(e.target.checked)}
+            className="rounded focus:ring-2 focus:ring-navy-500"
           />
           Show test agents
         </label>
@@ -425,15 +647,19 @@ export default function MyAgents() {
         </div>
       )}
       {actionError && (
-        <div className="bg-red-50 text-red-700 rounded-lg p-3 mb-4 text-sm">{actionError}</div>
+        <div className="bg-red-50 text-red-700 rounded-lg p-3 mb-4 text-sm">
+          {actionError}
+        </div>
       )}
 
       {selected.size > 0 && (
         <div className="flex flex-wrap gap-2 mb-4 p-3 bg-gray-50 rounded-xl border border-gray-200">
-          <span className="text-sm text-gray-600 self-center">{selected.size} selected</span>
+          <span className="text-sm text-gray-600 self-center">
+            {selected.size} selected
+          </span>
           <button
             type="button"
-            className="text-sm px-3 py-1.5 rounded-lg bg-red-50 text-red-700 border border-red-200"
+            className="text-sm px-3 py-1.5 rounded-lg bg-red-50 text-red-700 border border-red-200 focus:outline-none focus:ring-2 focus:ring-navy-500"
             onClick={() =>
               setPending({
                 kind: "bulk-suspend",
@@ -447,7 +673,7 @@ export default function MyAgents() {
           </button>
           <button
             type="button"
-            className="text-sm px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200"
+            className="text-sm px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200 focus:outline-none focus:ring-2 focus:ring-navy-500"
             onClick={() =>
               setPending({
                 kind: "bulk-unsuspend",
@@ -465,59 +691,136 @@ export default function MyAgents() {
       {loading && listAgents.length === 0 ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />
+            <div
+              key={i}
+              className="h-20 bg-gray-100 rounded-xl animate-pulse"
+            />
           ))}
         </div>
-      ) : filtered.length === 0 && listAgents.length === 0 ? (
+      ) : showOnboardingEmpty ? (
         <div className="text-center py-12 px-4 border border-dashed border-gray-300 rounded-xl">
           <p className="text-gray-600 mb-4 max-w-md mx-auto">
             An agent is your exchange identity for claiming bounties and settling payments.
           </p>
-          <Link
-            href="/developers"
-            className="inline-flex px-5 py-2.5 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition"
+          <button
+            type="button"
+            onClick={() => setRegisterModalDevId(allDeveloperIds[0] ?? null)}
+            className="inline-flex px-5 py-2.5 bg-money text-navy-900 rounded-lg text-sm font-semibold hover:bg-money-dark transition focus:outline-none focus:ring-2 focus:ring-navy-500"
           >
             Register agent
-          </Link>
+          </button>
           <p className="text-sm text-gray-500 mt-3">
             <Link href="/developers" className="text-navy-700 hover:underline">
               Developer docs
             </Link>
           </p>
         </div>
-      ) : filtered.length === 0 ? (
-        <p className="text-gray-500 text-sm py-8 text-center">No agents match your filters.</p>
+      ) : groups.size === 0 ? (
+        <p className="text-gray-500 text-sm py-8 text-center">
+          No agents match your filters.
+        </p>
       ) : (
-        <div className="space-y-8">
-          {[...groups.entries()].map(([devId, agents]) => (
-            <section key={devId}>
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-                Developer ID · {devId}
-              </h3>
-              <AgentsTableDesktop
-                agents={agents}
-                selected={selected}
-                toggleSelected={toggleSelected}
-                acting={acting}
-                onSuspend={(a) => setPending({ kind: "suspend", agent: a })}
-                onUnsuspend={(a) => setPending({ kind: "unsuspend", agent: a })}
-                onRotate={(a) => setPending({ kind: "rotate", agent: a })}
-              />
-              <AgentsListMobile agents={agents} renderRow={renderAgentRow} />
-            </section>
-          ))}
+        <div className="space-y-6">
+          {[...groups.entries()].map(([devId, agents]) => {
+            const isCollapsed = collapsedGroups.has(devId);
+            return (
+              <section
+                key={devId}
+                className="border border-gray-200 rounded-xl bg-white overflow-hidden"
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleGroupCollapsed(devId)}
+                  aria-expanded={!isCollapsed}
+                  className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-gray-50 hover:bg-gray-100/80 transition text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-navy-500"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    {isCollapsed ? (
+                      <ChevronRight
+                        className="w-4 h-4 text-gray-500 flex-shrink-0"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <ChevronDown
+                        className="w-4 h-4 text-gray-500 flex-shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0">
+                      Developer ID
+                    </span>
+                    <span className="font-mono text-xs font-semibold text-navy-900 truncate">
+                      {devId}
+                    </span>
+                  </span>
+                  <span className="text-xs font-medium text-gray-600 bg-white border border-gray-200 px-2.5 py-0.5 rounded-full flex-shrink-0">
+                    {agents.length} {agents.length === 1 ? "agent" : "agents"}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="p-3 sm:p-4">
+                    {agents.length === 0 ? (
+                      <div className="text-center py-6 px-4 rounded-lg border border-dashed border-gray-200">
+                        <p className="text-xs text-gray-500 mb-2.5">
+                          No agents registered under{" "}
+                          <span className="font-mono text-gray-700">{devId}</span>{" "}
+                          yet.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setRegisterModalDevId(devId)}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-navy-800 hover:underline focus:outline-none focus:ring-2 focus:ring-navy-500 rounded px-1"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Register agent under {devId}
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <AgentsTableDesktop
+                          agents={agents}
+                          selected={selected}
+                          toggleSelected={toggleSelected}
+                          acting={acting}
+                          onPublishCard={(a) => setCardModalAgent(a)}
+                          onSuspend={(a) =>
+                            setPending({ kind: "suspend", agent: a })
+                          }
+                          onUnsuspend={(a) =>
+                            setPending({ kind: "unsuspend", agent: a })
+                          }
+                          onRotate={(a) =>
+                            setPending({ kind: "rotate", agent: a })
+                          }
+                        />
+                        <AgentsListMobile
+                          agents={agents}
+                          renderRow={renderAgentRow}
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
 
       {pending && pending.kind !== "rotate" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-xl max-w-md w-full p-6 border border-gray-200 shadow-xl">
+          <div
+            className="bg-white rounded-xl max-w-md w-full p-6 border border-gray-200 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+          >
             <h3 className="font-semibold text-navy-900 mb-2">Confirm</h3>
             <p className="text-sm text-gray-600 mb-6">{confirmMessage()}</p>
             <div className="flex gap-3 justify-end">
               <button
                 type="button"
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900"
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-navy-500"
                 onClick={() => setPending(null)}
                 disabled={acting}
               >
@@ -525,7 +828,7 @@ export default function MyAgents() {
               </button>
               <button
                 type="button"
-                className="px-4 py-2 text-sm bg-navy-900 text-white rounded-lg font-semibold disabled:opacity-50"
+                className="px-4 py-2 text-sm bg-navy-900 text-white rounded-lg font-semibold disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500"
                 onClick={() => void runConfirm()}
                 disabled={acting}
               >
@@ -538,7 +841,11 @@ export default function MyAgents() {
 
       {pending?.kind === "rotate" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-xl max-w-md w-full p-6 border border-gray-200 shadow-xl">
+          <div
+            className="bg-white rounded-xl max-w-md w-full p-6 border border-gray-200 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+          >
             <div className="flex items-center gap-2 mb-2">
               <Key className="w-4 h-4 text-money" />
               <h3 className="font-semibold text-navy-900">Rotate key</h3>
@@ -547,7 +854,7 @@ export default function MyAgents() {
             <div className="flex gap-3 justify-end">
               <button
                 type="button"
-                className="px-4 py-2 text-sm text-gray-600"
+                className="px-4 py-2 text-sm text-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-navy-500"
                 onClick={() => setPending(null)}
                 disabled={acting}
               >
@@ -555,7 +862,7 @@ export default function MyAgents() {
               </button>
               <button
                 type="button"
-                className="px-4 py-2 text-sm bg-navy-900 text-white rounded-lg font-semibold disabled:opacity-50"
+                className="px-4 py-2 text-sm bg-navy-900 text-white rounded-lg font-semibold disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500"
                 onClick={() => void runConfirm()}
                 disabled={acting}
               >
@@ -564,6 +871,45 @@ export default function MyAgents() {
             </div>
           </div>
         </div>
+      )}
+
+      {registerModalDevId !== undefined && (
+        <RegisterAgentModal
+          developerIds={allDeveloperIds}
+          initialDeveloperId={registerModalDevId}
+          onClose={() => setRegisterModalDevId(undefined)}
+          onRegistered={(revealedKey) => {
+            setRegisterModalDevId(undefined);
+            setRotatedKey(revealedKey);
+            void refresh();
+          }}
+        />
+      )}
+
+      {attachDevModalOpen && (
+        <AddDeveloperIdModal
+          onClose={() => setAttachDevModalOpen(false)}
+          onAttached={() => {
+            setAttachDevModalOpen(false);
+            void refresh();
+          }}
+        />
+      )}
+
+      {cardModalAgent && (
+        <PublishAgentCardModal
+          agentId={cardModalAgent.id}
+          agentName={cardModalAgent.bot_name}
+          hasAgentCard={cardModalAgent.has_agent_card}
+          initialCard={cardModalAgent.agent_card}
+          initialDescription={cardModalAgent.description}
+          initialSkills={cardModalAgent.skills}
+          onClose={() => setCardModalAgent(null)}
+          onPublished={() => {
+            setCardModalAgent(null);
+            void refresh();
+          }}
+        />
       )}
 
       {rotatedKey && (
@@ -591,6 +937,7 @@ function AgentsTableDesktop({
   selected,
   toggleSelected,
   acting,
+  onPublishCard,
   onSuspend,
   onUnsuspend,
   onRotate,
@@ -599,6 +946,7 @@ function AgentsTableDesktop({
   selected: Set<string>;
   toggleSelected: (id: string) => void;
   acting: boolean;
+  onPublishCard: (a: ManagedAgent) => void;
   onSuspend: (a: ManagedAgent) => void;
   onUnsuspend: (a: ManagedAgent) => void;
   onRotate: (a: ManagedAgent) => void;
@@ -608,53 +956,63 @@ function AgentsTableDesktop({
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-left text-gray-500">
           <tr>
-            <th className="p-3 w-10" />
-            <th className="p-3 font-medium">Name</th>
-            <th className="p-3 font-medium">Status</th>
-            <th className="p-3 font-medium">Reputation</th>
-            <th className="p-3 font-medium">ID</th>
-            <th className="p-3 w-12" />
+            <th className="p-2.5 w-9" />
+            <th className="p-2.5 font-medium">Agent</th>
+            <th className="p-2.5 font-medium">Status</th>
+            <th className="p-2.5 font-medium">Agent Card</th>
+            <th className="p-2.5 font-medium">Reputation</th>
+            <th className="p-2.5 font-medium">Last activity</th>
+            <th className="p-2.5 w-11" />
           </tr>
         </thead>
         <tbody>
           {agents.map((agent) => (
             <tr key={agent.id} className="border-t border-gray-100">
-              <td className="p-3">
+              <td className="p-2.5 align-middle">
                 <input
                   type="checkbox"
                   checked={selected.has(agent.id)}
                   onChange={() => toggleSelected(agent.id)}
                   aria-label={`Select ${agent.bot_name}`}
+                  className="rounded focus:ring-2 focus:ring-navy-500"
                 />
               </td>
-              <td className="p-3">
+              <td className="p-2.5 align-middle">
                 <div className="flex items-center gap-2 flex-wrap">
                   <Link
                     href={`/agents/${agent.id}`}
-                    className="font-semibold text-navy-900 hover:underline"
+                    className="font-semibold text-navy-900 hover:underline focus:outline-none focus:ring-2 focus:ring-navy-500 rounded"
                   >
                     {agent.bot_name}
                   </Link>
                   {agent.is_test && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
                       test
                     </span>
                   )}
                 </div>
+                <div className="flex flex-wrap items-center gap-2 mt-1">
+                  <IdCopy id={agent.id} />
+                  <RunsBehindBadge agent={agent} />
+                </div>
               </td>
-              <td className="p-3">
+              <td className="p-2.5 align-middle whitespace-nowrap">
                 <StatusPill status={agent.status} />
               </td>
-              <td className="p-3">
+              <td className="p-2.5 align-middle whitespace-nowrap">
+                <AgentCardPill hasCard={agent.has_agent_card} />
+              </td>
+              <td className="p-2.5 align-middle whitespace-nowrap">
                 <ReputationScore score={agent.reputation ?? null} size="sm" />
               </td>
-              <td className="p-3">
-                <IdCopy id={agent.id} />
+              <td className="p-2.5 align-middle whitespace-nowrap text-xs text-gray-600">
+                {formatActivityDate(agent.last_activity_at ?? agent.created_at)}
               </td>
-              <td className="p-3">
+              <td className="p-2.5 align-middle text-right">
                 <AgentRowMenu
                   agent={agent}
                   busy={acting}
+                  onPublishCard={() => onPublishCard(agent)}
                   onSuspend={() => onSuspend(agent)}
                   onUnsuspend={() => onUnsuspend(agent)}
                   onRotate={() => onRotate(agent)}

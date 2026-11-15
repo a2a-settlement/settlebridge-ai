@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Users, Search, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Search, ShieldCheck, Users } from "lucide-react";
 import api from "@/services/api";
 import ReputationScore from "@/components/ReputationScore";
 
@@ -22,6 +22,7 @@ interface Agent {
   skills?: string[];
   reputation?: number;
   status?: string;
+  evidenced?: boolean;
   is_test?: boolean;
   gateway_claims?: GatewayClaimInfo[] | null;
 }
@@ -40,6 +41,7 @@ export default function AgentDirectory({
 }: AgentDirectoryProps) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [search, setSearch] = useState("");
+  const [evidencedOnly, setEvidencedOnly] = useState(false);
   const [showTest, setShowTest] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -61,6 +63,7 @@ export default function AgentDirectory({
 
   const filtered = sorted.filter((a) => {
     if (managementV2 && !showTest && a.is_test) return false;
+    if (managementV2 && evidencedOnly && !a.evidenced) return false;
     if (search) {
       const q = search.toLowerCase();
       const hits =
@@ -90,20 +93,47 @@ export default function AgentDirectory({
       )}
 
       {managementV2 && (
-        <label className="inline-flex items-center gap-2 text-sm text-gray-600 mb-4 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showTest}
-            onChange={(e) => setShowTest(e.target.checked)}
-          />
-          Show test agents
-        </label>
+        <div className="flex flex-wrap items-center gap-5 mb-4 text-sm text-gray-600">
+          <label
+            htmlFor="directory-filter-evidenced"
+            className="inline-flex items-center gap-2 cursor-pointer"
+          >
+            <input
+              id="directory-filter-evidenced"
+              type="checkbox"
+              checked={evidencedOnly}
+              onChange={(e) => setEvidencedOnly(e.target.checked)}
+              className="rounded focus:ring-2 focus:ring-navy-500"
+            />
+            Evidenced
+          </label>
+          <label
+            htmlFor="directory-filter-test"
+            className="inline-flex items-center gap-2 cursor-pointer"
+          >
+            <input
+              id="directory-filter-test"
+              type="checkbox"
+              checked={showTest}
+              onChange={(e) => setShowTest(e.target.checked)}
+              className="rounded focus:ring-2 focus:ring-navy-500"
+            />
+            Show test agents
+          </label>
+        </div>
       )}
 
       <div className="relative max-w-md mb-6">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <label htmlFor="directory-search" className="sr-only">
+          Search agents
+        </label>
+        <Search
+          className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+          aria-hidden="true"
+        />
         <input
-          type="text"
+          id="directory-search"
+          type="search"
           placeholder="Search agents..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -131,7 +161,7 @@ export default function AgentDirectory({
             <Link
               key={agent.id}
               href={`/agents/${agent.id}`}
-              className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-lg hover:border-navy-300 transition-all group"
+              className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-lg hover:border-navy-300 transition-all group focus:outline-none focus:ring-2 focus:ring-navy-500"
             >
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div className="min-w-0 flex-1">
@@ -140,6 +170,12 @@ export default function AgentDirectory({
                     {managementV2 && ownedIds?.has(agent.id) && (
                       <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-money/20 text-navy-800">
                         Yours
+                      </span>
+                    )}
+                    {managementV2 && agent.evidenced && (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-green-50 text-green-800 border border-green-200">
+                        <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                        Evidenced
                       </span>
                     )}
                   </h3>
@@ -167,7 +203,7 @@ export default function AgentDirectory({
                           : "bg-blue-50 text-blue-700"
                       }`}
                     >
-                      <ShieldCheck className="w-3 h-3" />
+                      <ShieldCheck className="w-3 h-3" aria-hidden="true" />
                       {claim.gateway_name || "Gateway"}
                       {claim.verified && " ✓"}
                     </span>
