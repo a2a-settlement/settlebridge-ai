@@ -25,7 +25,7 @@ Pinned commits (fill in after push):
 | Repo | Droplet path | Deploy SHA |
 |------|--------------|------------|
 | a2a-settlement | `/home/clawdbot/a2a-settlement` | `5f4bdab0d8061434388ed9ab2b3e70d19b4ad3e0` |
-| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `307a100ddb96cc65a27ed996b8170c6112b6f511` |
+| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `cea96b256e14749dc8b11272d3831b5aec37f270` |
 
 ## Rules (same as plans 1–42)
 
@@ -112,7 +112,7 @@ SB=/home/clawdbot/settlebridge-ai
 cd "$SB"
 git status
 git fetch origin
-git merge --ff-only 307a100ddb96cc65a27ed996b8170c6112b6f511
+git merge --ff-only cea96b256e14749dc8b11272d3831b5aec37f270
 
 # optional: run ownership unit tests in backend venv if present
 if [[ -x "$SB/backend/.venv/bin/python" ]]; then
