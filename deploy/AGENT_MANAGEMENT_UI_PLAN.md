@@ -25,7 +25,7 @@ says “Managed Bots”. This plan deploys the My agents UI on
 - Does **not** print `.env` values, tokens, or keys.
 - Does **not** run the Gateway tab work (that is a later plan after review).
 
-**UI that must be in `57137229e939e27ebf7dde26c44dbcf481ea4d81` before you run this:**
+**UI that must be in `0a4082108903fe84682210ab11992682ae15fff3` before you run this:**
 
 - `/agents` tabs: **My agents** (default when signed in) | **Directory** |
   **Gateway** only if the operator has a gateway (hidden otherwise)
@@ -46,7 +46,7 @@ Pinned commits (fill in after the UI PR is on `main`):
 | Repo | Droplet path | Deploy SHA |
 |------|--------------|------------|
 | a2a-settlement | `/home/clawdbot/a2a-settlement` | `3be803f416cf3bc822411f49c83571c8801c3b74` |
-| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `57137229e939e27ebf7dde26c44dbcf481ea4d81` |
+| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `0a4082108903fe84682210ab11992682ae15fff3` |
 
 Rollback pins (from before this plan):
 
@@ -67,7 +67,7 @@ Exchange moves only for directory `is_test` exposure: `3be803f416cf3bc822411f49c
 - `git status` on the repo must be clean (or only expected dirt) before
   pull. If unexpected dirty files block ff-only, stop and report.
 - Run git / npm / pytest as `clawdbot`.
-- If `57137229e939e27ebf7dde26c44dbcf481ea4d81` is still a placeholder, **stop after reporting that** —
+- If `0a4082108903fe84682210ab11992682ae15fff3` is still a placeholder, **stop after reporting that** —
   do not invent a SHA.
 
 ## P.1 Pre-flight (read-only)
@@ -98,7 +98,7 @@ git status -sb | head -20
 test -f marketplace-next/.next/standalone/server.js
 
 # refuse to proceed on placeholders
-grep -q '57137229e939e27ebf7dde26c44dbcf481ea4d81' /root/deploy-plans/2026-11-14-agent-management-ui/AGENT_MANAGEMENT_UI_PLAN.md \
+grep -q '0a4082108903fe84682210ab11992682ae15fff3' /root/deploy-plans/2026-11-14-agent-management-ui/AGENT_MANAGEMENT_UI_PLAN.md \
   && { echo "PLAN STILL HAS PLACEHOLDER SHAS — stop"; exit 1; } || true
 ```
 
@@ -132,7 +132,7 @@ git fetch origin
 if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
   sudo -u clawdbot git stash push -u -m "plan44-pre-deploy-dirt" || true
 fi
-sudo -u clawdbot git merge --ff-only 57137229e939e27ebf7dde26c44dbcf481ea4d81
+sudo -u clawdbot git merge --ff-only 0a4082108903fe84682210ab11992682ae15fff3
 echo "SB_NOW=$(git rev-parse --short HEAD) $(git log -1 --oneline)"
 
 # backend unit tests that ship with the UI PR
@@ -281,7 +281,7 @@ done
 
 ## Done when
 
-- SettleBridge HEAD is `57137229e939e27ebf7dde26c44dbcf481ea4d81`
+- SettleBridge HEAD is `0a4082108903fe84682210ab11992682ae15fff3`
 - `AGENT_MANAGEMENT_V2=true` in `.env` (do not print the file)
 - `/agents` shows My agents / Directory chrome
 - Settings has “Manage your agents”, not “Managed Bots”
