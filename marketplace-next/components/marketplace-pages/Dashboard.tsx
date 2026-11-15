@@ -16,7 +16,7 @@ import SolverHome from "@/components/marketplace-pages/SolverHome";
 import { useAuth } from "@/hooks/useAuth";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { useManagedAgents } from "@/hooks/useManagedAgents";
-import { agentCounts, listedManagedAgents } from "@/lib/managedAgents";
+import { agentCounts, visibleManagedAgents } from "@/lib/managedAgents";
 import { useView } from "@/hooks/useView";
 import type { WorkView } from "@/lib/cyberContracts";
 import { roleIncludesView } from "@/lib/funderView";
@@ -31,8 +31,12 @@ export default function Dashboard() {
   const { view } = useView();
   const { agent_management_v2 } = useAppConfig();
   const showAgentsCard = agent_management_v2 && !!user?.exchange_bot_id;
-  const { bots, loading: agentsLoading } = useManagedAgents(showAgentsCard);
-  const counts = agentCounts(listedManagedAgents(bots, user?.exchange_bot_id));
+  const {
+    bots,
+    data: agentsData,
+    error: agentsError,
+  } = useManagedAgents(showAgentsCard);
+  const counts = agentCounts(visibleManagedAgents(bots, user?.exchange_bot_id));
 
   if (!user) return null;
 
@@ -56,8 +60,10 @@ export default function Dashboard() {
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="font-semibold text-navy-900 text-sm">My agents</h2>
-              {agentsLoading ? (
-                <p className="text-xs text-gray-400 mt-1">Loading…</p>
+              {agentsData == null ? (
+                <p className="text-xs text-gray-400 mt-1">
+                  {agentsError ? "Couldn’t load agents" : "Loading…"}
+                </p>
               ) : (
                 <p className="text-sm text-gray-600 mt-1">
                   {counts.active} active · {counts.suspended} suspended

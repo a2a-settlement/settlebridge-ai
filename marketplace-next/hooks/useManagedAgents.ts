@@ -11,11 +11,11 @@ import {
 
 export function useManagedAgents(enabled: boolean) {
   const [data, setData] = useState<ManagedAgentsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [inflight, setInflight] = useState(false);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    setInflight(true);
     setError("");
     try {
       const { data: res } = await api.get<ManagedAgentsResponse>("/bots");
@@ -24,9 +24,14 @@ export function useManagedAgents(enabled: boolean) {
       setError(extractApiError(err, "Failed to load your agents"));
       setData(null);
     } finally {
-      setLoading(false);
+      setInflight(false);
     }
   }, []);
+
+  // True from the first enabled render until the first response, so counts
+  // never paint as 0 before data exists. A later refresh stays inflight while
+  // the previous payload is still shown.
+  const loading = inflight || (enabled && data === null && error === "");
 
   useEffect(() => {
     if (enabled) void refresh();

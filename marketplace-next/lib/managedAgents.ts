@@ -114,6 +114,20 @@ export function listedManagedAgents(
   return bots.filter((b) => !b.own && b.id !== ownAccountId);
 }
 
+/**
+ * Agents the dashboard and the default My agents tab both count.
+ * Drops the linked account, and drops is_test agents unless includeTest is set.
+ */
+export function visibleManagedAgents(
+  bots: ManagedAgent[],
+  ownAccountId: string | null | undefined,
+  options?: { includeTest?: boolean }
+): ManagedAgent[] {
+  const listed = listedManagedAgents(bots, ownAccountId);
+  if (options?.includeTest) return listed;
+  return listed.filter((b) => b.is_test !== true);
+}
+
 export function hasGatewayTabAccess(params: {
   signedIn: boolean;
   bots: ManagedAgent[];

@@ -77,7 +77,7 @@ export default function AddDeveloperIdModal({ onClose, onAttached }: Props) {
         </div>
 
         <p className="text-xs text-gray-600 leading-relaxed mb-4">
-          Paste the API key (<code className="bg-gray-100 px-1 rounded">ate_…</code>) of any existing agent registered under the Developer ID you want to attach. The key is verified once to prove ownership and is never stored.
+          Paste the API key (<code className="bg-gray-100 px-1 rounded">ate_…</code>) of an agent you control that is already registered under the Developer ID you want to attach. The key proves control of that agent, is checked once, and is never stored. If another operator already holds the Developer ID, attach is rejected. A key does not let you register a new agent into someone else&apos;s Developer ID.
         </p>
 
         {error && (

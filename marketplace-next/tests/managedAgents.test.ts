@@ -9,6 +9,7 @@ import {
   hasGatewayTabAccess,
   listedManagedAgents,
   truncateAgentId,
+  visibleManagedAgents,
 } from "../lib/managedAgents.ts";
 
 test("hasGatewayTabAccess follows exact Gateway tab visibility rules", () => {
@@ -141,6 +142,78 @@ test("listedManagedAgents excludes the operator linked account from counts", () 
     missingCard: 1,
   });
   assert.deepEqual(agentCounts(bots).active, 3);
+});
+
+test("dashboard and My agents tab share the non-test suspended count", () => {
+  const ownId = "linked-account";
+  const bots = [
+    {
+      id: "own-flag",
+      bot_name: "Own flag",
+      status: "suspended",
+      developer_id: "d",
+      own: true,
+      is_test: false,
+    },
+    {
+      id: ownId,
+      bot_name: "Linked account",
+      status: "suspended",
+      developer_id: "d",
+      is_test: false,
+    },
+    {
+      id: "test-suspended",
+      bot_name: "Test suspended",
+      status: "suspended",
+      developer_id: "d",
+      is_test: true,
+    },
+    {
+      id: "test-active",
+      bot_name: "Test active",
+      status: "active",
+      developer_id: "d",
+      is_test: true,
+    },
+    {
+      id: "real-suspended",
+      bot_name: "Real suspended",
+      status: "suspended",
+      developer_id: "d",
+      is_test: false,
+    },
+    {
+      id: "real-suspended-unset",
+      bot_name: "Real suspended unset",
+      status: "suspended",
+      developer_id: "d",
+    },
+    {
+      id: "real-active",
+      bot_name: "Real active",
+      status: "active",
+      developer_id: "d",
+      has_agent_card: false,
+    },
+  ];
+
+  // Default My agents tab: drop the linked account and hide is_test.
+  const tabWouldShow = bots.filter(
+    (b) =>
+      !b.own &&
+      b.id !== ownId &&
+      b.is_test !== true &&
+      b.status === "suspended"
+  ).length;
+  const visible = visibleManagedAgents(bots, ownId);
+  const dashboardSuspended = agentCounts(visible).suspended;
+  const tabSuspended = visible.filter((b) => b.status === "suspended").length;
+
+  assert.equal(tabWouldShow, 2);
+  assert.equal(dashboardSuspended, tabWouldShow);
+  assert.equal(tabSuspended, tabWouldShow);
+  assert.equal(agentCounts(visible).active, 1);
 });
 
 test("agentCounts tracks active, suspended, and missingCard", () => {

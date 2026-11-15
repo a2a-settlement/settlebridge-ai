@@ -27,8 +27,8 @@ import {
 import {
   extractApiError,
   formatActivityDate,
-  listedManagedAgents,
   truncateAgentId,
+  visibleManagedAgents,
   type ManagedAgent,
   type RotatedKeyResult,
 } from "@/lib/managedAgents";
@@ -220,6 +220,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
   const fallbackManaged = useManagedAgents(!managed && linked);
   const {
     bots,
+    data,
     developerIds,
     loading,
     error,
@@ -249,9 +250,14 @@ export default function MyAgents({ managed }: MyAgentsProps) {
     null
   );
 
-  const listAgents = useMemo(
-    () => listedManagedAgents(bots, user?.exchange_bot_id),
+  const roster = useMemo(
+    () =>
+      visibleManagedAgents(bots, user?.exchange_bot_id, { includeTest: true }),
     [bots, user?.exchange_bot_id]
+  );
+  const listAgents = useMemo(
+    () => (showTest ? roster : roster.filter((a) => a.is_test !== true)),
+    [roster, showTest]
   );
 
   const allDeveloperIds = useMemo(() => {
@@ -263,16 +269,15 @@ export default function MyAgents({ managed }: MyAgentsProps) {
       out.push(id);
     };
     for (const id of developerIds) add(id);
-    for (const a of listAgents) add(a.developer_id);
+    for (const a of roster) add(a.developer_id);
     return out;
-  }, [developerIds, listAgents]);
+  }, [developerIds, roster]);
 
   const scopedAgents = useMemo(() => {
     const q = search.trim().toLowerCase();
     return listAgents.filter((a) => {
       if (devIdFilter !== "all" && a.developer_id !== devIdFilter) return false;
       if (hasCardOnly && !a.has_agent_card) return false;
-      if (!showTest && a.is_test) return false;
       if (!q) return true;
       return (
         a.bot_name?.toLowerCase().includes(q) ||
@@ -280,7 +285,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
         a.developer_id?.toLowerCase().includes(q)
       );
     });
-  }, [listAgents, devIdFilter, hasCardOnly, showTest, search]);
+  }, [listAgents, devIdFilter, hasCardOnly, search]);
 
   const suspendedCount = useMemo(
     () => scopedAgents.filter((a) => a.status === "suspended").length,
@@ -498,8 +503,8 @@ export default function MyAgents({ managed }: MyAgentsProps) {
   };
 
   const showOnboardingEmpty =
-    !loading &&
-    listAgents.length === 0 &&
+    data != null &&
+    roster.length === 0 &&
     allDeveloperIds.length <= 1 &&
     !hasRestrictiveAgentFilter;
 
@@ -651,7 +656,15 @@ export default function MyAgents({ managed }: MyAgentsProps) {
             onChange={(e) => setShowSuspended(e.target.checked)}
             className="rounded focus:ring-2 focus:ring-navy-500"
           />
-          Show suspended ({suspendedCount})
+          Show suspended
+          {data == null ? (
+            <span
+              className="ml-1 inline-block h-3 w-6 rounded bg-gray-200 animate-pulse align-middle"
+              aria-label="Loading suspended count"
+            />
+          ) : (
+            ` (${suspendedCount})`
+          )}
         </label>
       </div>
 
@@ -702,7 +715,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
         </div>
       )}
 
-      {loading && listAgents.length === 0 ? (
+      {data == null && !error ? (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
             <div
@@ -711,7 +724,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
             />
           ))}
         </div>
-      ) : showOnboardingEmpty ? (
+      ) : data == null ? null : showOnboardingEmpty ? (
         <div className="text-center py-12 px-4 border border-dashed border-gray-300 rounded-xl">
           <p className="text-gray-600 mb-4 max-w-md mx-auto">
             An agent is your exchange identity for claiming bounties and settling payments.
@@ -767,9 +780,16 @@ export default function MyAgents({ managed }: MyAgentsProps) {
                       {devId}
                     </span>
                   </span>
-                  <span className="text-xs font-medium text-gray-600 bg-white border border-gray-200 px-2.5 py-0.5 rounded-full flex-shrink-0">
-                    {agents.length} {agents.length === 1 ? "agent" : "agents"}
-                  </span>
+                  {data == null ? (
+                    <span
+                      className="inline-block h-5 w-16 rounded-full bg-gray-200 animate-pulse flex-shrink-0"
+                      aria-label="Loading agent count"
+                    />
+                  ) : (
+                    <span className="text-xs font-medium text-gray-600 bg-white border border-gray-200 px-2.5 py-0.5 rounded-full flex-shrink-0">
+                      {agents.length} {agents.length === 1 ? "agent" : "agents"}
+                    </span>
+                  )}
                 </button>
 
                 {!isCollapsed && (
