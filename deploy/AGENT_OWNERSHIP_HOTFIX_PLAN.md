@@ -25,7 +25,7 @@ Pinned commits (fill in after push):
 | Repo | Droplet path | Deploy SHA |
 |------|--------------|------------|
 | a2a-settlement | `/home/clawdbot/a2a-settlement` | `5f4bdab0d8061434388ed9ab2b3e70d19b4ad3e0` |
-| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `<SETTLEBRIDGE_SHA>` |
+| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `307a100ddb96cc65a27ed996b8170c6112b6f511` |
 
 ## Rules (same as plans 1–42)
 
@@ -112,7 +112,7 @@ SB=/home/clawdbot/settlebridge-ai
 cd "$SB"
 git status
 git fetch origin
-git merge --ff-only <SETTLEBRIDGE_SHA>
+git merge --ff-only 307a100ddb96cc65a27ed996b8170c6112b6f511
 
 # optional: run ownership unit tests in backend venv if present
 if [[ -x "$SB/backend/.venv/bin/python" ]]; then
@@ -217,7 +217,7 @@ EX=/home/clawdbot/a2a-settlement
 SB=/home/clawdbot/settlebridge-ai
 # replace with pre-deploy SHAs recorded in P.1
 cd "$EX" && git merge --ff-only 7a65d4896a832374641284322ff2234a72dedb09
-cd "$SB" && git merge --ff-only <SETTLEBRIDGE_PREV_SHA>
+cd "$SB" && git merge --ff-only fa8c148241388383250b264b4944e1a53a112fa7
 systemctl restart a2a-exchange settlebridge
 for u in a2a-exchange settlebridge; do
   for i in $(seq 1 30); do systemctl is-active --quiet $u && break; sleep 1; done
