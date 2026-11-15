@@ -1,4 +1,4 @@
-"""Managed bot routes, scoped to the linked exchange account's namespace. Exchange faked."""
+"""Managed agent routes, ownership-scoped via exchange helpers. Exchange faked."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import settings
 from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.routes import bots as routes
@@ -41,7 +40,7 @@ def env(monkeypatch):
         managed_developer_id=None,
     )
     db = _Db()
-    posts: list[str] = []
+    calls: list[tuple] = []
 
     def get_account(account_id):
         if account_id not in ACCOUNTS:
@@ -51,26 +50,43 @@ def env(monkeypatch):
     def own_namespace(u):
         return ACCOUNTS[u.exchange_bot_id]["developer_id"] if u.exchange_bot_id else None
 
-    def list_namespace_bots(developer_id):
-        return [
+    def list_managed_accounts(u):
+        calls.append(("list", u.exchange_bot_id))
+        bots = [
             {"id": bot_id, "bot_name": acct["bot_name"], "status": "active"}
             for bot_id, acct in ACCOUNTS.items()
-            if acct["developer_id"] == developer_id
+            if acct["developer_id"] == "acme"
         ]
+        return {"developer_id": "acme", "bots": bots, "count": len(bots)}
 
-    def post(url, headers=None, timeout=None):
-        posts.append(url)
-        return SimpleNamespace(
-            status_code=200, raise_for_status=lambda: None, json=lambda: {"ok": True}
-        )
+    def rotate_managed_key(u, bot_id):
+        calls.append(("rotate", bot_id))
+        if ACCOUNTS.get(bot_id, {}).get("developer_id") != "acme":
+            raise RuntimeError("403")
+        return {"api_key": "new-key", "grace_period_minutes": 7}
+
+    def suspend_managed_account(u, bot_id):
+        calls.append(("suspend", bot_id))
+        if bot_id not in ACCOUNTS:
+            raise RuntimeError("404")
+        if ACCOUNTS[bot_id]["developer_id"] != "acme":
+            raise RuntimeError("403")
+        return {"account_id": bot_id, "status": "suspended"}
+
+    def unsuspend_managed_account(u, bot_id):
+        calls.append(("unsuspend", bot_id))
+        if bot_id not in ACCOUNTS:
+            raise RuntimeError("404")
+        if ACCOUNTS[bot_id]["developer_id"] != "acme":
+            raise RuntimeError("403")
+        return {"account_id": bot_id, "status": "active"}
 
     monkeypatch.setattr(routes.exchange_svc, "get_account", get_account)
     monkeypatch.setattr(routes.exchange_svc, "own_namespace", own_namespace)
-    monkeypatch.setattr(routes.exchange_svc, "list_namespace_bots", list_namespace_bots)
-    monkeypatch.setattr(routes.exchange_svc, "rotate_api_key_with_grace", lambda u: ("new-key", 7))
-    monkeypatch.setattr(routes.httpx, "post", post)
-    monkeypatch.setattr(routes.settings, "A2A_DASHBOARD_API_KEY", "dash")
-    monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", "")
+    monkeypatch.setattr(routes.exchange_svc, "list_managed_accounts", list_managed_accounts)
+    monkeypatch.setattr(routes.exchange_svc, "rotate_managed_key", rotate_managed_key)
+    monkeypatch.setattr(routes.exchange_svc, "suspend_managed_account", suspend_managed_account)
+    monkeypatch.setattr(routes.exchange_svc, "unsuspend_managed_account", unsuspend_managed_account)
 
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/bots")
@@ -80,13 +96,7 @@ def env(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: user
-    return SimpleNamespace(client=TestClient(app), user=user, db=db, posts=posts)
-
-
-@pytest.fixture()
-def admin_env(env, monkeypatch):
-    monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", str(env.user.id))
-    return env
+    return SimpleNamespace(client=TestClient(app), user=user, db=db, calls=calls)
 
 
 def test_list_returns_only_the_linked_accounts_namespace(env):
@@ -95,71 +105,33 @@ def test_list_returns_only_the_linked_accounts_namespace(env):
     assert {bot["id"]: bot["own"] for bot in body["bots"]} == {OWN: True, PEER: False}
 
 
-def test_list_ignores_a_requested_developer_id(env):
-    body = env.client.get("/api/bots", params={"developer_id": "other"}).json()
-    assert body["developer_id"] == "acme"
-
-
 def test_list_requires_a_linked_account(env):
     env.user.exchange_bot_id = None
     assert env.client.get("/api/bots").status_code == 400
 
 
-@pytest.mark.parametrize("action", ["suspend", "unsuspend"])
-@pytest.mark.parametrize("bot_id", [OWN, PEER, STRANGER])
-def test_non_admin_cannot_suspend_or_reactivate(env, monkeypatch, action, bot_id):
-    called: list[str] = []
+def test_owner_suspends_peer(env):
+    assert env.client.post(f"/api/bots/{PEER}/suspend").status_code == 200
+    assert ("suspend", PEER) in env.calls
 
-    def own_namespace(user):
-        called.append("own_namespace")
-        return "acme"
 
-    def get_account(account_id):
-        called.append("get_account")
-        return ACCOUNTS[account_id]
+def test_owner_cannot_suspend_own_linked_account(env):
+    assert env.client.post(f"/api/bots/{OWN}/suspend").status_code == 400
+    assert env.calls == []
 
-    def post(url, headers=None, timeout=None):
-        called.append("post")
-        env.posts.append(url)
-        return SimpleNamespace(
-            status_code=200, raise_for_status=lambda: None, json=lambda: {"ok": True}
-        )
 
-    monkeypatch.setattr(routes.exchange_svc, "own_namespace", own_namespace)
-    monkeypatch.setattr(routes.exchange_svc, "get_account", get_account)
-    monkeypatch.setattr(routes.httpx, "post", post)
-
-    response = env.client.post(f"/api/bots/{bot_id}/{action}")
+def test_cross_owner_suspend_is_403(env):
+    response = env.client.post(f"/api/bots/{STRANGER}/suspend")
     assert response.status_code == 403
-    assert response.json()["detail"] == "Only platform admins can suspend or reactivate bots."
-    assert called == []
-    assert env.posts == []
+    assert ("suspend", STRANGER) in env.calls
 
 
-@pytest.mark.parametrize("action", ["suspend", "unsuspend"])
-def test_admin_toggles_a_bot_in_the_namespace(admin_env, action):
-    assert admin_env.client.post(f"/api/bots/{PEER}/{action}").status_code == 200
-    assert admin_env.posts == [
-        f"{routes.settings.effective_exchange_url}/v1/dashboard/agents/{PEER}/{action}"
-    ]
+def test_cross_owner_unsuspend_is_403(env):
+    assert env.client.post(f"/api/bots/{STRANGER}/unsuspend").status_code == 403
 
 
-@pytest.mark.parametrize("action", ["suspend", "unsuspend"])
-def test_admin_refuses_bots_outside_the_namespace(admin_env, action):
-    response = admin_env.client.post(f"/api/bots/{STRANGER}/{action}")
-    assert response.status_code == 403
-    assert response.json()["detail"] == "That bot is not in your exchange account's namespace."
-    assert admin_env.posts == []
-
-
-def test_admin_unknown_bot_is_404(admin_env):
-    assert admin_env.client.post("/api/bots/nope/suspend").status_code == 404
-    assert admin_env.posts == []
-
-
-def test_admin_cannot_suspend_own_linked_account(admin_env):
-    assert admin_env.client.post(f"/api/bots/{OWN}/suspend").status_code == 400
-    assert admin_env.posts == []
+def test_unknown_bot_suspend_is_404(env):
+    assert env.client.post("/api/bots/nope/suspend").status_code == 404
 
 
 def test_rotate_own_account_stores_the_new_key(env):
@@ -171,9 +143,13 @@ def test_rotate_own_account_stores_the_new_key(env):
     assert env.db.commits == 1
 
 
-@pytest.mark.parametrize("bot_id", [PEER, STRANGER])
-def test_rotate_refuses_other_bots(env, bot_id):
-    assert env.client.post(f"/api/bots/{bot_id}/rotate-key").status_code == 403
+def test_rotate_peer_in_namespace(env):
+    assert env.client.post(f"/api/bots/{PEER}/rotate-key").status_code == 200
+    assert env.user.exchange_api_key == "old-key"
+
+
+def test_rotate_refuses_stranger(env):
+    assert env.client.post(f"/api/bots/{STRANGER}/rotate-key").status_code == 403
     assert env.user.exchange_api_key == "old-key"
 
 

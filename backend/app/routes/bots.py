@@ -1,25 +1,19 @@
-"""Managed bot routes: bots in the namespace of the user's own linked exchange account.
+"""Managed agent routes — list and manage exchange agents the caller controls.
 
-The namespace is the ``developer_id`` of the user's linked exchange account, read
-from the exchange, never a value the user types. Listing uses the operator dashboard
-key, so it is limited to bots in that namespace. Suspend and reactivate use that key
-and the same namespace check, but only platform admins may call them. A
-``developer_id`` is self-declared at registration, which is enough to scope a list
-but not a suspension. Key rotation is limited to the user's own linked account.
+Namespace is the developer_id of the user's linked exchange account (read from
+the exchange). Listing and mutations use the user's exchange API key against
+ownership-scoped exchange endpoints — never the dashboard key.
 """
-
 from __future__ import annotations
 
 import logging
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import get_db
-from app.middleware.auth import get_current_user, is_platform_admin
+from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.services import exchange as exchange_svc
 
@@ -43,64 +37,49 @@ class RotateKeyResult(BaseModel):
     )
 
 
-def _namespace(user: User) -> str:
+def _require_linked(user: User) -> None:
     if not user.exchange_bot_id or not user.exchange_api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No exchange account linked. Connect your exchange account in Settings first.",
         )
-    try:
-        namespace = exchange_svc.own_namespace(user)
-    except Exception as exc:
-        logger.warning("Failed to read namespace for user %s: %s", user.id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Couldn't read your exchange account.",
-        )
-    if namespace is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your linked exchange account has no developer ID.",
-        )
-    return namespace
 
 
-def _require_in_namespace(user: User, bot_id: str) -> str:
-    namespace = _namespace(user)
-    try:
-        developer_id = exchange_svc.get_account(bot_id).get("developer_id")
-    except Exception:
-        raise HTTPException(status_code=404, detail="Bot not found on exchange.")
-    if developer_id != namespace:
+def _map_exchange_http_error(exc: Exception, *, not_found: str = "Agent not found.") -> None:
+    err = str(exc)
+    if "403" in err:
         raise HTTPException(
             status_code=403,
-            detail="That bot is not in your exchange account's namespace.",
+            detail="Not authorized to manage this agent.",
         )
-    return namespace
-
-
-def _require_dashboard_key(action: str) -> str:
-    if not settings.A2A_DASHBOARD_API_KEY:
+    if "404" in err:
+        raise HTTPException(status_code=404, detail=not_found)
+    if "409" in err:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"{action} is not configured on this server. Set A2A_DASHBOARD_API_KEY.",
+            status_code=409,
+            detail="Developer ID already claimed by another account.",
         )
-    return settings.A2A_DASHBOARD_API_KEY
+    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=err)
 
 
 @router.get("")
 async def list_bots(user: User = Depends(get_current_user)) -> dict:
-    """List exchange bots in the namespace of the user's linked exchange account."""
-    namespace = _namespace(user)
-    _require_dashboard_key("Listing bots")
+    """List exchange agents under the developer ID the caller controls."""
+    _require_linked(user)
     try:
-        bots = exchange_svc.list_namespace_bots(namespace)
+        result = exchange_svc.list_managed_accounts(user)
     except Exception as exc:
-        logger.exception("Failed to list bots in %s", namespace)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+        logger.exception("Failed to list managed agents")
+        _map_exchange_http_error(exc, not_found="Exchange account not found.")
+        raise  # pragma: no cover
+    bots = result.get("bots") or []
     for bot in bots:
-        bot["own"] = bot["id"] == user.exchange_bot_id
-    return {"developer_id": namespace, "bots": bots}
+        bot["own"] = bot.get("id") == user.exchange_bot_id
+    return {
+        "developer_id": result.get("developer_id"),
+        "bots": bots,
+        "count": result.get("count", len(bots)),
+    }
 
 
 @router.post("/{bot_id}/rotate-key", response_model=RotateKeyResult)
@@ -109,21 +88,20 @@ async def rotate_bot_key(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RotateKeyResult:
-    """Rotate the key of the user's own linked account and store it. Shown once."""
-    if not user.exchange_api_key or user.exchange_bot_id != bot_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Only your linked account's key can be rotated here. "
-            "Rotate other bots' keys from the bot itself.",
-        )
+    """Rotate an agent key the caller controls. Shown once — store immediately."""
+    _require_linked(user)
     try:
-        new_key, grace_minutes = exchange_svc.rotate_api_key_with_grace(user)
+        result = exchange_svc.rotate_managed_key(user, bot_id=bot_id)
     except Exception as exc:
-        logger.exception("rotate_api_key failed for %s", bot_id)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+        logger.exception("rotate_managed_key failed for %s", bot_id)
+        _map_exchange_http_error(exc)
+        raise  # pragma: no cover
 
-    user.exchange_api_key = new_key
-    await db.commit()
+    new_key = result["api_key"]
+    if user.exchange_bot_id == bot_id:
+        user.exchange_api_key = new_key
+        await db.commit()
+        logger.info("Auto-updated exchange_api_key for user %s after key rotation", user.id)
 
     bot_name = bot_id
     try:
@@ -135,49 +113,45 @@ async def rotate_bot_key(
         bot_id=bot_id,
         bot_name=bot_name,
         api_key=new_key,
-        grace_period_minutes=grace_minutes,
+        grace_period_minutes=result.get("grace_period_minutes", 5),
     )
 
 
-def _dashboard_toggle(user: User, bot_id: str, action: str) -> dict:
-    if not is_platform_admin(user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can suspend or reactivate bots.",
-        )
-    key = _require_dashboard_key(action.title())
-    _require_in_namespace(user, bot_id)
-    if action == "suspend" and bot_id == user.exchange_bot_id:
+@router.post("/{bot_id}/suspend")
+async def suspend_bot(
+    bot_id: str,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Suspend an agent the caller controls (stops new escrows)."""
+    _require_linked(user)
+    if bot_id == user.exchange_bot_id:
         raise HTTPException(
             status_code=400,
             detail="You can't suspend your own linked account from here.",
         )
-    resp = httpx.post(
-        f"{settings.effective_exchange_url}/v1/dashboard/agents/{bot_id}/{action}",
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=10,
-    )
-    if resp.status_code == 403:
-        raise HTTPException(
-            status_code=403,
-            detail="Dashboard key rejected by exchange. Check A2A_DASHBOARD_API_KEY.",
-        )
-    if resp.status_code == 404:
-        raise HTTPException(status_code=404, detail="Bot not found on exchange.")
-    resp.raise_for_status()
-    return resp.json()
-
-
-@router.post("/{bot_id}/suspend")
-async def suspend_bot(bot_id: str, user: User = Depends(get_current_user)) -> dict:
-    """Suspend a bot in the admin's namespace (stops it receiving new escrows)."""
-    return _dashboard_toggle(user, bot_id, "suspend")
+    try:
+        return exchange_svc.suspend_managed_account(user, bot_id=bot_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("suspend_managed_account failed for %s", bot_id)
+        _map_exchange_http_error(exc)
+        raise  # pragma: no cover
 
 
 @router.post("/{bot_id}/unsuspend")
-async def unsuspend_bot(bot_id: str, user: User = Depends(get_current_user)) -> dict:
-    """Reactivate a suspended bot in the admin's namespace."""
-    return _dashboard_toggle(user, bot_id, "unsuspend")
+async def unsuspend_bot(
+    bot_id: str,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Reactivate a suspended agent the caller controls."""
+    _require_linked(user)
+    try:
+        return exchange_svc.unsuspend_managed_account(user, bot_id=bot_id)
+    except Exception as exc:
+        logger.exception("unsuspend_managed_account failed for %s", bot_id)
+        _map_exchange_http_error(exc)
+        raise  # pragma: no cover
 
 
 @router.patch("/settings")
@@ -186,12 +160,25 @@ async def update_bot_settings(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Record the namespace. It must be the linked exchange account's developer ID."""
-    namespace = _namespace(user)
+    """Record the managed developer ID. Must match the linked exchange account."""
+    _require_linked(user)
+    try:
+        namespace = exchange_svc.own_namespace(user)
+    except Exception as exc:
+        logger.warning("Failed to read namespace for user %s: %s", user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Couldn't read your exchange account.",
+        )
+    if not namespace:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your linked exchange account has no developer ID.",
+        )
     if body.developer_id != namespace:
         raise HTTPException(
             status_code=403,
-            detail=f"Your namespace is {namespace}, from your linked exchange account.",
+            detail=f"Your developer ID is {namespace}, from your linked exchange account.",
         )
     user.managed_developer_id = namespace
     await db.commit()

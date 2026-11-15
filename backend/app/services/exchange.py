@@ -434,12 +434,23 @@ def own_namespace(user: User) -> str | None:
     return developer_id if isinstance(developer_id, str) and developer_id else None
 
 
-def list_namespace_bots(developer_id: str) -> list[dict[str, Any]]:
-    """Accounts in ``developer_id``, listed with the operator dashboard key.
+def list_managed_accounts(user: User) -> dict[str, Any]:
+    """Agents the caller's exchange account controls (ownership-scoped)."""
+    import httpx
 
-    The dashboard listing has no bot names, so each one is read from the public
-    account lookup; a failed lookup falls back to the account id.
-    """
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    resp = httpx.get(
+        f"{settings.effective_exchange_url}/v1/accounts/managed",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_namespace_bots(developer_id: str) -> list[dict[str, Any]]:
+    """Deprecated dashboard-key listing. Prefer list_managed_accounts."""
     import httpx
 
     key = settings.A2A_DASHBOARD_API_KEY
@@ -501,6 +512,51 @@ def rotate_api_key_with_grace(user: User) -> tuple[str, int]:
     return api_key, grace if isinstance(grace, int) else 0
 
 
+def rotate_managed_key(user: User, bot_id: str) -> dict[str, Any]:
+    """Rotate an agent key the caller controls. Returns new ate_ key once."""
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/rotate-key-managed",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def suspend_managed_account(user: User, bot_id: str) -> dict[str, Any]:
+    """Suspend an agent the caller controls. Uses the user's exchange key only."""
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/suspend",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def unsuspend_managed_account(user: User, bot_id: str) -> dict[str, Any]:
+    """Reactivate an agent the caller controls. Uses the user's exchange key only."""
+    import httpx
+
+    if not user.exchange_api_key:
+        raise ValueError("User has not linked an exchange account")
+    resp = httpx.post(
+        f"{settings.effective_exchange_url}/v1/accounts/{bot_id}/unsuspend",
+        headers={"Authorization": f"Bearer {user.exchange_api_key}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def update_managed_developer_id(user: User, developer_id: str) -> None:
-    """Update the developer_id namespace this user manages (in-memory only — caller must commit)."""
+    """Update the developer_id this user manages (in-memory only — caller must commit)."""
     user.managed_developer_id = developer_id  # type: ignore[attr-defined]
