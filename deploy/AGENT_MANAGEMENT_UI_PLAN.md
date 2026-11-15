@@ -46,7 +46,7 @@ Pinned commits (fill in after the UI PR is on `main`):
 | Repo | Droplet path | Deploy SHA |
 |------|--------------|------------|
 | a2a-settlement | `/home/clawdbot/a2a-settlement` | `3be803f416cf3bc822411f49c83571c8801c3b74` |
-| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `0a4082108903fe84682210ab11992682ae15fff3` |
+| settlebridge-ai | `/home/clawdbot/settlebridge-ai` | `4c4ae3d127eb4a049a419193116eabc5d077e01a` |
 
 Rollback pins (from before this plan):
 
@@ -132,7 +132,7 @@ git fetch origin
 if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
   sudo -u clawdbot git stash push -u -m "plan44-pre-deploy-dirt" || true
 fi
-sudo -u clawdbot git merge --ff-only 0a4082108903fe84682210ab11992682ae15fff3
+sudo -u clawdbot git merge --ff-only 4c4ae3d127eb4a049a419193116eabc5d077e01a
 echo "SB_NOW=$(git rev-parse --short HEAD) $(git log -1 --oneline)"
 
 # backend unit tests that ship with the UI PR
