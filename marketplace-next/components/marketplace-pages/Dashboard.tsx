@@ -16,7 +16,7 @@ import SolverHome from "@/components/marketplace-pages/SolverHome";
 import { useAuth } from "@/hooks/useAuth";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { useManagedAgents } from "@/hooks/useManagedAgents";
-import { agentCounts } from "@/lib/managedAgents";
+import { agentCounts, listedManagedAgents } from "@/lib/managedAgents";
 import { useView } from "@/hooks/useView";
 import type { WorkView } from "@/lib/cyberContracts";
 import { roleIncludesView } from "@/lib/funderView";
@@ -32,7 +32,7 @@ export default function Dashboard() {
   const { agent_management_v2 } = useAppConfig();
   const showAgentsCard = agent_management_v2 && !!user?.exchange_bot_id;
   const { bots, loading: agentsLoading } = useManagedAgents(showAgentsCard);
-  const counts = agentCounts(bots);
+  const counts = agentCounts(listedManagedAgents(bots, user?.exchange_bot_id));
 
   if (!user) return null;
 

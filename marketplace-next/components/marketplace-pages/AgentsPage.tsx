@@ -11,6 +11,16 @@ import GatewayAgentsTab from "@/components/agents/GatewayAgentsTab";
 
 type AgentsTab = "mine" | "directory" | "gateway";
 
+function AgentsAuthPlaceholder() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-live="polite">
+      <div className="h-8 w-48 bg-gray-100 rounded-lg animate-pulse" />
+      <div className="h-24 bg-gray-100 rounded-xl animate-pulse" />
+      <div className="h-24 bg-gray-100 rounded-xl animate-pulse" />
+    </div>
+  );
+}
+
 function parseTab(
   raw: string | null,
   signedIn: boolean,
@@ -40,15 +50,24 @@ export default function AgentsPage() {
 
   const rawTab = searchParams.get("tab");
 
-  const tab = useMemo(
-    () =>
-      parseTab(
-        rawTab,
-        signedIn,
-        canShowGateway || (rawTab === "gateway" && checkingGatewayEligibility)
-      ),
-    [rawTab, signedIn, canShowGateway, checkingGatewayEligibility]
-  );
+  const tab = useMemo(() => {
+    // Don't treat a still-loading session as signed out (that flashes Directory
+    // or the My agents sign-in empty state).
+    if (authLoading && rawTab !== "directory" && rawTab !== "gateway") {
+      return "mine" as AgentsTab;
+    }
+    return parseTab(
+      rawTab,
+      signedIn,
+      canShowGateway || (rawTab === "gateway" && checkingGatewayEligibility)
+    );
+  }, [
+    authLoading,
+    rawTab,
+    signedIn,
+    canShowGateway,
+    checkingGatewayEligibility,
+  ]);
 
   const setTab = useCallback(
     (next: AgentsTab) => {
@@ -137,7 +156,11 @@ export default function AgentsPage() {
       </div>
 
       {tab === "mine" ? (
-        <MyAgents managed={managed} />
+        authLoading ? (
+          <AgentsAuthPlaceholder />
+        ) : (
+          <MyAgents managed={managed} />
+        )
       ) : tab === "gateway" && (canShowGateway || checkingGatewayEligibility) ? (
         <GatewayAgentsTab
           bots={managed.bots}

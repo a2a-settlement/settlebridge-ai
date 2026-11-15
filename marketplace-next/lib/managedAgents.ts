@@ -106,6 +106,14 @@ export function agentCounts(bots: ManagedAgent[]) {
   return { active, suspended, missingCard };
 }
 
+/** Same exclusion as the My agents table: drop the operator's linked account. */
+export function listedManagedAgents(
+  bots: ManagedAgent[],
+  ownAccountId: string | null | undefined
+): ManagedAgent[] {
+  return bots.filter((b) => !b.own && b.id !== ownAccountId);
+}
+
 export function hasGatewayTabAccess(params: {
   signedIn: boolean;
   bots: ManagedAgent[];

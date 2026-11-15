@@ -27,6 +27,7 @@ import {
 import {
   extractApiError,
   formatActivityDate,
+  listedManagedAgents,
   truncateAgentId,
   type ManagedAgent,
   type RotatedKeyResult,
@@ -44,8 +45,6 @@ type PendingAction =
   | { kind: "rotate"; agent: ManagedAgent }
   | { kind: "bulk-suspend"; count: number }
   | { kind: "bulk-unsuspend"; count: number };
-
-type StatusFilter = "all" | "active" | "suspended";
 
 export interface MyAgentsProps {
   managed?: ManagedAgentsState;
@@ -216,7 +215,7 @@ function AgentRowMenu({
 }
 
 export default function MyAgents({ managed }: MyAgentsProps) {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const linked = !!user?.exchange_bot_id;
   const fallbackManaged = useManagedAgents(!managed && linked);
   const {
@@ -228,7 +227,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
   } = managed ?? fallbackManaged;
 
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [showSuspended, setShowSuspended] = useState(false);
   const [devIdFilter, setDevIdFilter] = useState<string>("all");
   const [hasCardOnly, setHasCardOnly] = useState(false);
   const [showTest, setShowTest] = useState(false);
@@ -251,7 +250,7 @@ export default function MyAgents({ managed }: MyAgentsProps) {
   );
 
   const listAgents = useMemo(
-    () => bots.filter((b) => !b.own && b.id !== user?.exchange_bot_id),
+    () => listedManagedAgents(bots, user?.exchange_bot_id),
     [bots, user?.exchange_bot_id]
   );
 
@@ -268,11 +267,10 @@ export default function MyAgents({ managed }: MyAgentsProps) {
     return out;
   }, [developerIds, listAgents]);
 
-  const filtered = useMemo(() => {
+  const scopedAgents = useMemo(() => {
     const q = search.trim().toLowerCase();
     return listAgents.filter((a) => {
       if (devIdFilter !== "all" && a.developer_id !== devIdFilter) return false;
-      if (statusFilter !== "all" && a.status !== statusFilter) return false;
       if (hasCardOnly && !a.has_agent_card) return false;
       if (!showTest && a.is_test) return false;
       if (!q) return true;
@@ -282,10 +280,22 @@ export default function MyAgents({ managed }: MyAgentsProps) {
         a.developer_id?.toLowerCase().includes(q)
       );
     });
-  }, [listAgents, devIdFilter, statusFilter, hasCardOnly, showTest, search]);
+  }, [listAgents, devIdFilter, hasCardOnly, showTest, search]);
 
-  const hasRestrictiveAgentFilter =
-    search.trim() !== "" || statusFilter !== "all" || hasCardOnly;
+  const suspendedCount = useMemo(
+    () => scopedAgents.filter((a) => a.status === "suspended").length,
+    [scopedAgents]
+  );
+
+  const filtered = useMemo(
+    () =>
+      scopedAgents.filter((a) =>
+        a.status === "suspended" ? showSuspended : a.status === "active"
+      ),
+    [scopedAgents, showSuspended]
+  );
+
+  const hasRestrictiveAgentFilter = search.trim() !== "" || hasCardOnly;
 
   const groups = useMemo(() => {
     const seedIds = hasRestrictiveAgentFilter
@@ -306,6 +316,16 @@ export default function MyAgents({ managed }: MyAgentsProps) {
       return next;
     });
   };
+
+  if (authLoading) {
+    return (
+      <div className="space-y-3" aria-busy="true" aria-live="polite">
+        <div className="h-8 w-48 bg-gray-100 rounded-lg animate-pulse" />
+        <div className="h-24 bg-gray-100 rounded-xl animate-pulse" />
+        <div className="h-24 bg-gray-100 rounded-xl animate-pulse" />
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -561,25 +581,6 @@ export default function MyAgents({ managed }: MyAgentsProps) {
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-1.5">
             <label
-              htmlFor="my-agents-status-filter"
-              className="text-xs font-medium text-gray-600"
-            >
-              Status
-            </label>
-            <select
-              id="my-agents-status-filter"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm text-navy-900 focus:outline-none focus:ring-2 focus:ring-navy-500"
-            >
-              <option value="all">All</option>
-              <option value="active">Active</option>
-              <option value="suspended">Suspended</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <label
               htmlFor="my-agents-dev-filter"
               className="text-xs font-medium text-gray-600"
             >
@@ -638,6 +639,19 @@ export default function MyAgents({ managed }: MyAgentsProps) {
             className="rounded focus:ring-2 focus:ring-navy-500"
           />
           Show test agents
+        </label>
+        <label
+          htmlFor="my-agents-show-suspended"
+          className="inline-flex items-center gap-2 text-gray-600 cursor-pointer"
+        >
+          <input
+            id="my-agents-show-suspended"
+            type="checkbox"
+            checked={showSuspended}
+            onChange={(e) => setShowSuspended(e.target.checked)}
+            className="rounded focus:ring-2 focus:ring-navy-500"
+          />
+          Show suspended ({suspendedCount})
         </label>
       </div>
 
@@ -761,21 +775,19 @@ export default function MyAgents({ managed }: MyAgentsProps) {
                 {!isCollapsed && (
                   <div className="p-3 sm:p-4">
                     {agents.length === 0 ? (
-                      <div className="text-center py-6 px-4 rounded-lg border border-dashed border-gray-200">
-                        <p className="text-xs text-gray-500 mb-2.5">
-                          No agents registered under{" "}
-                          <span className="font-mono text-gray-700">{devId}</span>{" "}
-                          yet.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setRegisterModalDevId(devId)}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-navy-800 hover:underline focus:outline-none focus:ring-2 focus:ring-navy-500 rounded px-1"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          Register agent under {devId}
-                        </button>
-                      </div>
+                      <EmptyDeveloperGroup
+                        devId={devId}
+                        hiddenSuspended={
+                          showSuspended
+                            ? 0
+                            : scopedAgents.filter(
+                                (a) =>
+                                  (a.developer_id || "unknown") === devId &&
+                                  a.status === "suspended"
+                              ).length
+                        }
+                        onRegister={() => setRegisterModalDevId(devId)}
+                      />
                     ) : (
                       <>
                         <AgentsTableDesktop
@@ -918,6 +930,44 @@ export default function MyAgents({ managed }: MyAgentsProps) {
           onClose={() => setRotatedKey(null)}
         />
       )}
+    </div>
+  );
+}
+
+function EmptyDeveloperGroup({
+  devId,
+  hiddenSuspended,
+  onRegister,
+}: {
+  devId: string;
+  hiddenSuspended: number;
+  onRegister: () => void;
+}) {
+  if (hiddenSuspended > 0) {
+    return (
+      <div className="text-center py-6 px-4 rounded-lg border border-dashed border-gray-200">
+        <p className="text-xs text-gray-500">
+          {hiddenSuspended} suspended{" "}
+          {hiddenSuspended === 1 ? "agent is" : "agents are"} hidden. Turn on
+          Show suspended to list {hiddenSuspended === 1 ? "it" : "them"}.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="text-center py-6 px-4 rounded-lg border border-dashed border-gray-200">
+      <p className="text-xs text-gray-500 mb-2.5">
+        No agents registered under{" "}
+        <span className="font-mono text-gray-700">{devId}</span> yet.
+      </p>
+      <button
+        type="button"
+        onClick={onRegister}
+        className="inline-flex items-center gap-1 text-xs font-semibold text-navy-800 hover:underline focus:outline-none focus:ring-2 focus:ring-navy-500 rounded px-1"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        Register agent under {devId}
+      </button>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   extractApiError,
   formatActivityDate,
   hasGatewayTabAccess,
+  listedManagedAgents,
   truncateAgentId,
 } from "../lib/managedAgents.ts";
 
@@ -94,6 +95,52 @@ test("hasGatewayTabAccess follows exact Gateway tab visibility rules", () => {
     }),
     true
   );
+});
+
+test("listedManagedAgents excludes the operator linked account from counts", () => {
+  const bots = [
+    {
+      id: "own-flag",
+      bot_name: "Mine",
+      status: "active",
+      developer_id: "d",
+      own: true,
+      has_agent_card: true,
+    },
+    {
+      id: "linked-id",
+      bot_name: "Linked",
+      status: "active",
+      developer_id: "d",
+      own: false,
+      has_agent_card: false,
+    },
+    {
+      id: "sib",
+      bot_name: "Sib",
+      status: "suspended",
+      developer_id: "d",
+      has_agent_card: false,
+    },
+    {
+      id: "peer",
+      bot_name: "Peer",
+      status: "active",
+      developer_id: "d",
+      has_agent_card: true,
+    },
+  ];
+  const listed = listedManagedAgents(bots, "linked-id");
+  assert.deepEqual(
+    listed.map((b) => b.id),
+    ["sib", "peer"]
+  );
+  assert.deepEqual(agentCounts(listed), {
+    active: 1,
+    suspended: 1,
+    missingCard: 1,
+  });
+  assert.deepEqual(agentCounts(bots).active, 3);
 });
 
 test("agentCounts tracks active, suspended, and missingCard", () => {
