@@ -56,7 +56,13 @@ to continue on any other head):
 | Repo | Required current HEAD |
 |------|------------------------|
 | a2a-settlement | `2a2e2bca9171cb8a1914887a99d13298b24a0a22` |
-| settlebridge-ai | `f916cd5c5b4782b971b7e0ff82d197b214811ed9` |
+| settlebridge-ai | `f916cd5c5b4782b971b7e0ff82d197b214811ed9` or `e884f29bfc5948577a532dfe54b0961114f248ca` |
+
+The droplet's SettleBridge checkout was found fast-forwarded to `e884f29`
+(merged PR #52) outside a plan. That range only adds plan 47 docs and the
+unimported `fix_verifier_preflight.py` CLI, and `e884f29` is an ancestor of
+the plan 48 pin, so P.1 accepts either head. P.1 records whichever head is
+present, and P.2 rolls back to it.
 
 ## Rules the exchange enforces after this plan
 
@@ -143,7 +149,8 @@ if [ "$EX_HEAD" != "2a2e2bca9171cb8a1914887a99d13298b24a0a22" ]; then
   echo "unexpected exchange HEAD; refusing to continue"
   exit 1
 fi
-if [ "$SB_HEAD" != "f916cd5c5b4782b971b7e0ff82d197b214811ed9" ]; then
+if [ "$SB_HEAD" != "f916cd5c5b4782b971b7e0ff82d197b214811ed9" ] \
+  && [ "$SB_HEAD" != "e884f29bfc5948577a532dfe54b0961114f248ca" ]; then
   echo "unexpected settlebridge HEAD; refusing to continue"
   exit 1
 fi
@@ -457,7 +464,7 @@ echo "PLAN 48 SMOKE OK"
 ## P.2 Rollback
 
 Run only if a later block failed or you are reverting this plan. Resets both
-repos to the SHAs saved in P.1 (the plan 47 pins) and rebuilds the
+repos to the SHAs saved in P.1 (the heads found before this plan) and rebuilds the
 marketplace.
 
 Leaves `developer_id_audit_events` in place. It is additive, and the plan 47
@@ -477,7 +484,8 @@ test -f /root/plan48-prev-settlebridge.sha
 EX_PREV=$(tr -d '[:space:]' < /root/plan48-prev-exchange.sha)
 SB_PREV=$(tr -d '[:space:]' < /root/plan48-prev-settlebridge.sha)
 test "$EX_PREV" = "2a2e2bca9171cb8a1914887a99d13298b24a0a22"
-test "$SB_PREV" = "f916cd5c5b4782b971b7e0ff82d197b214811ed9"
+[ "$SB_PREV" = "f916cd5c5b4782b971b7e0ff82d197b214811ed9" ] \
+  || [ "$SB_PREV" = "e884f29bfc5948577a532dfe54b0961114f248ca" ]
 
 cd "$EX"
 sudo -u clawdbot git reset --hard "$EX_PREV"
