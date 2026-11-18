@@ -32,3 +32,6 @@ frontend/.vite/
 # marketplace-next has its own .gitignore (node_modules, .next, .env*)
 *.swp
 *.swo
+
+# Operational runbooks are kept in a private repository, not here
+deploy/*_PLAN.md
