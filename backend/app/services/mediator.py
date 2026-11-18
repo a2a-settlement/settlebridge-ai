@@ -3,6 +3,9 @@
 Calls to the mediator's operator routes (``/mediate``, ``/audits``) carry a
 ``v2`` signature that covers the method and path as well as the body.
 ``/api/v1/verify-patch`` keeps its own ``{timestamp}.{body}`` signature.
+
+Each kind of call is signed with its own secret when one is configured and
+with ``MEDIATOR_WEBHOOK_SECRET`` otherwise. See ``signing_secret``.
 """
 
 from __future__ import annotations
@@ -25,6 +28,27 @@ logger = logging.getLogger(__name__)
 TIMEOUT = 30.0
 
 
+# Kind of call -> the setting that holds its own secret.
+_PURPOSE_SETTINGS = {
+    "operator": "MEDIATOR_OPERATOR_SECRET",
+    "verify-patch": "MEDIATOR_VERIFY_PATCH_SECRET",
+    "receipts": "MEDIATOR_RECEIPTS_SECRET",
+}
+
+
+def signing_secret(purpose: str) -> str:
+    """The secret that signs one kind of mediator call, or ``""`` when none is set.
+
+    ``purpose`` is ``"operator"``, ``"verify-patch"`` or ``"receipts"``. The
+    purpose's own setting wins; when it is empty the call is signed with
+    ``MEDIATOR_WEBHOOK_SECRET``, as every call was before the settings were
+    split. Nothing in this module issues receipts; ``"receipts"`` is here so a
+    receipt client resolves its secret the same way.
+    """
+    own = getattr(settings, _PURPOSE_SETTINGS[purpose], "")
+    return own or settings.MEDIATOR_WEBHOOK_SECRET
+
+
 def _nonce() -> str:
     """A fresh value per request, so two identical calls never share a signature."""
     return secrets.token_urlsafe(24)
@@ -33,7 +57,7 @@ def _nonce() -> str:
 def _operator_headers(method: str, target: str, body: bytes = b"") -> dict[str, str]:
     """Signature headers for one call to a mediator operator route.
 
-    The HMAC is SHA-256, keyed with the webhook secret, over ``v2``, the
+    The HMAC is SHA-256, keyed with ``signing_secret("operator")``, over ``v2``, the
     timestamp, the nonce, the upper-case method and ``target``, each followed
     by a newline, then the exact body bytes. ``target`` is the path the
     mediator receives, percent-encoded as sent, with ``?query`` when present.
@@ -42,7 +66,7 @@ def _operator_headers(method: str, target: str, body: bytes = b"") -> dict[str, 
     running without authentication still works. A mediator that requires
     signatures rejects such a call.
     """
-    secret = settings.MEDIATOR_WEBHOOK_SECRET
+    secret = signing_secret("operator")
     if not secret:
         return {}
     timestamp = str(_timestamp())
@@ -179,9 +203,9 @@ async def verify_patch(payload: dict[str, Any]) -> dict[str, Any]:
     """POST a canonical JSON body to the mediator verify-patch endpoint.
 
     The body is serialized once. The HMAC is SHA-256 over ``f"{timestamp}."``
-    plus those exact bytes, keyed with the webhook secret.
+    plus those exact bytes, keyed with ``signing_secret("verify-patch")``.
     """
-    secret = settings.MEDIATOR_WEBHOOK_SECRET
+    secret = signing_secret("verify-patch")
     if not secret:
         raise ValueError("MEDIATOR_WEBHOOK_SECRET not configured")
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()

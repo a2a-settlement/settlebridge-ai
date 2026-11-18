@@ -14,6 +14,12 @@ class Settings(BaseSettings):
 
     MEDIATOR_URL: str = "https://mediator.a2a-settlement.org"
     MEDIATOR_WEBHOOK_SECRET: str = ""
+    # Optional per-purpose signing secrets. Empty means that kind of call is
+    # signed with MEDIATOR_WEBHOOK_SECRET. Each must equal the mediator's setting
+    # of the same name.
+    MEDIATOR_OPERATOR_SECRET: str = ""
+    MEDIATOR_VERIFY_PATCH_SECRET: str = ""
+    MEDIATOR_RECEIPTS_SECRET: str = ""
 
     JWT_SECRET: str = "change-me"
     JWT_ALGORITHM: str = "HS256"
