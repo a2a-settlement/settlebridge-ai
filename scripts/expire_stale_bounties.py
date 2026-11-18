@@ -8,6 +8,13 @@ partially_released holdbacks (e.g. today's morning-signal smoke test).
 Default is dry-run. Pass --apply to write.
 
 Run from repo root with DATABASE_URL in .env.
+
+The exchange only shows an escrow to its requester, its provider and operator
+accounts, so this needs an operator key to see every bounty's escrow. Set
+EXCHANGE_OPERATOR_API_KEY (or A2A_OPERATOR_API_KEY). Without one the script
+falls back to the requester key in the JSON file named by
+EXCHANGE_CREDENTIALS_FILE, and reports the bounties it was refused as
+"forbidden" instead of deciding anything about them.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -37,18 +45,26 @@ def load_db_url() -> str:
     raise SystemExit("DATABASE_URL not found in .env")
 
 
-def load_requester_key() -> str:
-    """Any valid exchange key can read public escrow status; prefer requester."""
-    for path in (
-        Path("/root/.hermes/clawd/.exchange-credentials.json"),
-        Path.home() / ".hermes/clawd/.exchange-credentials.json",
-    ):
-        if path.exists():
-            data = json.loads(path.read_text())
-            key = (data.get("requester") or {}).get("api_key")
+def load_exchange_key() -> tuple[str, str]:
+    """Return ``(api_key, kind)``, where kind is "operator" or "requester"."""
+    for name in ("EXCHANGE_OPERATOR_API_KEY", "A2A_OPERATOR_API_KEY"):
+        key = os.environ.get(name, "").strip()
+        if key:
+            return key, "operator"
+    credentials = os.environ.get("EXCHANGE_CREDENTIALS_FILE", "").strip()
+    if credentials:
+        path = Path(credentials).expanduser()
+        if not path.exists():
+            raise SystemExit(f"EXCHANGE_CREDENTIALS_FILE does not exist: {path}")
+        data = json.loads(path.read_text())
+        for kind in ("operator", "requester"):
+            key = (data.get(kind) or {}).get("api_key")
             if key:
-                return key
-    raise SystemExit("No exchange requester api_key found in credentials file")
+                return key, kind
+        raise SystemExit("No operator or requester api_key in EXCHANGE_CREDENTIALS_FILE")
+    raise SystemExit(
+        "No exchange key: set EXCHANGE_OPERATOR_API_KEY, or EXCHANGE_CREDENTIALS_FILE"
+    )
 
 
 def psql(db_url: str, sql: str) -> str:
@@ -94,6 +110,12 @@ def escrow_status(api_key: str, escrow_id: str) -> str:
         with urllib.request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read().decode())
         return str(data.get("status") or "unknown")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            return "forbidden"
+        if exc.code == 404:
+            return "not_found"
+        return f"error:HTTP {exc.code}"
     except Exception as exc:
         return f"error:{exc}"
 
@@ -148,7 +170,8 @@ def main() -> None:
     args = parser.parse_args()
 
     db_url = load_db_url()
-    api_key = load_requester_key()
+    api_key, key_kind = load_exchange_key()
+    print(f"Exchange key: {key_kind}")
     candidates = fetch_candidates(db_url, args.before)
     print(f"Found {len(candidates)} IN_REVIEW bounties created before {args.before}")
 
@@ -165,10 +188,21 @@ def main() -> None:
     for bid, title, created, escrow_id, st in matched:
         print(f"  {created[:10]}  {bid}  escrow={st}  {title[:50]}")
 
+    forbidden = [row for row in skipped if row[2] == "forbidden"]
+    skipped = [row for row in skipped if row[2] != "forbidden"]
     if skipped:
         print(f"\nSkipped (escrow not terminal): {len(skipped)}")
         for bid, title, st in skipped:
             print(f"  {bid}  escrow={st}  {title}")
+
+    if forbidden:
+        print(f"\nNot checked (the exchange refused this key): {len(forbidden)}")
+        for bid, title, _st in forbidden:
+            print(f"  {bid}  {title}")
+        print(
+            "These escrows belong to other accounts. Re-run with an operator key "
+            "(EXCHANGE_OPERATOR_API_KEY) to check them."
+        )
 
     if not args.apply:
         print("\nDry run only. Re-run with --apply to write.")
