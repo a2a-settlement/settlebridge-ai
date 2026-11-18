@@ -105,8 +105,12 @@ class Settings(BaseSettings):
     CHALLENGE_ENGINE_ENABLED: bool = False
     # Content-addressed artifact store on the runner host; never a production path.
     CHALLENGE_ARTIFACT_ROOT: str = "/var/lib/settlebridge-challenges"
-    # Interpreter that runs `python -m challenge_runner`.
+    # Interpreter that runs `python -m challenge_runner`. The runner is not in this
+    # repository: it ships with the private verifier, which must be installed here.
     CHALLENGE_RUNNER_PYTHON: str = "python3"
+    # Optional checkout that contains `challenge_runner`, used as the runner's PYTHONPATH
+    # when the package is not installed into CHALLENGE_RUNNER_PYTHON.
+    CHALLENGE_RUNNER_PATH: str = ""
     # Docker runtime name for gVisor.
     CHALLENGE_SANDBOX_RUNTIME: str = "runsc"
     # Sandbox image pinned by digest, e.g. python@sha256:<64 hex>. The runner refuses an unpinned image.

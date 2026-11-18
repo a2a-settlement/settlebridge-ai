@@ -95,6 +95,46 @@ def test_run_passes_the_pinned_image_and_runtime(monkeypatch, tmp_path):
     assert captured["env"]["CHALLENGE_SANDBOX_RUNTIME"] == "runsc"
 
 
+def _captured_env(monkeypatch, tmp_path) -> dict:
+    captured: dict = {}
+
+    def fake_run(cmd, input=None, env=None, **_kwargs):
+        captured["env"] = env
+        Path(cmd[cmd.index("--out") + 1]).write_text(json.dumps(_result()), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("app.services.challenge_runner_client.subprocess.run", fake_run)
+    run_runner(_job(), artifact_root=str(tmp_path))
+    return captured["env"]
+
+
+def test_run_does_not_inherit_pythonpath_when_no_runner_path_is_set(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.CHALLENGE_RUNNER_PATH", "")
+    monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
+    env = _captured_env(monkeypatch, tmp_path)
+    assert "PYTHONPATH" not in env
+    assert env["PYTHONNOUSERSITE"] == "1"
+
+
+def test_run_uses_the_configured_runner_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.CHALLENGE_RUNNER_PATH", "/opt/runner")
+    monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
+    env = _captured_env(monkeypatch, tmp_path)
+    assert env["PYTHONPATH"] == "/opt/runner"
+
+
+def test_run_fails_closed_when_the_runner_module_is_missing(monkeypatch, tmp_path):
+    """The runner is not in this repository. Without it, python -m exits 1 and writes nothing."""
+
+    def fake_run(cmd, input=None, env=None, **_kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "No module named challenge_runner")
+
+    monkeypatch.setattr("app.services.challenge_runner_client.subprocess.run", fake_run)
+    with pytest.raises(RunnerInvocationError) as caught:
+        run_runner(_job(), artifact_root=str(tmp_path))
+    assert str(caught.value) == "challenge runner failed"
+
+
 def test_run_rejects_a_token_hidden_in_the_job(tmp_path):
     job = _job().model_copy(update={"install_command": ["pip", "install", SECRET]})
     with pytest.raises(RunnerInvocationError) as caught:

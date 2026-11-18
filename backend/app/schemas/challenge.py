@@ -51,7 +51,7 @@ class _Frozen(BaseModel):
 
 # ---------------------------------------------------------------- runner protocol v1
 # The backend writes RunnerJob as JSON, invokes `python -m challenge_runner run`, and
-# reads RunnerResult. challenge-runner/challenge_runner/protocol.py mirrors these
+# reads RunnerResult. The runner ships with the private verifier and mirrors these
 # shapes with stdlib dataclasses; docs/cyber/runner-protocol.schema.json is the
 # shared JSON Schema both sides test against.
 
