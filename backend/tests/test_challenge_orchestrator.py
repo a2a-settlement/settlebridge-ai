@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.abc
 import io
 import json
+import sys
 import tarfile
 import uuid
 from datetime import datetime, timezone
@@ -49,6 +51,7 @@ from app.services.challenge_orchestrator import (
     IdempotencyConflict,
     InvalidTransition,
     RoleConflict,
+    VerdictRuleUnavailable,
     _record_adjudication,
     _record_participant,
     _transition_claim,
@@ -60,9 +63,15 @@ from app.services.challenge_orchestrator import (
     transition,
 )
 from app.services.challenge_runner_client import FetchResult
+from app.services import verifier_client
+from app.services.verifier_client import RULE_UNAVAILABLE, CitationCheck
 from app.services.github_bounty_service import spec_content_hash
 
 SECRET = "ghs_SUPERSECRET"
+_REAL_CLIENT = {
+    name: getattr(verifier_client, name)
+    for name in ("precheck_citation", "validity_available", "decide")
+}
 WHEN = datetime(2026, 12, 1, tzinfo=timezone.utc)
 BASE = "a" * 40
 HEAD = "b" * 40
@@ -297,14 +306,15 @@ def _patch_io(monkeypatch, *, runner, fetch=None, precheck=None, decide=None):
         monkeypatch.setattr("app.services.challenge_runner_client.fetch_source", fetch)
 
     def _precheck(claim, content):
-        return True, "cited"
+        return CitationCheck("valid", "cited")
 
     monkeypatch.setattr(
-        "app.services.challenge_validity.precheck_citation",
+        "app.services.verifier_client.precheck_citation",
         precheck or _precheck,
     )
+    monkeypatch.setattr("app.services.verifier_client.validity_available", lambda: True)
     if decide is not None:
-        monkeypatch.setattr("app.services.challenge_validity.decide", decide)
+        monkeypatch.setattr("app.services.verifier_client.decide", decide)
 
 
 def _fetch(tmp_path):
@@ -934,9 +944,11 @@ def test_tamper_and_citation_precheck(db, monkeypatch, tmp_path):
     _tar(bad, {"app/evil.py": b"print(1)\n"})
 
     def precheck(claim, content):
-        return (False, "missing") if claim.observed == "bad-citation" else (True, "ok")
+        if claim.observed == "bad-citation":
+            return CitationCheck("invalid", "missing")
+        return CitationCheck("valid", "ok")
 
-    monkeypatch.setattr("app.services.challenge_validity.precheck_citation", precheck)
+    monkeypatch.setattr("app.services.verifier_client.precheck_citation", precheck)
 
     rejected = _run(
         submit_claim(
@@ -1270,3 +1282,147 @@ async def _validating_world(db, *, budget_cents=100, observers=None):
     db.add(job)
     await db.flush()
     return task, claim, job
+
+
+class _NoPrivateVerifier(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "settlebridge_verifier" or fullname.startswith("settlebridge_verifier."):
+            raise ModuleNotFoundError(fullname)
+        return None
+
+
+def _without_private_verifier(monkeypatch, *, runner, fetch=None):
+    """Runner and fetch are faked; the verdict-rule client is the real one."""
+    _patch_io(monkeypatch, runner=runner, fetch=fetch)
+    for name in ("precheck_citation", "validity_available", "decide"):
+        monkeypatch.setattr(verifier_client, name, _REAL_CLIENT[name])
+    for name in list(sys.modules):
+        if name == "settlebridge_verifier" or name.startswith("settlebridge_verifier."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_NoPrivateVerifier(), *sys.meta_path])
+    monkeypatch.setattr(verifier_client, "_cached", False)
+
+
+def test_rule_unavailable_at_submit_ends_inconclusive_not_no_valid_claim(
+    db, monkeypatch, tmp_path
+):
+    _enable(monkeypatch, tmp_path)
+    _without_private_verifier(
+        monkeypatch, runner=lambda job, artifact_root=None: _result(job), fetch=_fetch(tmp_path)
+    )
+    task = _run(_make_task(db, budget_cents=1000))
+    _budget(db, task.owner_user_id)
+    task.environment = {
+        "python": "3.11",
+        "observers": ["authorization_canary"],
+        "oracle_sources": ["property_clause"],
+        "test_command": ["pytest", "-q"],
+    }
+    db.sync.flush()
+    task = _run(freeze_contract(db, task.id))
+    for kind in ("challenge_fetch", "challenge_deps", "challenge_baseline"):
+        _run(handle_challenge_job(db, next(job for job in _jobs(db) if job.kind == kind)))
+    attempt_job = next(job for job in _jobs(db) if job.kind == "challenge_attempt")
+    bundle = tmp_path / "bundle.tar"
+    _tar(bundle, {"challenge_tests/test_gap.py": b"def test_gap():\n    assert False\n"})
+    attempt_job.payload = {
+        **attempt_job.payload,
+        "claims": [
+            _claim_in().model_dump(mode="json"),
+            _claim_in(observed="second").model_dump(mode="json"),
+        ],
+        "bundle_path": str(bundle),
+    }
+
+    _run(handle_challenge_job(db, attempt_job))
+
+    db.sync.expire_all()
+    fresh = db.sync.get(ChallengeTask, task.id)
+    assert fresh.state == "inconclusive"
+    assert fresh.state_reason == RULE_UNAVAILABLE
+    claims = list(db.sync.scalars(select(ChallengeClaim)).all())
+    assert [row.state for row in claims] == ["decided"]
+    verdicts = list(db.sync.scalars(select(ChallengeVerdict)).all())
+    assert {row.scope for row in verdicts} == {"claim", "task"}
+    assert {row.verdict for row in verdicts} == {"inconclusive"}
+    assert {row.reason for row in verdicts} == {RULE_UNAVAILABLE}
+    assert db.sync.scalars(select(Finding)).all() == []
+    kinds = [job.kind for job in _jobs(db)]
+    assert "challenge_validate" not in kinds
+    assert "challenge_report" in kinds
+
+
+def test_rule_unavailable_at_submit_raises_for_a_direct_caller(db, monkeypatch, tmp_path):
+    _without_private_verifier(monkeypatch, runner=lambda job, artifact_root=None: _result(job))
+    task, claim, _job = _run(_validating_world(db))
+
+    with pytest.raises(VerdictRuleUnavailable):
+        _run(
+            submit_claim(
+                db,
+                task_id=task.id,
+                attempt_id=claim.attempt_id,
+                claim=_claim_in(observed="another"),
+            )
+        )
+
+    submitted = db.sync.scalar(select(ChallengeClaim).where(ChallengeClaim.id != claim.id))
+    assert submitted.state == "decided"
+    verdict = db.sync.scalar(
+        select(ChallengeVerdict).where(ChallengeVerdict.claim_id == submitted.id)
+    )
+    assert verdict.verdict == "inconclusive"
+    assert verdict.evidence["citation_valid"] is False
+
+
+def test_rule_unavailable_at_validate_stops_before_any_run(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    calls = []
+
+    def runner(job, artifact_root=None):
+        calls.append(job)
+        return _result(job)
+
+    _without_private_verifier(monkeypatch, runner=runner)
+    task, claim, job = _run(_validating_world(db))
+    _budget(db, task.owner_user_id)
+
+    _run(handle_challenge_job(db, job))
+
+    assert calls == []
+    db.sync.expire_all()
+    fresh = db.sync.get(ChallengeTask, task.id)
+    assert fresh.state == "inconclusive"
+    assert fresh.state_reason == RULE_UNAVAILABLE
+    assert db.sync.get(ChallengeClaim, claim.id).state == "decided"
+    verdict = db.sync.scalar(select(ChallengeVerdict).where(ChallengeVerdict.claim_id == claim.id))
+    assert verdict.verdict == "inconclusive"
+    assert verdict.reason == RULE_UNAVAILABLE
+    assert db.sync.scalars(select(Finding)).all() == []
+
+
+def test_rule_failing_after_the_runs_is_inconclusive(db, monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    calls = []
+
+    def runner(job, artifact_root=None):
+        calls.append(job)
+        return _result(job)
+
+    _patch_io(monkeypatch, runner=runner)
+    monkeypatch.setattr(verifier_client, "decide", _REAL_CLIENT["decide"])
+    monkeypatch.setattr(verifier_client, "_load_validity", lambda: None)
+    task, claim, job = _run(_validating_world(db))
+    _budget(db, task.owner_user_id)
+
+    _run(handle_challenge_job(db, job))
+
+    assert calls
+    db.sync.expire_all()
+    assert db.sync.get(ChallengeTask, task.id).state == "inconclusive"
+    verdict = db.sync.scalar(select(ChallengeVerdict).where(ChallengeVerdict.claim_id == claim.id))
+    assert verdict.verdict == "inconclusive"
+    assert verdict.reason == RULE_UNAVAILABLE
+    assert verdict.evidence["observer_fired"] is False
+    assert len(verdict.evidence["execution_ids"]) == len(calls)
+    assert db.sync.scalars(select(Finding)).all() == []
