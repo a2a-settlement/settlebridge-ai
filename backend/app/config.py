@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     GITHUB_EXCHANGE_MIN_FEE: int = 1
     GITHUB_JOB_MAX_ATTEMPTS: int = 8
     # Challenge engine (M2). Off in production until the runner host is approved.
+    # The per-claim verdict rule ships with the private verifier, which must also be
+    # importable by this backend process (CHALLENGE_RUNNER_PATH does not cover that).
+    # Without it every claim ends inconclusive.
     CHALLENGE_ENGINE_ENABLED: bool = False
     # Content-addressed artifact store on the runner host; never a production path.
     CHALLENGE_ARTIFACT_ROOT: str = "/var/lib/settlebridge-challenges"
