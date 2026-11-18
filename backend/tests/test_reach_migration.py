@@ -47,6 +47,7 @@ _SIGNAL_NULLS = {
         "priority",
         "kev",
         "tier",
+        "fix_status",
     },
 }
 

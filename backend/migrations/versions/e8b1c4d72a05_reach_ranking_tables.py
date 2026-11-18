@@ -72,6 +72,7 @@ def upgrade() -> None:
         _float("priority"),
         sa.Column("kev", sa.Boolean(), nullable=True),
         sa.Column("tier", sa.String(8), nullable=True),
+        sa.Column("fix_status", sa.String(16), nullable=True),
         sa.Column("weights_hash", sa.String(32), nullable=False),
         _ts("computed_at", nullable=False),
         _ts("imported_at", nullable=False, now=True),

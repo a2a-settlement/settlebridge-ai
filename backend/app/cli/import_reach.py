@@ -85,6 +85,7 @@ _CVE_COLUMNS = _cols(
     _Column("priority", "float"),
     _Column("kev", "bool"),
     _Column("tier", "str", max_len=8),
+    _Column("fix_status", "str", max_len=16),
     _Column("weights_hash", "str", max_len=32, required=True),
     _Column("computed_at", "ts", required=True),
 )

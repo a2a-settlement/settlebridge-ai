@@ -84,6 +84,8 @@ class CvePriority(Base):
     priority: Mapped[float | None] = mapped_column(Double, nullable=True)
     kev: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     tier: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # fixed_later, possibly_open, or model_only; NULL for backlog rows.
+    fix_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     weights_hash: Mapped[str] = mapped_column(String(32), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(

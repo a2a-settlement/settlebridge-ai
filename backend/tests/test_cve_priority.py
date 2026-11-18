@@ -255,6 +255,7 @@ def test_import_twice_upserts_without_duplicating(db, tmp_path):
         "priority": 0.8,
         "weights_hash": "b" * 32,
         "computed_at": "2026-11-17T01:00:00Z",
+        "fix_status": "possibly_open",
     }
     updated = _write(
         tmp_path / "second.jsonl",
@@ -278,6 +279,7 @@ def test_import_twice_upserts_without_duplicating(db, tmp_path):
     assert ranked.confirmed_source is None
     assert ranked.ecosystem is None
     assert ranked.weights_hash == "b" * 32
+    assert ranked.fix_status == "possibly_open"
 
 
 def test_unknown_column_is_rejected(db, tmp_path):
