@@ -503,7 +503,10 @@ def test_serialized_response_keys_omit_secrets(world):
         assert marker not in response.text
     assert str(ME) not in response.text
     assert str(OTHER) not in response.text
-    assert "9999" not in response.text
+    # 9999 is the amount on the binding's newer spec, which the lease was not
+    # taken under. Compare parsed values: the text also holds random bounty
+    # ids, and about one random UUID in 2,000 contains "9999".
+    assert not any(value in (9999, "9999") for item in body["items"] for value in item.values())
 
 
 def test_signed_out_is_401(world):
