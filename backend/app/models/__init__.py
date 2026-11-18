@@ -33,6 +33,7 @@ from app.models.fix_verifier import (
     VerifierBypassSubmission,
     VerifierQuota,
 )
+from app.models.reach import CvePriority, PackageReach
 from app.models.notification import Notification
 from app.models.spend import AccountBudget, ExecutionUsage, SpendReservation
 from app.models.score_history import ScoreHistory, ScoreMode
@@ -55,4 +56,5 @@ __all__ = [
     "ChallengeClaim", "ChallengeArtifact", "ChallengeVerdict", "Finding",
     "AccountBudget", "SpendReservation", "ExecutionUsage",
     "FixVerification", "FixWarranty", "VerifierQuota", "VerifierBypassSubmission",
+    "PackageReach", "CvePriority",
 ]
