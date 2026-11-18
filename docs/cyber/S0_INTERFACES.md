@@ -10,7 +10,7 @@ Coordinator-owned. Workers read this and code against it. A worker that finds a 
 - `backend/migrations/versions/a7c3e9f1b2d4_challenge_engine_and_spend.py` — the only migration this milestone. No worker adds a migration.
 - `backend/app/schemas/challenge.py` — runner protocol, structured claim, validation evidence, API and report schemas, `MyLeaseOut`, `CyberTaskDetailOut`.
 - `backend/app/config.py` — `CHALLENGE_*` and `SPEND_DEFAULT_*` settings.
-- `challenge-runner/challenge_runner/protocol.py` and `docs/cyber/runner-protocol.schema.json` (generated from the Pydantic models; a test enforces it).
+- `docs/cyber/runner-protocol.schema.json` (generated from the Pydantic models; a test enforces it). The runner's own mirror of these shapes ships with the private verifier.
 - `marketplace-next/lib/cyberContracts.ts` — UI props and API types.
 - Stub signatures in worker-owned files (below). Workers fill bodies and may add private helpers, never change a public signature.
 
@@ -19,11 +19,8 @@ Coordinator-owned. Workers read this and code against it. A worker that finds a 
 - `services/github_jobs.py` (S1-min): `enqueue_job(db, *, kind, payload, dedupe_key=None, run_at=None) -> GitHubJob | None`, `cancel_jobs(db, *, dedupe_key_prefix) -> int`.
 - `services/spend.py` (S2): `reserve_spend`, `record_usage`, `reconcile_reservation`, `release_reservation`, `expire_reservations`, `budget_status`; errors `BudgetExceeded`, `BudgetPaused`, `BudgetMissing`.
 - `services/github_scoped_token.py` (S3): `scoped_read_token(installation_id, repo_full_name) -> str`.
-- `challenge_runner/fetcher` (S3): `fetch_source(...) -> FetchOutput`.
-- `challenge_runner/sandbox` (P1-2): `run_job(job, *, artifact_root) -> RunnerResult`; `SandboxUnavailable`.
-- `challenge_runner/observers` (P1-V): `Observer` protocol, `get_observer(name)`.
-- `challenge_runner/challenger` (P1-4): `run_challenger(bundle, *, out_dir, model_client, max_claims=5)`.
-- `services/challenge_orchestrator.py` (P1-3), `services/challenge_validity.py` (P1-V), `services/challenge_report.py` (P1-5).
+- The runner (fetcher, sandbox, observers, challenger) is not in this repository. It ships with the private verifier; the backend reaches it only through `services/challenge_runner_client.py`.
+- `services/challenge_orchestrator.py` (P1-3), `services/challenge_report.py` (P1-5).
 
 ## Dedupe keys
 
@@ -32,9 +29,9 @@ Coordinator-owned. Workers read this and code against it. A worker that finds a 
 - Execution ids: `exec:{task_id}:{purpose}:{n}` (purpose: `deps|baseline-base|baseline-target|attempt|positive|negative|reference|rederive|rerun-1..3|minimized`). A platform retry of the same execution gets a new id and cause `platform_retry`, `charged=false`.
 - Findings: `chal:{repo}:{failure_class}:{claim_hash}`.
 
-## Verdict rule (plan section 4)
+## Verdict rule
 
-`confirmed` only when: citation valid against the frozen contract's oracle sources; tamper audit clean; verifier observer fired on target; positive control succeeded and negative control stayed silent; differential consistent with the failure class; independent re-derivation fired; 3 of 3 reruns and the minimized reproducer fired. Control failure or flaky result → `inconclusive` with the reason. No citation → `invalid_or_duplicate` before anything runs. No observer for the class → adjudication. Never print "secure"; every verdict carries "Under the stated property, environment, and budget."
+The per-claim verdict rule is not in this repository. It ships with the private verifier and the backend calls it through `services/verifier_client.py`; a claim the rule cannot decide because it is unavailable is `inconclusive`. Never print "secure"; every verdict carries "Under the stated property, environment, and budget."
 
 ## Role and conflict rule
 
@@ -98,7 +95,6 @@ Next action copy:
 ## Tests and commands
 
 - Backend: `/home/rich/miniconda3/envs/settlebridge_ai/bin/python -m pytest -q -p no:cacheprovider <your test files>` from `backend/`.
-- Runner: same interpreter, from `challenge-runner/`.
 - Frontend: `npx --no-install tsc --noEmit -p .`, `npx --no-install eslint <your files>`, `npm run -s test:unit` from `marketplace-next/`. Never `next build` in a worker.
 - No network in tests, no live APIs, no databases. Mock `httpx` and subprocess calls.
 
@@ -110,7 +106,7 @@ Next action copy:
 - Spend: charged usage is capped at `reserved_cents`; `reservation_exhausted(reservation)` is true once the hold is used, and the orchestrator must stop that attempt.
 - Lease claim replays rotate the lease token; a client holding a stale token replays the claim with the same `Idempotency-Key` to get a fresh one.
 - `CHALLENGE_OPERATOR_USER_IDS` (config, comma-separated UUIDs, default empty): the only users who may `POST /api/v1/challenges`. Others get 403. With `CHALLENGE_ENGINE_ENABLED=False`, the POST answers 503 `challenge_engine_disabled` and creates nothing. GET routes stay read-only.
-- Contract content (P1-V reads, P1-3 writes): `oracle_sources` (list of OracleSource values), `observers` (list of funded failure classes), `property` (text), and `oracle_texts[source][reference] = clause text`. A citation is valid only when its quote equals the whole clause text after whitespace normalization; reference `property` under `property_clause` resolves to `property`. The verifier copies the DoS threshold into `resources.jsonl`. Capture formats are documented in `challenge_runner/observers/__init__.py`.
+- Contract content (P1-V reads, P1-3 writes): `oracle_sources` (list of OracleSource values), `observers` (list of funded failure classes), `property` (text), and `oracle_texts[source][reference] = clause text`. The verifier copies the DoS threshold into `resources.jsonl`.
 - Verdict and adjudication reasons are stored and signed verbatim. Any writer of a reason (the orchestrator, the adjudication input) rejects text containing "secure" (case-insensitive) instead of editing it.
 - Spend subjects also include `challenge_baseline:{task_id}`, shared by the deps and baseline phases and reconciled when the baseline phase ends.
 - Per-claim verifier execution purposes are `target` and `base`, distinct from `baseline-target` and `baseline-base`.

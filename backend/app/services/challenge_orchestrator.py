@@ -63,7 +63,7 @@ from app.schemas.challenge import (
     RunnerResult,
     ValidationEvidence,
 )
-from app.services import challenge_runner_client, challenge_validity, github_scoped_token
+from app.services import challenge_runner_client, github_scoped_token, verifier_client
 from app.services.github_errors import PermanentJobError, RetryableJobError
 from app.services.github_jobs import cancel_jobs, enqueue_job
 from app.services.spend import (
@@ -182,6 +182,13 @@ class _AttemptStopped(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class VerdictRuleUnavailable(_AttemptStopped):
+    """The private verdict rule could not run. The task ends inconclusive."""
+
+    def __init__(self) -> None:
+        super().__init__(verifier_client.RULE_UNAVAILABLE)
 
 
 @dataclass
@@ -1006,8 +1013,24 @@ async def submit_claim(
             citation_valid=False,
             tamper_clean=True,
         )
-    ok, _detail = challenge_validity.precheck_citation(claim, contract.content)
-    if not ok:
+    citation = verifier_client.precheck_citation(claim, contract.content)
+    if citation.status == "unavailable":
+        # Not a rejection. A rejected claim lets the task close as "no valid claim",
+        # which would read as the fix having survived a challenge that never ran.
+        await _transition_claim(db, row, ClaimState.VALIDATING.value)
+        await _append_verdict(
+            db,
+            task=task,
+            contract=contract,
+            claim=row,
+            verdict=VerdictKind.INCONCLUSIVE.value,
+            decided_by=DecidedBy.MACHINE.value,
+            reason=verifier_client.RULE_UNAVAILABLE,
+            evidence=_early_evidence(citation_valid=False, tamper_clean=True, execution_ids=[]),
+        )
+        await _transition_claim(db, row, ClaimState.DECIDED.value)
+        raise VerdictRuleUnavailable()
+    if citation.status != "valid":
         return await _reject_claim(
             db,
             task=task,
@@ -1865,6 +1888,9 @@ async def _handle_validate(db: AsyncSession, job: GitHubJob) -> None:
         return
     claim_in = _claim_in(claim)
     try:
+        if not verifier_client.validity_available():
+            # Stop before any sandbox run is charged for a claim that cannot be decided.
+            raise VerdictRuleUnavailable()
         bundle = await _bundle_digest(db, stage.task.id, claim.attempt_id)
         await _record_verifier(db, stage, bundle)
         stage.reservation = await _reserve(
@@ -1902,7 +1928,7 @@ async def _handle_validate(db: AsyncSession, job: GitHubJob) -> None:
                 bundle_digest=bundle,
                 wheelhouse=wheel,
             )
-        outcome = challenge_validity.decide(
+        outcome = verifier_client.decide(
             claim=claim_in,
             contract_content=stage.contract.content,
             tamper_clean=True,
