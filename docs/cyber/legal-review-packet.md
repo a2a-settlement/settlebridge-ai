@@ -21,7 +21,7 @@ Counsel is reviewing wording for a receipt this service is specified to issue, a
 
 The public receipt route is `GET /api/v1/fix-verifications/{verification_id}/receipt`. Its response model is `ReceiptResponse` with one field, `receipt_id`. The route returns `{"receipt_id": "<id>"}` or 404. `request_verification_receipt` in `backend/app/services/fix_verifier.py` returns an id already stored on the row. It does not call the mediator, does not write an id, and does not return a signed document.
 
-There is no `receipt_client.py` in this repository. The mediator client that does exist is `verify_patch` in `backend/app/services/mediator.py`. It POSTs canonical JSON to `{MEDIATOR_URL}/api/v1/verify-patch`. The shared secret is `MEDIATOR_WEBHOOK_SECRET`. The HMAC is SHA-256 over `f"{timestamp}."` plus those body bytes. Request headers are `X-A2ASE-Timestamp` and `X-A2ASE-Signature: sha256=<hex>`. There is no setting named `MEDIATOR_HMAC_SECRET`.
+There is no `receipt_client.py` in this repository. The mediator client that does exist is `verify_patch` in `backend/app/services/mediator.py`. It POSTs canonical JSON to `{MEDIATOR_URL}/api/v1/verify-patch`. The secret is `MEDIATOR_VERIFY_PATCH_SECRET` when that is set, otherwise `MEDIATOR_WEBHOOK_SECRET`. The HMAC is SHA-256 over `f"{timestamp}."` plus those body bytes. Request headers are `X-A2ASE-Timestamp` and `X-A2ASE-Signature: sha256=<hex>`. There is no setting named `MEDIATOR_HMAC_SECRET`.
 
 `Settings` in `backend/app/config.py` has no `environment` field. Production localhost checks in the launch preflight treat `--target-public-launch` as the production case, and also honor an `environment` or `ENVIRONMENT` value of `production` when a caller supplies one.
 
@@ -48,6 +48,9 @@ Launch flags, all defaulting off:
 | `CHALLENGE_REPORT_KEY_ID` | `challenge-report-1` |
 | `MEDIATOR_URL` | `https://mediator.a2a-settlement.org` |
 | `MEDIATOR_WEBHOOK_SECRET` | empty |
+| `MEDIATOR_OPERATOR_SECRET` | empty |
+| `MEDIATOR_VERIFY_PATCH_SECRET` | empty |
+| `MEDIATOR_RECEIPTS_SECRET` | empty |
 
 The public router is mounted at `/api/v1/fix-verifications`. Every route answers 404 while `FIX_VERIFIER_PUBLIC_API` is false. Create and replay also require `FIX_VERIFIER_ENABLED`. When `FIX_VERIFIER_OIDC_ENABLED` and `FIX_VERIFIER_PUBLIC_API` are both true, a GitHub Actions OIDC bearer from `https://token.actions.githubusercontent.com` is accepted on create, read, and receipt. The token `aud` must match `FIX_VERIFIER_OIDC_AUDIENCE`.
 

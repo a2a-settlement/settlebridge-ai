@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.services import fix_verifier_preflight as preflight
 
 ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000001"
@@ -307,3 +309,50 @@ def test_main_text_reports_a_pem_warning(monkeypatch, capsys):
     assert text.startswith("ok: yes\n")
     assert "raw PEM" in text
     assert "LAUNCH-PREFLIGHT-PEM-MARKER" not in text
+
+
+def test_purpose_secrets_stand_in_for_the_webhook_secret():
+    report = preflight.check_fix_verifier_launch_config(
+        _settings(
+            MEDIATOR_WEBHOOK_SECRET="",
+            MEDIATOR_VERIFY_PATCH_SECRET="v" * 32,
+            MEDIATOR_RECEIPTS_SECRET="r" * 32,
+        )
+    )
+    assert report.ok is True
+    assert report.errors == []
+
+
+@pytest.mark.parametrize(
+    "present,missing",
+    [
+        ("MEDIATOR_VERIFY_PATCH_SECRET", "MEDIATOR_RECEIPTS_SECRET"),
+        ("MEDIATOR_RECEIPTS_SECRET", "MEDIATOR_VERIFY_PATCH_SECRET"),
+    ],
+)
+def test_one_purpose_secret_alone_does_not_replace_the_webhook_secret(present, missing):
+    report = preflight.check_fix_verifier_launch_config(
+        _settings(MEDIATOR_WEBHOOK_SECRET="", **{present: "x" * 32, missing: "  "})
+    )
+    assert report.ok is False
+    assert f"{missing} or MEDIATOR_WEBHOOK_SECRET must be non-empty" in report.errors
+
+
+def test_operator_secret_alone_does_not_satisfy_the_mediator_check():
+    report = preflight.check_fix_verifier_launch_config(
+        _settings(MEDIATOR_WEBHOOK_SECRET="", MEDIATOR_OPERATOR_SECRET="o" * 32)
+    )
+    assert "MEDIATOR_WEBHOOK_SECRET must be non-empty" in report.errors
+
+
+def test_preflight_output_never_contains_a_purpose_secret(monkeypatch, capsys):
+    _bind(
+        monkeypatch,
+        MEDIATOR_WEBHOOK_SECRET="",
+        MEDIATOR_VERIFY_PATCH_SECRET="verify-patch-value",
+        MEDIATOR_RECEIPTS_SECRET="",
+    )
+    assert preflight.main(["--json"]) == 1
+    out = capsys.readouterr().out
+    assert "verify-patch-value" not in out
+    assert "MEDIATOR_RECEIPTS_SECRET or MEDIATOR_WEBHOOK_SECRET must be non-empty" in out

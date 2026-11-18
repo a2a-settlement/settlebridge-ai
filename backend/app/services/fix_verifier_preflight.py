@@ -19,8 +19,9 @@ There is no ``fix_verifier_max_cost_cents`` field. The launch bound of 1
 through 2500 cents applies to ``FIX_VERIFIER_DAILY_COST_CAP_CENTS`` and to
 ``FIX_VERIFIER_MAX_COST_CENTS_PER_VERIFICATION``. The per-verification budget
 must also fit under the daily cap, because a slot is claimed only when
-``spend_cents + budget <= cap``. The shared secret is
-``MEDIATOR_WEBHOOK_SECRET``.
+``spend_cents + budget <= cap``. The mediator secret is
+``MEDIATOR_WEBHOOK_SECRET``, unless ``MEDIATOR_VERIFY_PATCH_SECRET`` and
+``MEDIATOR_RECEIPTS_SECRET`` are both set, which replace it for those calls.
 """
 
 from __future__ import annotations
@@ -172,8 +173,18 @@ def _check_mediator(
             errors.append(message)
         else:
             warnings.append("MEDIATOR_URL uses a localhost or loopback host")
-    if not _text(getattr(settings_obj, "MEDIATOR_WEBHOOK_SECRET", "")):
+    if _text(getattr(settings_obj, "MEDIATOR_WEBHOOK_SECRET", "")):
+        return
+    # Without the fallback, each kind of signed call needs its own secret.
+    missing = [
+        name
+        for name in ("MEDIATOR_VERIFY_PATCH_SECRET", "MEDIATOR_RECEIPTS_SECRET")
+        if not _text(getattr(settings_obj, name, ""))
+    ]
+    if len(missing) == 2:
         errors.append("MEDIATOR_WEBHOOK_SECRET must be non-empty")
+    elif missing:
+        errors.append(f"{missing[0]} or MEDIATOR_WEBHOOK_SECRET must be non-empty")
 
 
 def _check_cost(settings_obj: object, errors: list[str]) -> None:
