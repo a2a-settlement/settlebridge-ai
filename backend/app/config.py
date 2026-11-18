@@ -125,6 +125,8 @@ class Settings(BaseSettings):
     # Fix verifier. Every behavior is off until its flag is set. Needs the private
     # settlebridge-verifier package installed; without it verification is inconclusive.
     FIX_VERIFIER_ENABLED: bool = False
+    # When set, queued verifications are ordered by imported CVE reach priority.
+    FIX_VERIFIER_PRIORITY_QUEUE: bool = False
     # Accept verification requests from the public GitHub Action (OIDC-authenticated).
     FIX_VERIFIER_PUBLIC_API: bool = False
     # GitHub Actions OIDC bearer tokens. Off unless both this and the public API are set.
