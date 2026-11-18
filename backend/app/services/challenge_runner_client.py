@@ -1,5 +1,11 @@
 """Invoke ``CHALLENGE_RUNNER_PYTHON -m challenge_runner`` and parse its JSON.
 
+This repository does not contain the runner. ``challenge_runner`` ships with the
+private verifier and must be importable by ``CHALLENGE_RUNNER_PYTHON``: either
+installed into that interpreter, or found in the checkout that
+``CHALLENGE_RUNNER_PATH`` names. Without it the process exits non-zero and every
+call here raises ``RunnerInvocationError``.
+
 The sandbox job is a file. A fetch token is one stdin line for ``fetch`` and is
 never placed in argv, the environment, the job file, or an error message.
 """
@@ -42,10 +48,6 @@ class FetchResult:
     history_digest: str | None = None
 
 
-def _runner_root() -> Path:
-    return Path(__file__).resolve().parents[3] / "challenge-runner"
-
-
 def _subprocess_env() -> dict[str, str]:
     """Environment for the host runner. Token variables are not copied."""
     env: dict[str, str] = {}
@@ -53,7 +55,9 @@ def _subprocess_env() -> dict[str, str]:
         value = os.environ.get(key)
         if value:
             env[key] = value
-    env["PYTHONPATH"] = str(_runner_root())
+    # Only the configured runner checkout is importable; the caller's PYTHONPATH is not copied.
+    if settings.CHALLENGE_RUNNER_PATH:
+        env["PYTHONPATH"] = settings.CHALLENGE_RUNNER_PATH
     env["PYTHONNOUSERSITE"] = "1"
     if settings.CHALLENGE_SANDBOX_IMAGE:
         env["CHALLENGE_SANDBOX_IMAGE"] = settings.CHALLENGE_SANDBOX_IMAGE
